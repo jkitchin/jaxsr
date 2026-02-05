@@ -1,0 +1,236 @@
+# Literature Review: Symbolic Regression Methods
+
+## Introduction
+
+Symbolic regression is the task of discovering mathematical expressions that best describe relationships in data. Unlike traditional regression methods that fit parameters to a predetermined functional form, symbolic regression searches the space of possible expressions to find the underlying mathematical structure. This document reviews major approaches to symbolic regression and positions JAXSR within this landscape.
+
+## Traditional Approaches
+
+### Genetic Programming (GP)
+
+Genetic Programming, pioneered by Koza (1992) [1], was one of the earliest successful approaches to symbolic regression. GP evolves a population of expression trees through mutation, crossover, and selection operations.
+
+**Key Works:**
+- Koza, J.R. (1992). Genetic Programming: On the Programming of Computers by Means of Natural Selection. MIT Press. [1]
+- Schmidt, M., & Lipson, H. (2009). Distilling free-form natural laws from experimental data. Science, 324(5923), 81-85. [2]
+
+**Limitations:**
+- Computationally expensive, requiring many function evaluations
+- Solutions can be bloated (overly complex)
+- Difficult to incorporate domain constraints
+- Non-deterministic results
+
+### ALAMO (Automated Learning of Algebraic Models for Optimization)
+
+ALAMO, developed by Cozad et al. (2014) [3], takes a fundamentally different approach using best subset selection from a library of basis functions. This work directly inspired JAXSR.
+
+**Key Features:**
+- Predefined library of candidate basis functions
+- Uses mixed-integer optimization for feature selection
+- Information criteria (BIC, AIC) for model complexity control
+- Adaptive sampling for iterative model improvement
+- Support for physical constraints
+
+**Key Works:**
+- Cozad, A., Sahinidis, N. V., & Miller, D. C. (2014). Learning surrogate models for simulation-based optimization. AIChE Journal, 60(6), 2211-2227. [3]
+- Wilson, Z. T., & Sahinidis, N. V. (2017). The ALAMO approach to machine learning. Computers & Chemical Engineering, 106, 785-795. [4]
+
+**Limitations:**
+- Commercial software (not open source)
+- Relies on external MINLP solvers
+- Limited to predefined basis function types
+
+### SISSO (Sure Independence Screening and Sparsifying Operator)
+
+SISSO, developed by Ouyang et al. (2018) [5], combines sure independence screening with compressed sensing for descriptor identification in materials science.
+
+**Key Features:**
+- Iterative feature construction through algebraic operations
+- Compressed sensing for sparse solutions
+- Multi-objective optimization for accuracy vs complexity
+- Designed for materials science applications
+
+**Key Works:**
+- Ouyang, R., Curtarolo, S., Ahmetcik, E., Scheffler, M., & Ghiringhelli, L. M. (2018). SISSO: A compressed-sensing method for identifying the best low-dimensional descriptor in an immensity of offered candidates. Physical Review Materials, 2(8), 083802. [5]
+- Bartel, C. J., et al. (2019). New tolerance factor to predict the stability of perovskite oxides and halides. Science Advances, 5(2), eaav0693. [6]
+
+**Limitations:**
+- Specialized for materials science descriptors
+- Complex implementation
+- Computationally expensive feature space expansion
+
+### PySR (Python Symbolic Regression)
+
+PySR by Cranmer (2023) [7] uses a modern multi-population genetic algorithm with simplification and combines Julia's speed with Python's ecosystem.
+
+**Key Features:**
+- Multi-population evolutionary search
+- Automatic simplification
+- Pareto optimization for complexity vs accuracy
+- GPU support through Julia
+- Active development and modern interface
+
+**Key Works:**
+- Cranmer, M. (2023). Interpretable Machine Learning for Science with PySR and SymbolicRegression.jl. arXiv preprint arXiv:2305.01582. [7]
+
+**Limitations:**
+- Requires Julia installation
+- Non-deterministic results from evolutionary search
+- Less interpretable search process
+
+### AI Feynman
+
+AI Feynman by Udrescu & Tegmark (2020) [8] uses neural networks combined with recursive decomposition strategies inspired by physics.
+
+**Key Features:**
+- Neural network-guided search
+- Dimensional analysis
+- Symmetry detection
+- Recursive problem decomposition
+
+**Key Works:**
+- Udrescu, S. M., & Tegmark, M. (2020). AI Feynman: A physics-inspired method for symbolic regression. Science Advances, 6(16), eaay2631. [8]
+- Udrescu, S. M., et al. (2020). AI Feynman 2.0: Pareto-optimal symbolic regression exploiting graph modularity. NeurIPS 2020. [9]
+
+**Limitations:**
+- Complex multi-stage pipeline
+- Computationally expensive
+- Specialized for physics problems
+
+### Deep Learning Approaches
+
+Recent work has explored using transformers and neural networks for symbolic regression.
+
+**Key Works:**
+- Biggio, L., et al. (2021). Neural Symbolic Regression that Scales. ICML 2021. [10]
+- Kamienny, P. A., et al. (2022). End-to-end symbolic regression with transformers. NeurIPS 2022. [11]
+- Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv. [12]
+
+**Characteristics:**
+- Learn to predict expressions from data patterns
+- Fast inference after training
+- Can generalize to new problems
+- Require large training datasets
+
+### Sparse Regression Methods
+
+Classical sparse regression methods like LASSO and Elastic Net have been adapted for symbolic regression through feature engineering.
+
+**Key Works:**
+- Brunton, S. L., Proctor, J. L., & Kutz, J. N. (2016). Discovering governing equations from data by sparse identification of nonlinear dynamics. PNAS, 113(15), 3932-3937. (SINDy) [13]
+- Champion, K., et al. (2019). Data-driven discovery of coordinates and governing equations. PNAS, 116(45), 22445-22451. [14]
+
+## Comparison with JAXSR
+
+### Design Philosophy
+
+JAXSR takes an approach most similar to ALAMO but with several key differences:
+
+| Feature | JAXSR | ALAMO | SISSO | PySR |
+|---------|-------|-------|-------|------|
+| Open Source | Yes | No | Yes | Yes |
+| Backend | JAX | GAMS | Python | Julia |
+| GPU Support | Yes | No | Limited | Yes |
+| Deterministic | Yes | Yes | Yes | No |
+| Physical Constraints | Yes | Yes | Limited | Limited |
+| Adaptive Sampling | Yes | Yes | No | No |
+| Information Criteria | Yes | Yes | No | No |
+
+### JAXSR Advantages
+
+1. **Fully Open Source**: Unlike ALAMO, JAXSR is MIT-licensed and freely available.
+
+2. **JAX-Based Implementation**:
+   - Automatic differentiation for potential gradient-based optimization
+   - JIT compilation for performance
+   - Native GPU/TPU support
+   - Composable transformations (vmap, pmap)
+
+3. **Multiple Selection Strategies**:
+   - Greedy forward/backward selection (fast)
+   - Exhaustive search (exact for small problems)
+   - LASSO path screening (efficient for large libraries)
+   - Easy to extend with new methods
+
+4. **Flexible Constraint Handling**:
+   - Output bounds
+   - Monotonicity constraints
+   - Convexity/concavity
+   - Coefficient sign constraints
+   - Linear constraints on coefficients
+   - Fixed coefficients (known terms)
+
+5. **Modern Python Interface**:
+   - Scikit-learn compatible API
+   - Method chaining for library construction
+   - Easy serialization to JSON
+   - Export to SymPy, LaTeX, pure NumPy
+
+6. **Adaptive Sampling**:
+   - Multiple sampling strategies (uncertainty, leverage, space-filling)
+   - Iterative model improvement
+   - Integration with experimental workflows
+
+7. **Interpretability Focus**:
+   - Pareto front visualization
+   - Complexity scoring system
+   - Expression simplification
+   - Clear model summaries
+
+### Limitations Compared to Other Methods
+
+1. **Fixed Basis Library**: Unlike GP/PySR, JAXSR cannot discover truly novel functional forms outside the predefined library.
+
+2. **Scalability**: Exhaustive search is limited to small problems; greedy methods may miss global optima.
+
+3. **No Neural Network Integration**: Unlike AI Feynman or transformer methods, JAXSR doesn't leverage neural networks for search guidance.
+
+## Future Directions
+
+Based on the literature, several directions could enhance JAXSR:
+
+1. **Differentiable Selection**: Using gradient-based optimization for feature selection through relaxations (e.g., L0 regularization, Gumbel-softmax).
+
+2. **Neural-Guided Search**: Incorporating neural networks to predict promising basis functions.
+
+3. **Active Learning Integration**: More sophisticated acquisition functions for adaptive sampling.
+
+4. **Multi-Objective Optimization**: Explicit Pareto optimization for multiple objectives (accuracy, complexity, constraint satisfaction).
+
+5. **Dimensional Analysis**: Automatic enforcement of dimensional consistency.
+
+6. **Ensemble Methods**: Combining multiple models for improved predictions and uncertainty quantification.
+
+## Conclusion
+
+JAXSR fills an important gap in the symbolic regression landscape by providing an open-source, JAX-based implementation of ALAMO-style best subset selection. Its combination of flexible basis libraries, multiple selection strategies, constraint handling, and modern Python interface makes it well-suited for scientific and engineering applications where interpretability and domain knowledge incorporation are essential.
+
+## References
+
+[1] Koza, J.R. (1992). Genetic Programming: On the Programming of Computers by Means of Natural Selection. MIT Press.
+
+[2] Schmidt, M., & Lipson, H. (2009). Distilling free-form natural laws from experimental data. Science, 324(5923), 81-85.
+
+[3] Cozad, A., Sahinidis, N. V., & Miller, D. C. (2014). Learning surrogate models for simulation-based optimization. AIChE Journal, 60(6), 2211-2227.
+
+[4] Wilson, Z. T., & Sahinidis, N. V. (2017). The ALAMO approach to machine learning. Computers & Chemical Engineering, 106, 785-795.
+
+[5] Ouyang, R., Curtarolo, S., Ahmetcik, E., Scheffler, M., & Ghiringhelli, L. M. (2018). SISSO: A compressed-sensing method for identifying the best low-dimensional descriptor in an immensity of offered candidates. Physical Review Materials, 2(8), 083802.
+
+[6] Bartel, C. J., et al. (2019). New tolerance factor to predict the stability of perovskite oxides and halides. Science Advances, 5(2), eaav0693.
+
+[7] Cranmer, M. (2023). Interpretable Machine Learning for Science with PySR and SymbolicRegression.jl. arXiv preprint arXiv:2305.01582.
+
+[8] Udrescu, S. M., & Tegmark, M. (2020). AI Feynman: A physics-inspired method for symbolic regression. Science Advances, 6(16), eaay2631.
+
+[9] Udrescu, S. M., et al. (2020). AI Feynman 2.0: Pareto-optimal symbolic regression exploiting graph modularity. NeurIPS 2020.
+
+[10] Biggio, L., et al. (2021). Neural Symbolic Regression that Scales. ICML 2021.
+
+[11] Kamienny, P. A., et al. (2022). End-to-end symbolic regression with transformers. NeurIPS 2022.
+
+[12] Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv.
+
+[13] Brunton, S. L., Proctor, J. L., & Kutz, J. N. (2016). Discovering governing equations from data by sparse identification of nonlinear dynamics. PNAS, 113(15), 3932-3937.
+
+[14] Champion, K., et al. (2019). Data-driven discovery of coordinates and governing equations. PNAS, 116(45), 22445-22451.

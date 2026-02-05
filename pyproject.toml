@@ -1,0 +1,84 @@
+[project]
+name = "jaxsr"
+version = "0.1.0"
+description = "JAX-based Symbolic Regression - Discover interpretable algebraic expressions from data"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "John Kitchin", email = "jkitchin@andrew.cmu.edu"}
+]
+keywords = ["symbolic-regression", "jax", "machine-learning", "sparse-optimization", "model-discovery"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "sympy>=1.12",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+]
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+]
+all = ["jaxsr[dev,docs]"]
+
+[project.urls]
+Homepage = "https://github.com/jkitchin/jaxsr"
+Documentation = "https://github.com/jkitchin/jaxsr#readme"
+Repository = "https://github.com/jkitchin/jaxsr"
+Issues = "https://github.com/jkitchin/jaxsr/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jaxsr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true

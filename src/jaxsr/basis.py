@@ -1,0 +1,1162 @@
+"""
+Basis Function Library for JAXSR.
+
+Provides a flexible, extensible system for defining candidate basis functions
+for symbolic regression.
+"""
+
+from __future__ import annotations
+
+import itertools
+import json
+from dataclasses import dataclass, field
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import jax.numpy as jnp
+import numpy as np
+from jax import jit, vmap
+
+
+@dataclass
+class BasisFunction:
+    """
+    A single basis function with metadata.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable name for the basis function.
+    func : Callable
+        Function that takes X of shape (n_samples, n_features) and returns
+        array of shape (n_samples,).
+    complexity : int
+        Complexity score for Pareto optimization (higher = more complex).
+    feature_indices : tuple
+        Indices of features used by this basis function.
+    func_type : str
+        Type of function (for serialization): "constant", "linear", "polynomial",
+        "interaction", "transcendental", "ratio", "custom".
+    func_config : dict
+        Configuration for reconstructing the function (for serialization).
+    """
+    name: str
+    func: Callable[[jnp.ndarray], jnp.ndarray]
+    complexity: int = 1
+    feature_indices: Tuple[int, ...] = ()
+    func_type: str = "custom"
+    func_config: Dict[str, Any] = field(default_factory=dict)
+
+    def evaluate(self, X: jnp.ndarray) -> jnp.ndarray:
+        """Evaluate the basis function on input data."""
+        return self.func(X)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary (excluding func)."""
+        return {
+            "name": self.name,
+            "complexity": self.complexity,
+            "feature_indices": self.feature_indices,
+            "func_type": self.func_type,
+            "func_config": self.func_config,
+        }
+
+
+def _safe_log(x: jnp.ndarray) -> jnp.ndarray:
+    """Safe logarithm that handles non-positive values."""
+    return jnp.where(x > 0, jnp.log(jnp.maximum(x, 1e-10)), jnp.nan)
+
+
+def _safe_sqrt(x: jnp.ndarray) -> jnp.ndarray:
+    """Safe square root that handles negative values."""
+    return jnp.where(x >= 0, jnp.sqrt(jnp.maximum(x, 0)), jnp.nan)
+
+
+def _safe_inv(x: jnp.ndarray) -> jnp.ndarray:
+    """Safe inverse that handles zero."""
+    return jnp.where(jnp.abs(x) > 1e-10, 1.0 / x, jnp.nan)
+
+
+def _safe_div(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+    """Safe division that handles zero denominator."""
+    return jnp.where(jnp.abs(y) > 1e-10, x / y, jnp.nan)
+
+
+class BasisLibrary:
+    """
+    Library of candidate basis functions for symbolic regression.
+
+    Generates basis functions up to specified complexity from input features.
+    Supports method chaining for convenient library construction.
+
+    Parameters
+    ----------
+    n_features : int
+        Number of input features.
+    feature_names : list of str, optional
+        Names for each feature. Defaults to ["x0", "x1", ...].
+    feature_bounds : list of tuple, optional
+        Bounds (lower, upper) for each feature. Used for constraint-aware
+        basis generation and adaptive sampling.
+
+    Examples
+    --------
+    >>> library = (BasisLibrary(n_features=2, feature_names=["x", "y"])
+    ...     .add_constant()
+    ...     .add_linear()
+    ...     .add_polynomials(max_degree=3)
+    ...     .add_interactions(max_order=2)
+    ...     .add_transcendental(["log", "exp"])
+    ... )
+    >>> Phi = library.evaluate(X)
+    """
+
+    def __init__(
+        self,
+        n_features: int,
+        feature_names: Optional[List[str]] = None,
+        feature_bounds: Optional[List[Tuple[float, float]]] = None,
+    ):
+        self.n_features = n_features
+        self.feature_names = feature_names or [f"x{i}" for i in range(n_features)]
+        self.feature_bounds = feature_bounds
+        self.basis_functions: List[BasisFunction] = []
+        self._compiled_evaluate: Optional[Callable] = None
+
+        if len(self.feature_names) != n_features:
+            raise ValueError(
+                f"Number of feature names ({len(self.feature_names)}) "
+                f"must match n_features ({n_features})"
+            )
+
+    def add_constant(self) -> BasisLibrary:
+        """Add constant (intercept) term."""
+        self.basis_functions.append(BasisFunction(
+            name="1",
+            func=lambda X: jnp.ones(X.shape[0]),
+            complexity=0,
+            feature_indices=(),
+            func_type="constant",
+            func_config={},
+        ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_linear(self) -> BasisLibrary:
+        """Add linear terms: x_i for each feature."""
+        for i in range(self.n_features):
+            name = self.feature_names[i]
+            # Use default argument to capture i correctly
+            self.basis_functions.append(BasisFunction(
+                name=name,
+                func=partial(lambda X, idx: X[:, idx], idx=i),
+                complexity=1,
+                feature_indices=(i,),
+                func_type="linear",
+                func_config={"feature_index": i},
+            ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_polynomials(self, max_degree: int = 2) -> BasisLibrary:
+        """
+        Add polynomial terms: x_i^d for d in 2..max_degree.
+
+        Parameters
+        ----------
+        max_degree : int
+            Maximum polynomial degree (default 2).
+        """
+        if max_degree < 2:
+            return self
+
+        for i in range(self.n_features):
+            for d in range(2, max_degree + 1):
+                name = f"{self.feature_names[i]}^{d}"
+                self.basis_functions.append(BasisFunction(
+                    name=name,
+                    func=partial(lambda X, idx, deg: X[:, idx] ** deg, idx=i, deg=d),
+                    complexity=d,
+                    feature_indices=(i,),
+                    func_type="polynomial",
+                    func_config={"feature_index": i, "degree": d},
+                ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_interactions(self, max_order: int = 2) -> BasisLibrary:
+        """
+        Add interaction terms: products of distinct features.
+
+        Parameters
+        ----------
+        max_order : int
+            Maximum interaction order (default 2 for pairwise).
+        """
+        for order in range(2, max_order + 1):
+            for combo in itertools.combinations(range(self.n_features), order):
+                name = "*".join(self.feature_names[i] for i in combo)
+                combo_list = list(combo)
+                self.basis_functions.append(BasisFunction(
+                    name=name,
+                    func=partial(
+                        lambda X, indices: jnp.prod(X[:, indices], axis=1),
+                        indices=jnp.array(combo_list),
+                    ),
+                    complexity=order,
+                    feature_indices=tuple(combo),
+                    func_type="interaction",
+                    func_config={"feature_indices": combo_list, "order": order},
+                ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_transcendental(
+        self,
+        funcs: Optional[List[str]] = None,
+        safe: bool = True,
+    ) -> BasisLibrary:
+        """
+        Add transcendental terms: log, exp, sqrt, inv, sin, cos.
+
+        Parameters
+        ----------
+        funcs : list of str, optional
+            Which functions to include. Defaults to ["log", "exp", "sqrt", "inv"].
+        safe : bool
+            If True, use safe versions that return NaN for invalid inputs.
+        """
+        funcs = funcs or ["log", "exp", "sqrt", "inv"]
+
+        # Define function mappings with safe versions
+        transcendental_map = {
+            "log": (_safe_log if safe else jnp.log, "log({})", 2),
+            "exp": (jnp.exp, "exp({})", 2),
+            "sqrt": (_safe_sqrt if safe else jnp.sqrt, "sqrt({})", 2),
+            "inv": (_safe_inv if safe else (lambda x: 1.0 / x), "1/{}", 2),
+            "sin": (jnp.sin, "sin({})", 2),
+            "cos": (jnp.cos, "cos({})", 2),
+            "tan": (jnp.tan, "tan({})", 3),
+            "sinh": (jnp.sinh, "sinh({})", 3),
+            "cosh": (jnp.cosh, "cosh({})", 3),
+            "tanh": (jnp.tanh, "tanh({})", 2),
+            "abs": (jnp.abs, "abs({})", 1),
+            "square": (jnp.square, "({})**2", 2),
+        }
+
+        for i in range(self.n_features):
+            for func_name in funcs:
+                if func_name not in transcendental_map:
+                    raise ValueError(
+                        f"Unknown transcendental function: {func_name}. "
+                        f"Available: {list(transcendental_map.keys())}"
+                    )
+                fn, template, complexity = transcendental_map[func_name]
+                name = template.format(self.feature_names[i])
+                self.basis_functions.append(BasisFunction(
+                    name=name,
+                    func=partial(lambda X, idx, f: f(X[:, idx]), idx=i, f=fn),
+                    complexity=complexity,
+                    feature_indices=(i,),
+                    func_type="transcendental",
+                    func_config={"feature_index": i, "func_name": func_name},
+                ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_ratios(self, safe: bool = True) -> BasisLibrary:
+        """
+        Add ratio terms: x_i / x_j for all distinct pairs.
+
+        Parameters
+        ----------
+        safe : bool
+            If True, use safe division that returns NaN for zero denominator.
+        """
+        for i in range(self.n_features):
+            for j in range(self.n_features):
+                if i != j:
+                    name = f"{self.feature_names[i]}/{self.feature_names[j]}"
+                    if safe:
+                        self.basis_functions.append(BasisFunction(
+                            name=name,
+                            func=partial(
+                                lambda X, num, den: _safe_div(X[:, num], X[:, den]),
+                                num=i, den=j,
+                            ),
+                            complexity=2,
+                            feature_indices=(i, j),
+                            func_type="ratio",
+                            func_config={"numerator_index": i, "denominator_index": j},
+                        ))
+                    else:
+                        self.basis_functions.append(BasisFunction(
+                            name=name,
+                            func=partial(
+                                lambda X, num, den: X[:, num] / X[:, den],
+                                num=i, den=j,
+                            ),
+                            complexity=2,
+                            feature_indices=(i, j),
+                            func_type="ratio",
+                            func_config={"numerator_index": i, "denominator_index": j},
+                        ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_custom(
+        self,
+        name: str,
+        func: Callable[[jnp.ndarray], jnp.ndarray],
+        complexity: int = 3,
+        feature_indices: Optional[Tuple[int, ...]] = None,
+    ) -> BasisLibrary:
+        """
+        Add a custom basis function.
+
+        Parameters
+        ----------
+        name : str
+            Human-readable name.
+        func : callable
+            Function that takes X of shape (n_samples, n_features) and returns
+            array of shape (n_samples,).
+        complexity : int
+            Complexity score for Pareto optimization.
+        feature_indices : tuple of int, optional
+            Indices of features used by this function.
+
+        Notes
+        -----
+        Custom functions cannot be serialized automatically. The library
+        can still be saved, but the custom function will need to be re-added
+        after loading.
+        """
+        self.basis_functions.append(BasisFunction(
+            name=name,
+            func=func,
+            complexity=complexity,
+            feature_indices=feature_indices or (),
+            func_type="custom",
+            func_config={"name": name},
+        ))
+        self._compiled_evaluate = None
+        return self
+
+    def add_polynomial_interactions(
+        self,
+        max_total_degree: int = 3,
+        max_individual_degree: int = 2,
+    ) -> BasisLibrary:
+        """
+        Add polynomial terms with mixed powers: x_i^a * x_j^b * ...
+
+        Parameters
+        ----------
+        max_total_degree : int
+            Maximum sum of all exponents (default 3).
+        max_individual_degree : int
+            Maximum exponent for any single variable (default 2).
+        """
+        # Generate all combinations of exponents
+        for total_deg in range(2, max_total_degree + 1):
+            # Generate partitions of total_deg across n_features
+            for exponents in self._generate_exponent_combinations(
+                self.n_features, total_deg, max_individual_degree
+            ):
+                # Skip if only one variable (handled by add_polynomials)
+                if sum(1 for e in exponents if e > 0) < 2:
+                    continue
+
+                # Build name and function
+                terms = []
+                indices = []
+                for i, exp in enumerate(exponents):
+                    if exp > 0:
+                        indices.append(i)
+                        if exp == 1:
+                            terms.append(self.feature_names[i])
+                        else:
+                            terms.append(f"{self.feature_names[i]}^{exp}")
+
+                name = "*".join(terms)
+                exponents_array = jnp.array(exponents)
+
+                self.basis_functions.append(BasisFunction(
+                    name=name,
+                    func=partial(
+                        lambda X, exp: jnp.prod(X ** exp, axis=1),
+                        exp=exponents_array,
+                    ),
+                    complexity=total_deg,
+                    feature_indices=tuple(indices),
+                    func_type="polynomial_interaction",
+                    func_config={"exponents": list(exponents)},
+                ))
+
+        self._compiled_evaluate = None
+        return self
+
+    def _generate_exponent_combinations(
+        self,
+        n_vars: int,
+        total: int,
+        max_individual: int,
+    ):
+        """Generate all valid exponent combinations."""
+        if n_vars == 1:
+            if total <= max_individual:
+                yield (total,)
+            return
+
+        for exp in range(min(total, max_individual) + 1):
+            for rest in self._generate_exponent_combinations(
+                n_vars - 1, total - exp, max_individual
+            ):
+                yield (exp,) + rest
+
+    def build_default(
+        self,
+        max_poly_degree: int = 3,
+        include_transcendental: bool = True,
+        include_ratios: bool = False,
+    ) -> BasisLibrary:
+        """
+        Build a default library similar to ALAMO's standard set.
+
+        Parameters
+        ----------
+        max_poly_degree : int
+            Maximum polynomial degree.
+        include_transcendental : bool
+            Whether to include transcendental functions.
+        include_ratios : bool
+            Whether to include ratio terms.
+        """
+        self.add_constant()
+        self.add_linear()
+        self.add_polynomials(max_poly_degree)
+        self.add_interactions(max_order=2)
+
+        if include_transcendental:
+            self.add_transcendental()
+        if include_ratios:
+            self.add_ratios()
+
+        return self
+
+    def add_compositions(
+        self,
+        outer_funcs: Optional[List[str]] = None,
+        inner_forms: Optional[List[str]] = None,
+    ) -> BasisLibrary:
+        """
+        Add compositions: outer_func(inner_form).
+
+        Creates functions like log(x*y), exp(x/y), sqrt(x+y), etc.
+
+        Parameters
+        ----------
+        outer_funcs : list of str, optional
+            Outer functions to apply. Defaults to ["log", "exp", "sqrt"].
+        inner_forms : list of str, optional
+            Inner forms: "product", "ratio", "sum", "diff".
+            Defaults to ["product", "ratio"].
+
+        Examples
+        --------
+        >>> library.add_compositions(["log", "exp"], ["product", "ratio"])
+        # Adds: log(x*y), log(x/y), exp(x*y), exp(x/y), etc.
+        """
+        outer_funcs = outer_funcs or ["log", "exp", "sqrt"]
+        inner_forms = inner_forms or ["product", "ratio"]
+
+        func_map = {
+            "log": (_safe_log, "log"),
+            "exp": (jnp.exp, "exp"),
+            "sqrt": (_safe_sqrt, "sqrt"),
+            "abs": (jnp.abs, "abs"),
+            "tanh": (jnp.tanh, "tanh"),
+        }
+
+        for i in range(self.n_features):
+            for j in range(self.n_features):
+                if i >= j and "product" in inner_forms:
+                    continue  # Avoid duplicates for symmetric operations
+                if i == j:
+                    continue
+
+                for outer_name in outer_funcs:
+                    if outer_name not in func_map:
+                        continue
+                    outer_fn, outer_str = func_map[outer_name]
+
+                    for inner_form in inner_forms:
+                        fi, fj = self.feature_names[i], self.feature_names[j]
+
+                        if inner_form == "product":
+                            name = f"{outer_str}({fi}*{fj})"
+                            func = partial(
+                                lambda X, i, j, fn: fn(X[:, i] * X[:, j]),
+                                i=i, j=j, fn=outer_fn
+                            )
+                            complexity = 4
+                        elif inner_form == "ratio":
+                            name = f"{outer_str}({fi}/{fj})"
+                            func = partial(
+                                lambda X, i, j, fn: fn(_safe_div(X[:, i], X[:, j])),
+                                i=i, j=j, fn=outer_fn
+                            )
+                            complexity = 4
+                        elif inner_form == "sum":
+                            name = f"{outer_str}({fi}+{fj})"
+                            func = partial(
+                                lambda X, i, j, fn: fn(X[:, i] + X[:, j]),
+                                i=i, j=j, fn=outer_fn
+                            )
+                            complexity = 3
+                        elif inner_form == "diff":
+                            name = f"{outer_str}({fi}-{fj})"
+                            func = partial(
+                                lambda X, i, j, fn: fn(X[:, i] - X[:, j]),
+                                i=i, j=j, fn=outer_fn
+                            )
+                            complexity = 3
+                        else:
+                            continue
+
+                        self.basis_functions.append(BasisFunction(
+                            name=name,
+                            func=func,
+                            complexity=complexity,
+                            feature_indices=(i, j),
+                            func_type="composition",
+                            func_config={
+                                "outer": outer_name,
+                                "inner": inner_form,
+                                "i": i, "j": j
+                            },
+                        ))
+
+        self._compiled_evaluate = None
+        return self
+
+    def add_rational_forms(
+        self,
+        numerator_degree: int = 1,
+        denominator_degree: int = 1,
+    ) -> BasisLibrary:
+        """
+        Add rational function templates: (a + b*x) / (1 + c*y).
+
+        Common in chemical kinetics (Langmuir-Hinshelwood, Michaelis-Menten).
+
+        Parameters
+        ----------
+        numerator_degree : int
+            Max polynomial degree in numerator.
+        denominator_degree : int
+            Max polynomial degree in denominator.
+
+        Examples
+        --------
+        >>> library.add_rational_forms()
+        # Adds: x/(1+y), x*y/(1+x), x/(1+x+y), etc.
+        """
+        # Single variable rational forms: x/(1+x), x/(1+x^2)
+        for i in range(self.n_features):
+            fi = self.feature_names[i]
+
+            # x / (1 + x)
+            self.basis_functions.append(BasisFunction(
+                name=f"{fi}/(1+{fi})",
+                func=partial(
+                    lambda X, i: X[:, i] / (1 + X[:, i]),
+                    i=i
+                ),
+                complexity=3,
+                feature_indices=(i,),
+                func_type="rational",
+                func_config={"form": "saturation", "i": i},
+            ))
+
+            # x / (1 + x)^2 - derivative of Langmuir
+            self.basis_functions.append(BasisFunction(
+                name=f"{fi}/(1+{fi})^2",
+                func=partial(
+                    lambda X, i: X[:, i] / (1 + X[:, i])**2,
+                    i=i
+                ),
+                complexity=4,
+                feature_indices=(i,),
+                func_type="rational",
+                func_config={"form": "saturation_deriv", "i": i},
+            ))
+
+        # Two-variable rational forms
+        for i in range(self.n_features):
+            for j in range(self.n_features):
+                if i == j:
+                    continue
+
+                fi, fj = self.feature_names[i], self.feature_names[j]
+
+                # x*y / (1 + x) - Langmuir-Hinshelwood
+                self.basis_functions.append(BasisFunction(
+                    name=f"{fi}*{fj}/(1+{fi})",
+                    func=partial(
+                        lambda X, i, j: X[:, i] * X[:, j] / (1 + X[:, i]),
+                        i=i, j=j
+                    ),
+                    complexity=4,
+                    feature_indices=(i, j),
+                    func_type="rational",
+                    func_config={"form": "LH_single", "i": i, "j": j},
+                ))
+
+                # x*y / (1 + x + y) - competitive adsorption
+                self.basis_functions.append(BasisFunction(
+                    name=f"{fi}*{fj}/(1+{fi}+{fj})",
+                    func=partial(
+                        lambda X, i, j: X[:, i] * X[:, j] / (1 + X[:, i] + X[:, j]),
+                        i=i, j=j
+                    ),
+                    complexity=5,
+                    feature_indices=(i, j),
+                    func_type="rational",
+                    func_config={"form": "competitive", "i": i, "j": j},
+                ))
+
+                # x / (1 + y) - inhibition
+                self.basis_functions.append(BasisFunction(
+                    name=f"{fi}/(1+{fj})",
+                    func=partial(
+                        lambda X, i, j: X[:, i] / (1 + X[:, j]),
+                        i=i, j=j
+                    ),
+                    complexity=3,
+                    feature_indices=(i, j),
+                    func_type="rational",
+                    func_config={"form": "inhibition", "i": i, "j": j},
+                ))
+
+        self._compiled_evaluate = None
+        return self
+
+    def add_power_laws(
+        self,
+        exponents: Optional[List[float]] = None,
+    ) -> BasisLibrary:
+        """
+        Add power law terms with fractional exponents.
+
+        Common in empirical correlations (Nu = Re^0.8 * Pr^0.33).
+
+        Parameters
+        ----------
+        exponents : list of float, optional
+            Exponents to use. Defaults to [0.25, 0.33, 0.5, 0.67, 0.75, 1.5, 2.0].
+        """
+        exponents = exponents or [0.25, 0.33, 0.5, 0.67, 0.75, 1.5, 2.0]
+
+        for i in range(self.n_features):
+            fi = self.feature_names[i]
+
+            for exp in exponents:
+                # Skip integer exponents (handled by add_polynomials)
+                if exp == int(exp):
+                    continue
+
+                # Format exponent nicely
+                if exp == 0.5:
+                    name = f"sqrt({fi})"
+                elif exp == 0.33 or abs(exp - 1/3) < 0.01:
+                    name = f"{fi}^(1/3)"
+                elif exp == 0.25:
+                    name = f"{fi}^(1/4)"
+                elif exp == 0.67 or abs(exp - 2/3) < 0.01:
+                    name = f"{fi}^(2/3)"
+                elif exp == 0.75:
+                    name = f"{fi}^(3/4)"
+                else:
+                    name = f"{fi}^{exp}"
+
+                self.basis_functions.append(BasisFunction(
+                    name=name,
+                    func=partial(
+                        lambda X, i, e: jnp.power(jnp.maximum(X[:, i], 1e-10), e),
+                        i=i, e=exp
+                    ),
+                    complexity=2,
+                    feature_indices=(i,),
+                    func_type="power",
+                    func_config={"feature_index": i, "exponent": exp},
+                ))
+
+        self._compiled_evaluate = None
+        return self
+
+    def expand_sisso_style(
+        self,
+        operations: Optional[List[str]] = None,
+        max_depth: int = 2,
+    ) -> BasisLibrary:
+        """
+        SISSO-style recursive feature expansion.
+
+        Iteratively applies operations to existing features to create
+        new composite features.
+
+        Parameters
+        ----------
+        operations : list of str, optional
+            Operations to apply: "add", "sub", "mul", "div", "exp", "log", "sqrt", "sq", "inv".
+            Defaults to ["mul", "div", "sq", "sqrt"].
+        max_depth : int
+            Maximum recursion depth.
+
+        Notes
+        -----
+        This can create a very large library. Use with caution.
+        """
+        operations = operations or ["mul", "div", "sq", "sqrt"]
+
+        # Start with linear features
+        current_features = []
+        for i in range(self.n_features):
+            current_features.append({
+                "name": self.feature_names[i],
+                "func": partial(lambda X, i: X[:, i], i=i),
+                "complexity": 1,
+                "indices": (i,),
+            })
+
+        # Iteratively expand
+        for depth in range(max_depth):
+            new_features = []
+
+            # Unary operations on current features
+            for feat in current_features:
+                if "sq" in operations:
+                    new_features.append({
+                        "name": f"({feat['name']})^2",
+                        "func": partial(lambda X, f: f(X)**2, f=feat["func"]),
+                        "complexity": feat["complexity"] + 1,
+                        "indices": feat["indices"],
+                    })
+
+                if "sqrt" in operations:
+                    new_features.append({
+                        "name": f"sqrt({feat['name']})",
+                        "func": partial(lambda X, f: _safe_sqrt(f(X)), f=feat["func"]),
+                        "complexity": feat["complexity"] + 1,
+                        "indices": feat["indices"],
+                    })
+
+                if "inv" in operations:
+                    new_features.append({
+                        "name": f"1/({feat['name']})",
+                        "func": partial(lambda X, f: _safe_inv(f(X)), f=feat["func"]),
+                        "complexity": feat["complexity"] + 1,
+                        "indices": feat["indices"],
+                    })
+
+                if "exp" in operations:
+                    new_features.append({
+                        "name": f"exp({feat['name']})",
+                        "func": partial(lambda X, f: jnp.exp(f(X)), f=feat["func"]),
+                        "complexity": feat["complexity"] + 2,
+                        "indices": feat["indices"],
+                    })
+
+                if "log" in operations:
+                    new_features.append({
+                        "name": f"log({feat['name']})",
+                        "func": partial(lambda X, f: _safe_log(f(X)), f=feat["func"]),
+                        "complexity": feat["complexity"] + 2,
+                        "indices": feat["indices"],
+                    })
+
+            # Binary operations between features
+            for fi, feat_i in enumerate(current_features):
+                for fj, feat_j in enumerate(current_features):
+                    if fi >= fj:
+                        continue
+
+                    if "mul" in operations:
+                        new_features.append({
+                            "name": f"({feat_i['name']})*({feat_j['name']})",
+                            "func": partial(
+                                lambda X, f1, f2: f1(X) * f2(X),
+                                f1=feat_i["func"], f2=feat_j["func"]
+                            ),
+                            "complexity": feat_i["complexity"] + feat_j["complexity"],
+                            "indices": tuple(set(feat_i["indices"]) | set(feat_j["indices"])),
+                        })
+
+                    if "div" in operations:
+                        new_features.append({
+                            "name": f"({feat_i['name']})/({feat_j['name']})",
+                            "func": partial(
+                                lambda X, f1, f2: _safe_div(f1(X), f2(X)),
+                                f1=feat_i["func"], f2=feat_j["func"]
+                            ),
+                            "complexity": feat_i["complexity"] + feat_j["complexity"] + 1,
+                            "indices": tuple(set(feat_i["indices"]) | set(feat_j["indices"])),
+                        })
+
+                    if "add" in operations:
+                        new_features.append({
+                            "name": f"({feat_i['name']})+({feat_j['name']})",
+                            "func": partial(
+                                lambda X, f1, f2: f1(X) + f2(X),
+                                f1=feat_i["func"], f2=feat_j["func"]
+                            ),
+                            "complexity": feat_i["complexity"] + feat_j["complexity"],
+                            "indices": tuple(set(feat_i["indices"]) | set(feat_j["indices"])),
+                        })
+
+                    if "sub" in operations:
+                        new_features.append({
+                            "name": f"({feat_i['name']})-({feat_j['name']})",
+                            "func": partial(
+                                lambda X, f1, f2: f1(X) - f2(X),
+                                f1=feat_i["func"], f2=feat_j["func"]
+                            ),
+                            "complexity": feat_i["complexity"] + feat_j["complexity"],
+                            "indices": tuple(set(feat_i["indices"]) | set(feat_j["indices"])),
+                        })
+
+            current_features = new_features
+
+        # Add all generated features to library
+        seen_names = set(self.names)
+        for feat in current_features:
+            if feat["name"] not in seen_names:
+                self.basis_functions.append(BasisFunction(
+                    name=feat["name"],
+                    func=feat["func"],
+                    complexity=feat["complexity"],
+                    feature_indices=feat["indices"],
+                    func_type="sisso",
+                    func_config={},
+                ))
+                seen_names.add(feat["name"])
+
+        self._compiled_evaluate = None
+        return self
+
+    def evaluate(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Evaluate all basis functions on input data.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            Input array of shape (n_samples, n_features).
+
+        Returns
+        -------
+        Phi : jnp.ndarray
+            Design matrix of shape (n_samples, n_basis).
+        """
+        if len(self.basis_functions) == 0:
+            raise ValueError("No basis functions defined. Add some first.")
+
+        X = jnp.atleast_2d(X)
+        if X.shape[1] != self.n_features:
+            raise ValueError(
+                f"Expected {self.n_features} features, got {X.shape[1]}"
+            )
+
+        columns = [bf.func(X) for bf in self.basis_functions]
+        return jnp.column_stack(columns)
+
+    def evaluate_subset(
+        self,
+        X: jnp.ndarray,
+        indices: Union[List[int], jnp.ndarray],
+    ) -> jnp.ndarray:
+        """
+        Evaluate a subset of basis functions.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            Input array of shape (n_samples, n_features).
+        indices : array-like
+            Indices of basis functions to evaluate.
+
+        Returns
+        -------
+        Phi : jnp.ndarray
+            Design matrix of shape (n_samples, len(indices)).
+        """
+        X = jnp.atleast_2d(X)
+        columns = [self.basis_functions[i].func(X) for i in indices]
+        return jnp.column_stack(columns)
+
+    @property
+    def names(self) -> List[str]:
+        """List of basis function names."""
+        return [bf.name for bf in self.basis_functions]
+
+    @property
+    def complexities(self) -> jnp.ndarray:
+        """Array of complexity scores."""
+        return jnp.array([bf.complexity for bf in self.basis_functions])
+
+    def __len__(self) -> int:
+        """Number of basis functions in the library."""
+        return len(self.basis_functions)
+
+    def __repr__(self) -> str:
+        return (
+            f"BasisLibrary(n_features={self.n_features}, "
+            f"n_basis={len(self)}, "
+            f"feature_names={self.feature_names})"
+        )
+
+    def summary(self) -> str:
+        """Return a summary of the library contents."""
+        lines = [
+            f"BasisLibrary with {len(self)} basis functions:",
+            f"  Features: {self.feature_names}",
+            "",
+            "  Basis functions:",
+        ]
+        for i, bf in enumerate(self.basis_functions):
+            lines.append(f"    [{i:3d}] {bf.name} (complexity={bf.complexity})")
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize library configuration to dictionary.
+
+        Notes
+        -----
+        Custom functions are not fully serializable. The library config
+        is saved, but custom functions will need to be re-added manually
+        after loading.
+        """
+        return {
+            "n_features": self.n_features,
+            "feature_names": self.feature_names,
+            "feature_bounds": self.feature_bounds,
+            "basis_functions": [bf.to_dict() for bf in self.basis_functions],
+        }
+
+    @classmethod
+    def from_dict(cls, config: Dict[str, Any]) -> BasisLibrary:
+        """
+        Reconstruct library from configuration dictionary.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration from to_dict().
+
+        Returns
+        -------
+        library : BasisLibrary
+            Reconstructed library. Custom functions will raise an error
+            and need to be re-added manually.
+        """
+        library = cls(
+            n_features=config["n_features"],
+            feature_names=config["feature_names"],
+            feature_bounds=config.get("feature_bounds"),
+        )
+
+        for bf_config in config["basis_functions"]:
+            func_type = bf_config["func_type"]
+            fc = bf_config["func_config"]
+
+            if func_type == "constant":
+                library.add_constant()
+            elif func_type == "linear":
+                # Add specific linear term
+                i = fc["feature_index"]
+                library.basis_functions.append(BasisFunction(
+                    name=bf_config["name"],
+                    func=partial(lambda X, idx: X[:, idx], idx=i),
+                    complexity=bf_config["complexity"],
+                    feature_indices=(i,),
+                    func_type="linear",
+                    func_config=fc,
+                ))
+            elif func_type == "polynomial":
+                i = fc["feature_index"]
+                d = fc["degree"]
+                library.basis_functions.append(BasisFunction(
+                    name=bf_config["name"],
+                    func=partial(lambda X, idx, deg: X[:, idx] ** deg, idx=i, deg=d),
+                    complexity=bf_config["complexity"],
+                    feature_indices=(i,),
+                    func_type="polynomial",
+                    func_config=fc,
+                ))
+            elif func_type == "interaction":
+                indices = jnp.array(fc["feature_indices"])
+                library.basis_functions.append(BasisFunction(
+                    name=bf_config["name"],
+                    func=partial(
+                        lambda X, idx: jnp.prod(X[:, idx], axis=1),
+                        idx=indices,
+                    ),
+                    complexity=bf_config["complexity"],
+                    feature_indices=tuple(fc["feature_indices"]),
+                    func_type="interaction",
+                    func_config=fc,
+                ))
+            elif func_type == "transcendental":
+                library._add_transcendental_from_config(bf_config, fc)
+            elif func_type == "ratio":
+                num, den = fc["numerator_index"], fc["denominator_index"]
+                library.basis_functions.append(BasisFunction(
+                    name=bf_config["name"],
+                    func=partial(
+                        lambda X, n, d: _safe_div(X[:, n], X[:, d]),
+                        n=num, d=den,
+                    ),
+                    complexity=bf_config["complexity"],
+                    feature_indices=(num, den),
+                    func_type="ratio",
+                    func_config=fc,
+                ))
+            elif func_type == "custom":
+                raise ValueError(
+                    f"Cannot deserialize custom function '{bf_config['name']}'. "
+                    "Re-add it manually using add_custom()."
+                )
+            else:
+                raise ValueError(f"Unknown function type: {func_type}")
+
+        return library
+
+    def _add_transcendental_from_config(
+        self,
+        bf_config: Dict[str, Any],
+        fc: Dict[str, Any],
+    ) -> None:
+        """Helper to add transcendental function from config."""
+        i = fc["feature_index"]
+        func_name = fc["func_name"]
+
+        transcendental_map = {
+            "log": _safe_log,
+            "exp": jnp.exp,
+            "sqrt": _safe_sqrt,
+            "inv": _safe_inv,
+            "sin": jnp.sin,
+            "cos": jnp.cos,
+            "tan": jnp.tan,
+            "sinh": jnp.sinh,
+            "cosh": jnp.cosh,
+            "tanh": jnp.tanh,
+            "abs": jnp.abs,
+            "square": jnp.square,
+        }
+
+        if func_name not in transcendental_map:
+            raise ValueError(f"Unknown transcendental function: {func_name}")
+
+        fn = transcendental_map[func_name]
+        self.basis_functions.append(BasisFunction(
+            name=bf_config["name"],
+            func=partial(lambda X, idx, f: f(X[:, idx]), idx=i, f=fn),
+            complexity=bf_config["complexity"],
+            feature_indices=(i,),
+            func_type="transcendental",
+            func_config=fc,
+        ))
+
+    def save(self, filepath: str) -> None:
+        """
+        Save library configuration to JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to save the configuration.
+        """
+        with open(filepath, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str) -> BasisLibrary:
+        """
+        Load library from JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the configuration file.
+        """
+        with open(filepath, "r") as f:
+            config = json.load(f)
+        return cls.from_dict(config)
+
+    def filter_by_complexity(
+        self,
+        max_complexity: Optional[int] = None,
+        min_complexity: Optional[int] = None,
+    ) -> List[int]:
+        """
+        Get indices of basis functions within complexity bounds.
+
+        Parameters
+        ----------
+        max_complexity : int, optional
+            Maximum allowed complexity.
+        min_complexity : int, optional
+            Minimum required complexity.
+
+        Returns
+        -------
+        indices : list of int
+            Indices of basis functions meeting the criteria.
+        """
+        indices = []
+        for i, bf in enumerate(self.basis_functions):
+            if max_complexity is not None and bf.complexity > max_complexity:
+                continue
+            if min_complexity is not None and bf.complexity < min_complexity:
+                continue
+            indices.append(i)
+        return indices
+
+    def filter_by_features(
+        self,
+        required_features: Optional[List[int]] = None,
+        excluded_features: Optional[List[int]] = None,
+    ) -> List[int]:
+        """
+        Get indices of basis functions using specified features.
+
+        Parameters
+        ----------
+        required_features : list of int, optional
+            Only include basis functions using these features.
+        excluded_features : list of int, optional
+            Exclude basis functions using these features.
+
+        Returns
+        -------
+        indices : list of int
+            Indices of basis functions meeting the criteria.
+        """
+        indices = []
+        required = set(required_features) if required_features else None
+        excluded = set(excluded_features) if excluded_features else set()
+
+        for i, bf in enumerate(self.basis_functions):
+            features_used = set(bf.feature_indices)
+
+            if excluded and features_used & excluded:
+                continue
+            if required is not None and not features_used.issubset(required):
+                continue
+            indices.append(i)
+
+        return indices
