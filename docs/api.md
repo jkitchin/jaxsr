@@ -62,6 +62,8 @@ Main symbolic regression model with scikit-learn interface.
 - `complexity_`: Total complexity score
 - `metrics_`: Dictionary of evaluation metrics
 - `pareto_front_`: Pareto-optimal models
+- `sigma_`: Estimated noise std dev `sqrt(SSR/(n-p))`
+- `covariance_matrix_`: Coefficient covariance matrix `s^2 * (Phi^T Phi)^{-1}`
 
 **Methods:**
 
@@ -71,6 +73,12 @@ Main symbolic regression model with scikit-learn interface.
 | `predict(X)` | Make predictions |
 | `score(X, y)` | Compute R² score |
 | `update(X_new, y_new)` | Update with new data |
+| `predict_interval(X, alpha)` | Prediction intervals for new observations |
+| `confidence_band(X, alpha)` | Confidence band on mean response |
+| `coefficient_intervals(alpha)` | CIs for all coefficients |
+| `predict_ensemble(X)` | Pareto-front ensemble predictions |
+| `predict_bma(X, criterion, alpha)` | Bayesian Model Averaging prediction |
+| `predict_conformal(X, alpha, method)` | Conformal prediction intervals |
 | `to_sympy()` | Export to SymPy |
 | `to_latex()` | Export to LaTeX |
 | `to_callable()` | Export to NumPy function |
@@ -177,6 +185,74 @@ from jaxsr import (
 )
 ```
 
+## Uncertainty Quantification
+
+### Core Functions
+
+```python
+from jaxsr import (
+    compute_unbiased_variance,    # s^2 = SSR/(n-p)
+    compute_coeff_covariance,     # Cov(beta) = s^2 * (Phi^T Phi)^{-1}
+    coefficient_intervals,         # t-based CIs for coefficients
+    prediction_interval,           # Prediction + confidence intervals
+    ensemble_predict,              # Pareto-front ensemble predictions
+)
+```
+
+### Bayesian Model Averaging
+
+```python
+from jaxsr import BayesianModelAverage
+```
+
+```python
+class BayesianModelAverage(model, criterion="bic", use_pareto=True, top_k=None)
+```
+
+IC-weighted model averaging across multiple models.
+
+**Properties:**
+- `weights`: dict mapping expression string to weight
+- `expressions`: list of model expressions
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `predict(X)` | Returns `(y_mean, y_std)` — BMA mean and total std |
+| `predict_interval(X, alpha)` | Returns `(y_pred, lower, upper)` — Gaussian approximation intervals |
+
+### Conformal Prediction
+
+```python
+from jaxsr import conformal_predict_split, conformal_predict_jackknife_plus
+```
+
+| Function | Description |
+|----------|-------------|
+| `conformal_predict_split(model, X_cal, y_cal, X_new, alpha)` | Split conformal using held-out calibration set |
+| `conformal_predict_jackknife_plus(model, X_new, alpha)` | Jackknife+ using LOO residuals (no calibration set needed) |
+
+Both return a dict with keys `y_pred`, `lower`, `upper`.
+
+### Bootstrap Methods
+
+```python
+from jaxsr import bootstrap_coefficients, bootstrap_predict, bootstrap_model_selection
+```
+
+| Function | Description |
+|----------|-------------|
+| `bootstrap_coefficients(model, n_bootstrap, alpha, seed)` | Residual bootstrap for coefficient CIs |
+| `bootstrap_predict(model, X_new, n_bootstrap, alpha, seed)` | Bootstrap prediction intervals |
+| `bootstrap_model_selection(model, X, y, n_bootstrap, seed)` | Pairs bootstrap for model selection stability |
+
+`bootstrap_coefficients` returns a dict with keys: `coefficients`, `mean`, `std`, `lower`, `upper`, `names`.
+
+`bootstrap_predict` returns a dict with keys: `y_pred`, `y_mean`, `y_std`, `lower`, `upper`.
+
+`bootstrap_model_selection` returns a dict with keys: `feature_frequencies`, `stability_score`, `expressions`.
+
 ## Plotting Functions
 
 ```python
@@ -190,5 +266,17 @@ from jaxsr.plotting import (
     plot_prediction_surface,
     plot_comparison,
     plot_learning_curve,
+    # Uncertainty Quantification plots
+    plot_prediction_intervals,
+    plot_coefficient_intervals,
+    plot_bma_weights,
 )
 ```
+
+### UQ Plots
+
+| Function | Description |
+|----------|-------------|
+| `plot_prediction_intervals(model, X, y, alpha, sort_by, ax, figsize)` | Fan chart with confidence band (inner) and prediction interval (outer) |
+| `plot_coefficient_intervals(model, alpha, ax, figsize)` | Forest plot with horizontal error bars for coefficient CIs |
+| `plot_bma_weights(model, criterion, ax, figsize)` | Horizontal bar chart of BMA model weights |

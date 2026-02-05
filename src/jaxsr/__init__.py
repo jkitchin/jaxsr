@@ -42,6 +42,21 @@ from .metrics import (
     cross_validate,
 )
 
+# Uncertainty Quantification
+from .uncertainty import (
+    compute_unbiased_variance,
+    compute_coeff_covariance,
+    coefficient_intervals,
+    prediction_interval,
+    ensemble_predict,
+    BayesianModelAverage,
+    conformal_predict_split,
+    conformal_predict_jackknife_plus,
+    bootstrap_coefficients,
+    bootstrap_predict,
+    bootstrap_model_selection,
+)
+
 # Simplification
 from .simplify import simplify_expression, SimplificationResult
 
@@ -89,6 +104,18 @@ __all__ = [
     "compute_r2",
     "compute_all_metrics",
     "cross_validate",
+    # Uncertainty Quantification
+    "compute_unbiased_variance",
+    "compute_coeff_covariance",
+    "coefficient_intervals",
+    "prediction_interval",
+    "ensemble_predict",
+    "BayesianModelAverage",
+    "conformal_predict_split",
+    "conformal_predict_jackknife_plus",
+    "bootstrap_coefficients",
+    "bootstrap_predict",
+    "bootstrap_model_selection",
     # Simplification
     "simplify_expression",
     "SimplificationResult",

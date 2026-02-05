@@ -12,6 +12,7 @@ Key features:
 
 - **Flexible Basis Functions**: Build custom libraries of candidate functions
 - **Multiple Selection Strategies**: Choose from greedy, exhaustive, or LASSO-based methods
+- **Uncertainty Quantification**: Prediction intervals, Bayesian Model Averaging, conformal prediction, and bootstrap methods
 - **Physical Constraints**: Incorporate domain knowledge through constraints
 - **JAX-Powered**: GPU acceleration, JIT compilation, automatic differentiation
 - **Scikit-learn Compatible**: Familiar fit/predict interface
@@ -90,6 +91,7 @@ JAXSR is ideal when you:
 |---------|-------|-------|------|-----|
 | Open Source | ✓ | ✗ | ✓ | ✓ |
 | Deterministic | ✓ | ✓ | ✗ | ✗ |
+| UQ / Intervals | ✓ | Limited | ✗ | ✗ |
 | Constraints | ✓ | ✓ | Limited | Limited |
 | GPU Support | ✓ | ✗ | ✓ | Varies |
 

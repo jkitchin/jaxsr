@@ -15,6 +15,7 @@ import numpy as np
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
     from .selection import SelectionResult
+    from .uncertainty import BayesianModelAverage
 
 
 def plot_pareto_front(
@@ -681,3 +682,207 @@ def plot_learning_curve(
     ax.grid(True, alpha=0.3)
 
     return fig
+
+
+# =============================================================================
+# Uncertainty Quantification Plots
+# =============================================================================
+
+
+def plot_prediction_intervals(
+    model: SymbolicRegressor,
+    X: jnp.ndarray,
+    y: Optional[jnp.ndarray] = None,
+    alpha: float = 0.05,
+    sort_by: int = 0,
+    ax: Optional[plt.Axes] = None,
+    figsize: Tuple[int, int] = (10, 6),
+) -> plt.Axes:
+    """
+    Fan chart: inner band = confidence on E[y|x], outer band = prediction interval.
+
+    For 1D data (single feature), plots against the feature. For multi-feature
+    data, sorts by the specified feature index.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        Fitted model.
+    X : jnp.ndarray
+        Input data for plotting.
+    y : jnp.ndarray, optional
+        Observed values to overlay.
+    alpha : float
+        Significance level (default 0.05 for 95% intervals).
+    sort_by : int
+        Feature index to sort/plot against on x-axis.
+    ax : plt.Axes, optional
+        Axes to plot on. If None, creates new figure.
+    figsize : tuple
+        Figure size if creating new figure.
+
+    Returns
+    -------
+    ax : plt.Axes
+    """
+    from .uncertainty import prediction_interval
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    X = jnp.atleast_2d(jnp.asarray(X))
+    x_vals = np.array(X[:, sort_by])
+    sort_idx = np.argsort(x_vals)
+    x_sorted = x_vals[sort_idx]
+
+    Phi_train = model._get_Phi_train()
+    Phi_new = model.basis_library.evaluate_subset(X, model._result.selected_indices)
+
+    result = prediction_interval(
+        Phi_train, model._y_train, model._result.coefficients,
+        Phi_new, alpha,
+    )
+
+    y_pred = np.array(result["y_pred"])[sort_idx]
+    pred_lower = np.array(result["pred_lower"])[sort_idx]
+    pred_upper = np.array(result["pred_upper"])[sort_idx]
+    conf_lower = np.array(result["conf_lower"])[sort_idx]
+    conf_upper = np.array(result["conf_upper"])[sort_idx]
+
+    # Outer band: prediction interval
+    ax.fill_between(
+        x_sorted, pred_lower, pred_upper,
+        alpha=0.15, color='steelblue', label=f'{int((1-alpha)*100)}% Prediction'
+    )
+    # Inner band: confidence band
+    ax.fill_between(
+        x_sorted, conf_lower, conf_upper,
+        alpha=0.3, color='steelblue', label=f'{int((1-alpha)*100)}% Confidence'
+    )
+    # Mean prediction
+    ax.plot(x_sorted, y_pred, '-', color='steelblue', linewidth=2, label='Prediction')
+
+    # Observed data
+    if y is not None:
+        y_arr = np.array(y)
+        ax.scatter(
+            x_vals[sort_idx], y_arr[sort_idx],
+            c='black', s=20, alpha=0.6, zorder=5, label='Observed'
+        )
+
+    feature_name = model.basis_library.feature_names[sort_by]
+    ax.set_xlabel(feature_name)
+    ax.set_ylabel('y')
+    ax.set_title('Prediction Intervals')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    return ax
+
+
+def plot_coefficient_intervals(
+    model: SymbolicRegressor,
+    alpha: float = 0.05,
+    ax: Optional[plt.Axes] = None,
+    figsize: Tuple[int, int] = (8, 5),
+) -> plt.Axes:
+    """
+    Forest plot: horizontal error bars for each coefficient CI, vertical line at 0.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        Fitted model.
+    alpha : float
+        Significance level.
+    ax : plt.Axes, optional
+        Axes to plot on.
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    ax : plt.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    intervals = model.coefficient_intervals(alpha)
+    names = list(intervals.keys())
+    estimates = [intervals[n][0] for n in names]
+    lowers = [intervals[n][1] for n in names]
+    uppers = [intervals[n][2] for n in names]
+
+    y_pos = np.arange(len(names))
+    errors = np.array([[est - lo, hi - est] for est, lo, hi in zip(estimates, lowers, uppers)]).T
+
+    ax.errorbar(
+        estimates, y_pos, xerr=errors,
+        fmt='o', color='steelblue', ecolor='steelblue',
+        elinewidth=2, capsize=4, markersize=6,
+    )
+    ax.axvline(x=0, color='grey', linestyle='--', linewidth=0.8)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(names)
+    ax.set_xlabel('Coefficient Value')
+    ax.set_title(f'{int((1-alpha)*100)}% Coefficient Confidence Intervals')
+    ax.grid(True, alpha=0.3, axis='x')
+
+    return ax
+
+
+def plot_bma_weights(
+    model: SymbolicRegressor,
+    criterion: str = "bic",
+    ax: Optional[plt.Axes] = None,
+    figsize: Tuple[int, int] = (8, 5),
+    max_label_length: int = 50,
+) -> plt.Axes:
+    """
+    Horizontal bar chart of BMA model weights with expression labels.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        Fitted model.
+    criterion : str
+        IC for computing weights.
+    ax : plt.Axes, optional
+        Axes to plot on.
+    figsize : tuple
+        Figure size.
+    max_label_length : int
+        Maximum expression label length.
+
+    Returns
+    -------
+    ax : plt.Axes
+    """
+    from .uncertainty import BayesianModelAverage
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    bma = BayesianModelAverage(model, criterion=criterion)
+    weights = bma.weights
+
+    # Sort by weight
+    sorted_items = sorted(weights.items(), key=lambda x: x[1], reverse=True)
+    labels = []
+    values = []
+    for expr, w in sorted_items:
+        label = expr if len(expr) <= max_label_length else expr[:max_label_length-3] + "..."
+        labels.append(label)
+        values.append(w)
+
+    y_pos = np.arange(len(labels))
+    ax.barh(y_pos, values, color='steelblue', alpha=0.7)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xlabel('BMA Weight')
+    ax.set_title(f'Bayesian Model Average Weights ({criterion.upper()})')
+    ax.grid(True, alpha=0.3, axis='x')
+    ax.invert_yaxis()
+
+    return ax

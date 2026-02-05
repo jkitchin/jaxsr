@@ -361,3 +361,69 @@ class TestSymPyExport:
         latex = model.to_latex()
         assert isinstance(latex, str)
         assert len(latex) > 0
+
+
+class TestConstrainedRegressor:
+    """Integration tests for constrained fitting through SymbolicRegressor."""
+
+    def test_monotonic_regressor(self):
+        """End-to-end monotonic constraint through SymbolicRegressor."""
+        np.random.seed(42)
+        # Data: y = -x^2 + 4x (peaks at x=2)
+        X = np.linspace(0, 4, 80).reshape(-1, 1)
+        y = -X[:, 0] ** 2 + 4 * X[:, 0]
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+
+        constraints = Constraints().add_monotonic("x", direction="increasing", hard=True)
+
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=4,
+            constraints=constraints,
+        )
+        model.fit(jnp.array(X), jnp.array(y))
+
+        # Verify monotonicity on test grid
+        X_test = np.linspace(0, 4, 100).reshape(-1, 1)
+        y_pred = np.array(model.predict(jnp.array(X_test)))
+        diffs = np.diff(y_pred)
+        assert np.all(diffs >= -1e-2), (
+            f"Regressor not monotonic: min diff = {diffs.min()}"
+        )
+
+    def test_convex_regressor(self):
+        """End-to-end convexity constraint through SymbolicRegressor."""
+        np.random.seed(42)
+        # Data: y = -x^2 (concave), constrain to convex
+        X = np.linspace(-2, 2, 80).reshape(-1, 1)
+        y = -X[:, 0] ** 2
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+
+        constraints = Constraints().add_convex("x", hard=True)
+
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=4,
+            constraints=constraints,
+        )
+        model.fit(jnp.array(X), jnp.array(y))
+
+        # Verify convexity: second differences should be >= 0
+        X_test = np.linspace(-2, 2, 100).reshape(-1, 1)
+        y_pred = np.array(model.predict(jnp.array(X_test)))
+        second_diffs = np.diff(y_pred, n=2)
+        assert np.all(second_diffs >= -1e-2), (
+            f"Regressor not convex: min second diff = {second_diffs.min()}"
+        )

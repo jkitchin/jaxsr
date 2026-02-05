@@ -25,6 +25,18 @@ from .selection import (
     fit_subset,
     select_features,
 )
+from .uncertainty import (
+    BayesianModelAverage,
+    bootstrap_coefficients,
+    bootstrap_predict,
+    coefficient_intervals as _coefficient_intervals,
+    compute_coeff_covariance,
+    compute_unbiased_variance,
+    conformal_predict_jackknife_plus,
+    conformal_predict_split,
+    ensemble_predict,
+    prediction_interval as _prediction_interval,
+)
 from .utils import build_expression_string
 
 
@@ -276,6 +288,8 @@ class SymbolicRegressor:
             basis_names=basis_names_subset,
             feature_names=self.basis_library.feature_names,
             X=X,
+            basis_library=self.basis_library,
+            selected_indices=indices,
         )
 
         # Update result
@@ -334,6 +348,247 @@ class SymbolicRegressor:
         ss_tot = jnp.sum((y - jnp.mean(y)) ** 2)
         return float(1 - ss_res / (ss_tot + 1e-10))
 
+    # =================================================================
+    # Uncertainty Quantification
+    # =================================================================
+
+    def _get_Phi_train(self) -> jnp.ndarray:
+        """Get the training design matrix for the selected features."""
+        self._check_is_fitted()
+        return self.basis_library.evaluate_subset(
+            self._X_train, self._result.selected_indices
+        )
+
+    def _warn_if_constrained_or_regularized(self):
+        """Emit a warning if constraints or regularization are active."""
+        if self.constraints is not None:
+            warnings.warn(
+                "Constraints are active. Classical OLS intervals may not be "
+                "valid. Consider using bootstrap methods instead.",
+                stacklevel=3,
+            )
+        if self.regularization is not None and self.regularization > 0:
+            warnings.warn(
+                "Regularization is active. Classical OLS intervals may not be "
+                "valid. Consider using bootstrap methods instead.",
+                stacklevel=3,
+            )
+
+    @property
+    def sigma_(self) -> float:
+        """
+        Estimated noise standard deviation: sqrt(SSR / (n - p)).
+
+        Returns
+        -------
+        sigma : float
+            Noise standard deviation estimate.
+        """
+        self._check_is_fitted()
+        self._warn_if_constrained_or_regularized()
+        Phi = self._get_Phi_train()
+        sigma_sq = compute_unbiased_variance(Phi, self._y_train, self._result.coefficients)
+        return float(jnp.sqrt(sigma_sq))
+
+    @property
+    def covariance_matrix_(self) -> jnp.ndarray:
+        """
+        Coefficient covariance matrix: s^2 * (Phi^T Phi)^{-1}.
+
+        Returns
+        -------
+        cov : jnp.ndarray
+            Covariance matrix of shape (p, p).
+        """
+        self._check_is_fitted()
+        self._warn_if_constrained_or_regularized()
+        Phi = self._get_Phi_train()
+        sigma_sq = compute_unbiased_variance(Phi, self._y_train, self._result.coefficients)
+        return compute_coeff_covariance(Phi, sigma_sq)
+
+    def coefficient_intervals(self, alpha: float = 0.05) -> Dict[str, tuple]:
+        """
+        Confidence intervals for all coefficients.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance level (default 0.05 for 95% CIs).
+
+        Returns
+        -------
+        intervals : dict
+            {name: (estimate, lower, upper, se)} for each coefficient.
+        """
+        self._check_is_fitted()
+        self._warn_if_constrained_or_regularized()
+        Phi = self._get_Phi_train()
+        return _coefficient_intervals(
+            Phi, self._y_train, self._result.coefficients,
+            self._result.selected_names, alpha,
+        )
+
+    def predict_interval(
+        self, X: jnp.ndarray, alpha: float = 0.05
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """
+        Prediction intervals for new observations.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            New input data of shape (n_samples, n_features).
+        alpha : float
+            Significance level (default 0.05 for 95% intervals).
+
+        Returns
+        -------
+        y_pred : jnp.ndarray
+            Predicted values.
+        lower : jnp.ndarray
+            Lower prediction interval bound.
+        upper : jnp.ndarray
+            Upper prediction interval bound.
+        """
+        self._check_is_fitted()
+        self._warn_if_constrained_or_regularized()
+        X = jnp.atleast_2d(jnp.asarray(X))
+        Phi_train = self._get_Phi_train()
+        Phi_new = self.basis_library.evaluate_subset(X, self._result.selected_indices)
+        result = _prediction_interval(
+            Phi_train, self._y_train, self._result.coefficients,
+            Phi_new, alpha,
+        )
+        return result["y_pred"], result["pred_lower"], result["pred_upper"]
+
+    def confidence_band(
+        self, X: jnp.ndarray, alpha: float = 0.05
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """
+        Confidence band on mean response E[y|x].
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            New input data of shape (n_samples, n_features).
+        alpha : float
+            Significance level (default 0.05 for 95% band).
+
+        Returns
+        -------
+        y_pred : jnp.ndarray
+            Predicted mean values.
+        lower : jnp.ndarray
+            Lower confidence band bound.
+        upper : jnp.ndarray
+            Upper confidence band bound.
+        """
+        self._check_is_fitted()
+        self._warn_if_constrained_or_regularized()
+        X = jnp.atleast_2d(jnp.asarray(X))
+        Phi_train = self._get_Phi_train()
+        Phi_new = self.basis_library.evaluate_subset(X, self._result.selected_indices)
+        result = _prediction_interval(
+            Phi_train, self._y_train, self._result.coefficients,
+            Phi_new, alpha,
+        )
+        return result["y_pred"], result["conf_lower"], result["conf_upper"]
+
+    def predict_ensemble(self, X: jnp.ndarray) -> Dict[str, Any]:
+        """
+        Predictions from Pareto-front models.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            New input data.
+
+        Returns
+        -------
+        result : dict
+            Keys: y_mean, y_std, y_min, y_max, y_all, models.
+        """
+        return ensemble_predict(self, X)
+
+    def predict_bma(
+        self,
+        X: jnp.ndarray,
+        criterion: str = "bic",
+        alpha: float = 0.05,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """
+        Bayesian Model Averaging prediction with intervals.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            New input data.
+        criterion : str
+            IC for weighting ("bic" or "aic").
+        alpha : float
+            Significance level.
+
+        Returns
+        -------
+        y_pred : jnp.ndarray
+            BMA mean prediction.
+        lower : jnp.ndarray
+            Lower bound.
+        upper : jnp.ndarray
+            Upper bound.
+        """
+        bma = BayesianModelAverage(self, criterion=criterion)
+        return bma.predict_interval(X, alpha)
+
+    def predict_conformal(
+        self,
+        X: jnp.ndarray,
+        alpha: float = 0.05,
+        method: str = "jackknife+",
+        X_cal: Optional[jnp.ndarray] = None,
+        y_cal: Optional[jnp.ndarray] = None,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """
+        Conformal prediction intervals.
+
+        Parameters
+        ----------
+        X : jnp.ndarray
+            New input data.
+        alpha : float
+            Significance level.
+        method : str
+            "jackknife+" or "split".
+        X_cal : jnp.ndarray, optional
+            Calibration features (required for "split" method).
+        y_cal : jnp.ndarray, optional
+            Calibration targets (required for "split" method).
+
+        Returns
+        -------
+        y_pred : jnp.ndarray
+            Point predictions.
+        lower : jnp.ndarray
+            Lower interval bound.
+        upper : jnp.ndarray
+            Upper interval bound.
+        """
+        self._check_is_fitted()
+        X = jnp.atleast_2d(jnp.asarray(X))
+
+        if method == "jackknife+":
+            result = conformal_predict_jackknife_plus(self, X, alpha)
+        elif method == "split":
+            if X_cal is None or y_cal is None:
+                raise ValueError(
+                    "X_cal and y_cal are required for split conformal prediction."
+                )
+            result = conformal_predict_split(self, X_cal, y_cal, X, alpha)
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'jackknife+' or 'split'.")
+
+        return result["y_pred"], result["lower"], result["upper"]
+
     def update(
         self,
         X_new: jnp.ndarray,
@@ -381,6 +636,8 @@ class SymbolicRegressor:
                 basis_names=self._result.selected_names,
                 feature_names=self.basis_library.feature_names,
                 X=X_combined,
+                basis_library=self.basis_library,
+                selected_indices=self._result.selected_indices,
             ) if self.constraints else (
                 jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0],
                 float(jnp.mean((y_combined - Phi @ jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0]) ** 2))

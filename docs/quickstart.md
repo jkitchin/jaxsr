@@ -150,6 +150,90 @@ model = SymbolicRegressor(
 )
 ```
 
+## Uncertainty Quantification
+
+JAXSR provides several UQ methods. Since models are linear-in-parameters (`y = Phi @ beta`), classical OLS inference applies directly.
+
+### Prediction Intervals
+
+```python
+# 95% prediction interval for new observations
+y_pred, lower, upper = model.predict_interval(X_new, alpha=0.05)
+
+# 95% confidence band on the mean response E[y|x]
+y_pred, conf_lo, conf_hi = model.confidence_band(X_new, alpha=0.05)
+
+# Confidence intervals for each coefficient
+intervals = model.coefficient_intervals(alpha=0.05)
+for name, (est, lo, hi, se) in intervals.items():
+    print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}] (SE={se:.4f})")
+
+# Estimated noise level
+print(f"sigma = {model.sigma_:.4f}")
+```
+
+### Bayesian Model Averaging
+
+Average predictions across multiple models weighted by information criteria:
+
+```python
+# BMA prediction with intervals
+y_pred, lower, upper = model.predict_bma(X_new, criterion="bic")
+
+# Inspect model weights
+from jaxsr import BayesianModelAverage
+bma = BayesianModelAverage(model, criterion="bic")
+for expr, weight in bma.weights.items():
+    print(f"  {weight:.3f}  {expr}")
+```
+
+### Conformal Prediction
+
+Distribution-free prediction intervals with coverage guarantees:
+
+```python
+# Jackknife+ (uses training data, no separate calibration set)
+y_pred, lower, upper = model.predict_conformal(X_new, method="jackknife+")
+
+# Split conformal (requires held-out calibration data)
+y_pred, lower, upper = model.predict_conformal(
+    X_new, method="split", X_cal=X_cal, y_cal=y_cal
+)
+```
+
+### Ensemble and Bootstrap
+
+```python
+# Pareto front ensemble: how predictions vary across model complexities
+result = model.predict_ensemble(X_new)
+print(f"Ensemble mean: {result['y_mean']}")
+print(f"Ensemble std:  {result['y_std']}")
+
+# Residual bootstrap (no Gaussian assumption)
+from jaxsr import bootstrap_predict, bootstrap_coefficients
+result = bootstrap_predict(model, X_new, n_bootstrap=1000, seed=42)
+print(f"Bootstrap CI: [{result['lower']}, {result['upper']}]")
+```
+
+### Visualization
+
+```python
+from jaxsr.plotting import (
+    plot_prediction_intervals,
+    plot_coefficient_intervals,
+    plot_bma_weights,
+)
+
+# Fan chart with confidence and prediction bands
+plot_prediction_intervals(model, X, y)
+
+# Forest plot of coefficient CIs
+plot_coefficient_intervals(model)
+
+# BMA weight bar chart
+plot_bma_weights(model)
+```
+
 ## Next Steps
 
 - See the [Examples](examples/) for application-specific tutorials

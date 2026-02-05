@@ -219,6 +219,68 @@ def example_model_export():
     return model
 
 
+def example_uncertainty():
+    """Demonstrate uncertainty quantification."""
+    print("\n" + "=" * 60)
+    print("Example 6: Uncertainty Quantification")
+    print("=" * 60)
+
+    # Generate data with known noise level
+    np.random.seed(42)
+    n_samples = 100
+    X = np.random.uniform(0, 5, (n_samples, 1))
+    y_true = 2.0 * X[:, 0] + 1.0
+    y = y_true + np.random.randn(n_samples) * 0.5
+
+    X_jax = jnp.array(X)
+    y_jax = jnp.array(y)
+
+    print(f"\nTrue model: y = 2*x + 1 (noise std = 0.5)")
+
+    # Fit model
+    library = (
+        BasisLibrary(n_features=1, feature_names=["x"])
+        .add_constant()
+        .add_linear()
+        .add_polynomials(max_degree=3)
+    )
+
+    model = SymbolicRegressor(
+        basis_library=library,
+        max_terms=3,
+        strategy="greedy_forward",
+    )
+    model.fit(X_jax, y_jax)
+
+    print(f"Discovered: {model.expression_}")
+    print(f"Estimated noise std: {model.sigma_:.4f} (true: 0.5)")
+
+    # Coefficient confidence intervals
+    print(f"\n95% coefficient intervals:")
+    for name, (est, lo, hi, se) in model.coefficient_intervals().items():
+        print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}]")
+
+    # Prediction intervals on new data
+    X_new = jnp.array([[1.0], [2.5], [4.0]])
+    y_pred, pred_lo, pred_hi = model.predict_interval(X_new)
+    y_pred_c, conf_lo, conf_hi = model.confidence_band(X_new)
+
+    print(f"\nPrediction vs confidence intervals:")
+    for i in range(3):
+        x = float(X_new[i, 0])
+        print(f"  x={x:.1f}: pred=[{float(pred_lo[i]):.2f}, {float(pred_hi[i]):.2f}], "
+              f"conf=[{float(conf_lo[i]):.2f}, {float(conf_hi[i]):.2f}]")
+
+    # Conformal prediction (distribution-free)
+    y_pred_conf, lo_conf, hi_conf = model.predict_conformal(X_new, alpha=0.05)
+    print(f"\nConformal 95% intervals (Jackknife+):")
+    for i in range(3):
+        x = float(X_new[i, 0])
+        print(f"  x={x:.1f}: [{float(lo_conf[i]):.2f}, {float(hi_conf[i]):.2f}]")
+
+    return model
+
+
 def main():
     """Run all examples."""
     print("JAXSR: JAX-based Symbolic Regression")
@@ -230,6 +292,7 @@ def main():
     example_convenience_function()
     example_pareto_front()
     example_model_export()
+    example_uncertainty()
 
     print("\n" + "=" * 60)
     print("All examples completed successfully!")

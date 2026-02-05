@@ -1,5 +1,6 @@
 # JAXSR: JAX-based Symbolic Regression
 
+[![Tests](https://github.com/jkitchin/jaxsr/actions/workflows/tests.yml/badge.svg)](https://github.com/jkitchin/jaxsr/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -9,6 +10,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 
 - **Flexible Basis Library**: Easily define candidate basis functions including polynomials, interactions, transcendentals, ratios, and custom functions
 - **Multiple Selection Strategies**: Greedy forward/backward selection, exhaustive search, LASSO path screening
+- **Uncertainty Quantification**: Classical OLS intervals, Bayesian Model Averaging, conformal prediction, bootstrap methods, and Pareto ensemble predictions
 - **Physical Constraints**: Enforce monotonicity, bounds, convexity, and linear constraints
 - **Adaptive Sampling**: Intelligently suggest new data points to improve model quality
 - **JAX-Accelerated**: JIT compilation and GPU support for fast computation
@@ -175,6 +177,41 @@ model.save("model.json")
 loaded_model = SymbolicRegressor.load("model.json")
 ```
 
+## Uncertainty Quantification
+
+JAXSR provides comprehensive UQ capabilities for linear-in-parameters models:
+
+```python
+# Prediction intervals (classical OLS)
+y_pred, lower, upper = model.predict_interval(X_new, alpha=0.05)
+
+# Confidence band on the mean response
+y_pred, conf_lo, conf_hi = model.confidence_band(X_new, alpha=0.05)
+
+# Coefficient confidence intervals
+intervals = model.coefficient_intervals(alpha=0.05)
+for name, (est, lo, hi, se) in intervals.items():
+    print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}]")
+
+# Noise standard deviation and coefficient covariance
+print(f"sigma = {model.sigma_:.4f}")
+cov = model.covariance_matrix_
+
+# Bayesian Model Averaging across Pareto-front models
+y_pred, lower, upper = model.predict_bma(X_new, criterion="bic")
+
+# Distribution-free conformal prediction (jackknife+ or split)
+y_pred, lower, upper = model.predict_conformal(X_new, method="jackknife+")
+
+# Pareto front ensemble predictions
+result = model.predict_ensemble(X_new)
+print(f"Ensemble std: {result['y_std']}")
+
+# Residual bootstrap (no Gaussian assumption needed)
+from jaxsr import bootstrap_predict
+result = bootstrap_predict(model, X_new, n_bootstrap=1000)
+```
+
 ## Visualization
 
 ```python
@@ -183,6 +220,9 @@ from jaxsr.plotting import (
     plot_parity,
     plot_residuals,
     plot_coefficient_path,
+    plot_prediction_intervals,
+    plot_coefficient_intervals,
+    plot_bma_weights,
 )
 
 # Pareto front: complexity vs accuracy
@@ -193,6 +233,15 @@ plot_parity(y_true, y_pred)
 
 # Residual diagnostics
 plot_residuals(model, X, y)
+
+# Prediction intervals fan chart
+plot_prediction_intervals(model, X, y)
+
+# Coefficient confidence intervals (forest plot)
+plot_coefficient_intervals(model)
+
+# BMA model weights
+plot_bma_weights(model)
 ```
 
 ## Examples
@@ -200,9 +249,9 @@ plot_residuals(model, X, y)
 See the `examples/` directory for complete worked examples:
 
 - `basic_usage.py`: Simple polynomial fitting
+- `uncertainty_quantification.py`: Prediction intervals, BMA, conformal, bootstrap
 - `chemical_kinetics.py`: Discovering rate laws from kinetic data
 - `heat_transfer.py`: Heat transfer correlations
-- `benchmark_comparison.py`: Comparison with other methods
 
 ## API Reference
 
