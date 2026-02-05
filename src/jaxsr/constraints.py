@@ -1170,7 +1170,7 @@ def _compute_jax_penalty(
     """
     Compute total constraint penalty using pure JAX ops (differentiable).
     """
-    total = jnp.float32(0.0)
+    total = jnp.array(0.0)
 
     for entry in constraint_data["constraints"]:
         constraint = entry["constraint"]
@@ -1362,7 +1362,7 @@ def fit_constrained_ols(
     hard_penalty_weight = 1e6
 
     # Pre-convert fixed info to JAX arrays for the objective
-    fixed_jax = [(idx, jnp.float32(val)) for idx, val in fixed]
+    fixed_jax = [(idx, jnp.asarray(val)) for idx, val in fixed]
     free_indices_arr = jnp.array(free_indices, dtype=jnp.int32)
 
     def _reconstruct_jax(coeffs_free_jax):
@@ -1400,7 +1400,7 @@ def fit_constrained_ols(
 
     def objective_and_grad(coeffs_free_vec):
         """Scipy-compatible objective returning (value, gradient) as numpy."""
-        coeffs_jax = jnp.array(coeffs_free_vec, dtype=jnp.float32)
+        coeffs_jax = jnp.array(coeffs_free_vec)
         val = float(jax_objective(coeffs_jax))
         g = np.array(grad_fn(coeffs_jax), dtype=np.float64)
         return val, g
