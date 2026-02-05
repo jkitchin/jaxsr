@@ -18,6 +18,29 @@ from .regressor import SymbolicRegressor, fit_symbolic
 from .constraints import Constraints, Constraint, ConstraintType
 from .sampling import AdaptiveSampler, SamplingStrategy
 
+# Active Learning & Acquisition Functions
+from .acquisition import (
+    AcquisitionFunction,
+    AcquisitionResult,
+    ActiveLearner,
+    AOptimal,
+    BMAUncertainty,
+    ConfidenceBandWidth,
+    Composite,
+    DOptimal,
+    EnsembleDisagreement,
+    ExpectedImprovement,
+    LCB,
+    ModelDiscrimination,
+    ModelMax,
+    ModelMin,
+    PredictionVariance,
+    ProbabilityOfImprovement,
+    ThompsonSampling,
+    UCB,
+    suggest_points,
+)
+
 # Selection
 from .selection import (
     SelectionResult,
@@ -124,4 +147,24 @@ __all__ = [
     "sobol_sample",
     "halton_sample",
     "grid_sample",
+    # Active Learning & Acquisition Functions
+    "AcquisitionFunction",
+    "AcquisitionResult",
+    "ActiveLearner",
+    "AOptimal",
+    "BMAUncertainty",
+    "ConfidenceBandWidth",
+    "Composite",
+    "DOptimal",
+    "EnsembleDisagreement",
+    "ExpectedImprovement",
+    "LCB",
+    "ModelDiscrimination",
+    "ModelMax",
+    "ModelMin",
+    "PredictionVariance",
+    "ProbabilityOfImprovement",
+    "ThompsonSampling",
+    "UCB",
+    "suggest_points",
 ]

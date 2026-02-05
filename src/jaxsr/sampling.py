@@ -547,7 +547,7 @@ def d_optimal_select(
             # Current design matrix
             current_idx = list(selected)
             Phi_current = basis_library.evaluate_subset(
-                candidates[current_idx], selected_indices
+                candidates[jnp.array(current_idx)], selected_indices
             )
             current_det = np.linalg.det(Phi_current.T @ Phi_current)
 
@@ -555,7 +555,7 @@ def d_optimal_select(
             for j in available:
                 test_idx = [k if k != i else j for k in current_idx]
                 Phi_test = basis_library.evaluate_subset(
-                    candidates[test_idx], selected_indices
+                    candidates[jnp.array(test_idx)], selected_indices
                 )
                 test_det = np.linalg.det(Phi_test.T @ Phi_test)
 
