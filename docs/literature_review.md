@@ -59,6 +59,25 @@ SISSO, developed by Ouyang et al. (2018) [5], combines sure independence screeni
 - Complex implementation
 - Computationally expensive feature space expansion
 
+### SyMANTIC (Symbolic regression via Mutual information-based ANalysis of TIme Complexity)
+
+SyMANTIC, developed by Muthyala et al. (2025) [15], is a symbolic regression algorithm that combines information-theoretic feature selection with sparse regression to efficiently discover interpretable mathematical expressions.
+
+**Key Features:**
+- Mutual information-based feature selection for efficient candidate screening
+- Adaptive feature expansion to explore large candidate spaces (10^5 to 10^10+)
+- Recursive ℓ₀-based sparse regression for parsimonious models
+- Pareto optimization for complexity vs accuracy trade-offs
+- Built on PyTorch with GPU acceleration
+
+**Key Works:**
+- Muthyala, M. R., Sorourifar, F., Peng, Y., & Paulson, J. A. (2025). SyMANTIC: An Efficient Symbolic Regression Method for Interpretable and Parsimonious Model Discovery in Science and Beyond. arXiv preprint arXiv:2502.03367. [15]
+
+**Limitations:**
+- Requires PyTorch backend
+- Relies on mutual information estimates which can be noisy for small datasets
+- Feature expansion strategy may miss important interactions not captured by pairwise mutual information
+
 ### PySR (Python Symbolic Regression)
 
 PySR by Cranmer (2023) [7] uses a modern multi-population genetic algorithm with simplification and combines Julia's speed with Python's ecosystem.
@@ -97,6 +116,26 @@ AI Feynman by Udrescu & Tegmark (2020) [8] uses neural networks combined with re
 - Computationally expensive
 - Specialized for physics problems
 
+### Neural ODE + Symbolic Regression Pipelines
+
+A promising hybrid approach combines neural differential equations with symbolic regression to discover governing equations from data. Cranmer et al. (2020) [16] demonstrated that training a neural ODE on observational data, then applying symbolic regression (e.g., PySR) to the learned vector field, can recover interpretable differential equations. This approach is implemented in the Diffrax library (Kidger, 2021) [17] using JAX/Equinox.
+
+**Key Features:**
+- Three-stage pipeline: neural approximation, symbolic extraction, fine-tuning
+- Neural ODE learns smooth vector field from noisy data
+- Symbolic regression discovers closed-form expressions from the learned field
+- Gradient-based fine-tuning of constants in discovered expressions
+- JAX-native implementation via Diffrax and Equinox
+
+**Key Works:**
+- Cranmer, M., Sanchez Gonzalez, A., Battaglia, P., Xu, R., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020. [16]
+- Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. Diffrax documentation: https://docs.kidger.site/diffrax/examples/symbolic_regression/ [17]
+
+**Limitations:**
+- Two-step process may propagate errors from neural approximation to symbolic extraction
+- Requires choosing neural architecture and symbolic regression method separately
+- Computationally expensive training of neural ODE
+
 ### Deep Learning Approaches
 
 Recent work has explored using transformers and neural networks for symbolic regression.
@@ -126,15 +165,16 @@ Classical sparse regression methods like LASSO and Elastic Net have been adapted
 
 JAXSR takes an approach most similar to ALAMO but with several key differences:
 
-| Feature | JAXSR | ALAMO | SISSO | PySR |
-|---------|-------|-------|-------|------|
-| Open Source | Yes | No | Yes | Yes |
-| Backend | JAX | GAMS | Python | Julia |
-| GPU Support | Yes | No | Limited | Yes |
-| Deterministic | Yes | Yes | Yes | No |
-| Physical Constraints | Yes | Yes | Limited | Limited |
-| Adaptive Sampling | Yes | Yes | No | No |
-| Information Criteria | Yes | Yes | No | No |
+| Feature | JAXSR | ALAMO | SISSO | PySR | SyMANTIC |
+|---------|-------|-------|-------|------|----------|
+| Open Source | Yes | No | Yes | Yes | Yes |
+| Backend | JAX | GAMS | Python | Julia | PyTorch |
+| GPU Support | Yes | No | Limited | Yes | Yes |
+| Deterministic | Yes | Yes | Yes | No | Yes |
+| Physical Constraints | Yes | Yes | Limited | Limited | Limited |
+| Adaptive Sampling | Yes | Yes | No | No | No |
+| Information Criteria | Yes | Yes | No | No | No |
+| Pareto Optimization | Yes | No | Yes | Yes | Yes |
 
 ### JAXSR Advantages
 
@@ -229,8 +269,14 @@ JAXSR fills an important gap in the symbolic regression landscape by providing a
 
 [11] Kamienny, P. A., et al. (2022). End-to-end symbolic regression with transformers. NeurIPS 2022.
 
-[12] Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv.
+[12] Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv preprint arXiv:2106.14131.
 
 [13] Brunton, S. L., Proctor, J. L., & Kutz, J. N. (2016). Discovering governing equations from data by sparse identification of nonlinear dynamics. PNAS, 113(15), 3932-3937.
 
 [14] Champion, K., et al. (2019). Data-driven discovery of coordinates and governing equations. PNAS, 116(45), 22445-22451.
+
+[15] Muthyala, M. R., Sorourifar, F., Peng, Y., & Paulson, J. A. (2025). SyMANTIC: An Efficient Symbolic Regression Method for Interpretable and Parsimonious Model Discovery in Science and Beyond. arXiv preprint arXiv:2502.03367.
+
+[16] Cranmer, M., Sanchez Gonzalez, A., Battaglia, P., Xu, R., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020.
+
+[17] Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. Diffrax: https://docs.kidger.site/diffrax/
