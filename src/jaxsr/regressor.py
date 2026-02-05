@@ -112,6 +112,8 @@ class SymbolicRegressor:
         regularization: Optional[float] = None,
         constraints: Optional[Constraints] = None,
         random_state: Optional[int] = None,
+        param_optimizer: str = "scipy",
+        param_optimization_budget: int = 50,
     ):
         self.basis_library = basis_library
         self.max_terms = max_terms
@@ -121,6 +123,8 @@ class SymbolicRegressor:
         self.regularization = regularization
         self.constraints = constraints
         self.random_state = random_state
+        self.param_optimizer = param_optimizer
+        self.param_optimization_budget = param_optimization_budget
 
         # Fitted attributes
         self._result: Optional[SelectionResult] = None
@@ -248,6 +252,15 @@ class SymbolicRegressor:
             Phi = jnp.where(jnp.isfinite(Phi), Phi, 0)
 
         # Run selection
+        extra_kw: Dict[str, Any] = {}
+        if self.basis_library.has_parametric:
+            extra_kw.update(
+                X=X,
+                basis_library=self.basis_library,
+                param_optimizer=self.param_optimizer,
+                param_optimization_budget=self.param_optimization_budget,
+            )
+
         self._selection_path = select_features(
             Phi=Phi,
             y=y,
@@ -257,6 +270,7 @@ class SymbolicRegressor:
             max_terms=self.max_terms,
             information_criterion=self.information_criterion,
             regularization=self.regularization,
+            **extra_kw,
         )
 
         self._result = self._selection_path.best
@@ -264,6 +278,10 @@ class SymbolicRegressor:
         # Apply constraints if specified
         if self.constraints is not None:
             self._apply_constraints(Phi, y, X)
+
+        # Resolve parametric parameters so predict() uses optimised values
+        if self.basis_library.has_parametric and self._result.parametric_params:
+            self._resolve_parametric_params()
 
         self._is_fitted = True
         return self
@@ -303,7 +321,38 @@ class SymbolicRegressor:
             bic=self._result.bic,
             aicc=self._result.aicc,
             n_samples=len(y),
+            parametric_params=self._result.parametric_params,
         )
+
+    def _resolve_parametric_params(self):
+        """Update library basis functions with optimised parametric values."""
+        import re
+
+        for p_info in self.basis_library._parametric_info:
+            if (
+                self._result.parametric_params
+                and p_info.basis_index in self._result.parametric_params
+            ):
+                params = self._result.parametric_params[p_info.basis_index]
+                p_info.resolved_params = params
+
+                bf = self.basis_library.basis_functions[p_info.basis_index]
+
+                # Pin the evaluation closure to the optimised values
+                def _make_func(f, p):
+                    return lambda X: f(X, **p)
+
+                bf.func = _make_func(p_info.func, params)
+
+                # Update the human-readable name
+                resolved_name = p_info.name
+                for pname, val in params.items():
+                    resolved_name = re.sub(
+                        r"\b" + re.escape(pname) + r"\b",
+                        f"{val:.4g}",
+                        resolved_name,
+                    )
+                bf.name = resolved_name
 
     def predict(self, X: jnp.ndarray) -> jnp.ndarray:
         """
@@ -701,22 +750,20 @@ class SymbolicRegressor:
         if name in symbols:
             return symbols[name]
 
-        # Handle powers: x^2, x^3, etc.
-        if "^" in name and "*" not in name and "/" not in name:
-            base, power = name.split("^")
+        # Handle powers: x^2, x^0.8, x^(1/3), etc.
+        if "^" in name and "/" not in name:
+            # Split only on first '^'
+            idx = name.index("^")
+            base = name[:idx]
+            power_str = name[idx + 1:].strip("()")
             if base in symbols:
-                return symbols[base] ** int(power)
+                try:
+                    return symbols[base] ** float(power_str)
+                except ValueError:
+                    pass
 
-        # Handle interactions: x*y, x*y*z
-        if "*" in name and "/" not in name and "^" not in name:
-            parts = name.split("*")
-            result = sympy.Integer(1)
-            for part in parts:
-                if part in symbols:
-                    result = result * symbols[part]
-            return result
-
-        # Handle transcendental functions
+        # Handle transcendental functions (before interactions so that
+        # names like "exp(-0.3*x)" are not mis-parsed as products)
         for func_name, sympy_func in [
             ("log", sympy.log),
             ("exp", sympy.exp),
@@ -728,6 +775,21 @@ class SymbolicRegressor:
                 inner = name[len(func_name) + 1:-1]
                 if inner in symbols:
                     return sympy_func(symbols[inner])
+                # Try to parse a complex inner expression via sympify
+                try:
+                    inner_expr = sympy.sympify(inner, locals=dict(symbols))
+                    return sympy_func(inner_expr)
+                except (sympy.SympifyError, SyntaxError, TypeError, ValueError):
+                    pass
+
+        # Handle interactions: x*y, x*y*z (only when ALL parts are symbols)
+        if "*" in name and "/" not in name and "^" not in name:
+            parts = name.split("*")
+            if all(p.strip() in symbols for p in parts):
+                result = sympy.Integer(1)
+                for part in parts:
+                    result = result * symbols[part.strip()]
+                return result
 
         # Handle inverse: 1/x
         if name.startswith("1/") and name[2:] in symbols:
@@ -738,6 +800,14 @@ class SymbolicRegressor:
             parts = name.split("/")
             if len(parts) == 2 and parts[0] in symbols and parts[1] in symbols:
                 return symbols[parts[0]] / symbols[parts[1]]
+
+        # Last resort: try sympify on the whole name
+        try:
+            expr = sympy.sympify(name, locals=dict(symbols))
+            if expr != sympy.Symbol(name):
+                return expr
+        except (sympy.SympifyError, SyntaxError, TypeError, ValueError):
+            pass
 
         # Fallback: return as symbol
         return sympy.Symbol(name)
@@ -790,7 +860,7 @@ class SymbolicRegressor:
                 elif "^" in name and "*" not in name:
                     base, power = name.split("^")
                     idx = feature_names.index(base)
-                    term = X[:, idx] ** int(power)
+                    term = X[:, idx] ** float(power)
                 elif "*" in name and "/" not in name:
                     parts = name.split("*")
                     term = np.ones(n_samples)
@@ -819,7 +889,21 @@ class SymbolicRegressor:
                     idx_den = feature_names.index(den)
                     term = X[:, idx_num] / X[:, idx_den]
                 else:
-                    raise ValueError(f"Cannot convert basis function: {name}")
+                    # Fallback for parametric / complex basis functions:
+                    # evaluate via the stored callable and convert to numpy
+                    import jax.numpy as _jnp
+
+                    _bf = None
+                    for _i, _n in enumerate(
+                        self.basis_library.names  # type: ignore[union-attr]
+                    ):
+                        if _n == name:
+                            _bf = self.basis_library.basis_functions[_i]
+                            break
+                    if _bf is not None:
+                        term = np.asarray(_bf.func(_jnp.array(X)))
+                    else:
+                        raise ValueError(f"Cannot convert basis function: {name}")
 
                 result = result + coef * term
 
@@ -846,6 +930,8 @@ class SymbolicRegressor:
                 "cv_folds": self.cv_folds,
                 "regularization": self.regularization,
                 "random_state": self.random_state,
+                "param_optimizer": self.param_optimizer,
+                "param_optimization_budget": self.param_optimization_budget,
             },
             "basis_library": self.basis_library.to_dict(),
             "result": self._result.to_dict(),
@@ -890,6 +976,9 @@ class SymbolicRegressor:
 
         # Reconstruct result
         result_data = data["result"]
+        parametric_params = result_data.get("parametric_params")
+        if parametric_params is not None:
+            parametric_params = {int(k): v for k, v in parametric_params.items()}
         model._result = SelectionResult(
             coefficients=jnp.array(result_data["coefficients"]),
             selected_indices=jnp.array(result_data["selected_indices"]),
@@ -900,6 +989,7 @@ class SymbolicRegressor:
             bic=result_data["bic"],
             aicc=result_data["aicc"],
             n_samples=result_data["n_samples"],
+            parametric_params=parametric_params,
         )
 
         model._is_fitted = True

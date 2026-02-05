@@ -62,6 +62,37 @@ class BasisFunction:
         }
 
 
+@dataclass
+class ParametricBasisInfo:
+    """Metadata for a parametric basis function with free nonlinear parameters.
+
+    Parameters
+    ----------
+    basis_index : int
+        Index of the corresponding BasisFunction in the library.
+    name : str
+        Name template with parameter symbols, e.g. ``"exp(-a*x)"``.
+    func : Callable
+        Function ``(X, **params) -> array`` of shape ``(n_samples,)``.
+    param_bounds : dict
+        ``{param_name: (lower, upper)}`` bounds for optimisation.
+    initial_params : dict
+        ``{param_name: initial_value}`` midpoint (or geometric mean) guesses.
+    log_scale : bool
+        If True, optimise in log-space (useful when the parameter spans
+        orders of magnitude).
+    resolved_params : dict or None
+        Optimised parameter values, set after fitting.
+    """
+    basis_index: int
+    name: str
+    func: Callable
+    param_bounds: Dict[str, Tuple[float, float]]
+    initial_params: Dict[str, float]
+    log_scale: bool = False
+    resolved_params: Optional[Dict[str, float]] = None
+
+
 def _safe_log(x: jnp.ndarray) -> jnp.ndarray:
     """Safe logarithm that handles non-positive values."""
     return jnp.where(x > 0, jnp.log(jnp.maximum(x, 1e-10)), jnp.nan)
@@ -122,6 +153,7 @@ class BasisLibrary:
         self.feature_bounds = feature_bounds
         self.basis_functions: List[BasisFunction] = []
         self._compiled_evaluate: Optional[Callable] = None
+        self._parametric_info: List[ParametricBasisInfo] = []
 
         if len(self.feature_names) != n_features:
             raise ValueError(
@@ -342,6 +374,132 @@ class BasisLibrary:
         ))
         self._compiled_evaluate = None
         return self
+
+    # ------------------------------------------------------------------
+    # Parametric basis functions
+    # ------------------------------------------------------------------
+
+    @property
+    def has_parametric(self) -> bool:
+        """Whether the library contains parametric basis functions."""
+        return len(self._parametric_info) > 0
+
+    def add_parametric(
+        self,
+        name: str,
+        func: Callable,
+        param_bounds: Dict[str, Tuple[float, float]],
+        complexity: int = 3,
+        feature_indices: Optional[Tuple[int, ...]] = None,
+        log_scale: bool = False,
+    ) -> "BasisLibrary":
+        """
+        Add a parametric basis function with free nonlinear parameters.
+
+        The nonlinear parameter(s) are optimised via profile likelihood during
+        model selection: for each candidate value the linear coefficients are
+        solved exactly via OLS.
+
+        Parameters
+        ----------
+        name : str
+            Name with parameter symbols, e.g. ``"exp(-a*x)"``.
+        func : callable
+            ``func(X, **params) -> array`` of shape ``(n_samples,)``.
+        param_bounds : dict
+            ``{param_name: (lower, upper)}`` search bounds for each parameter.
+        complexity : int
+            Complexity score for Pareto optimisation.
+        feature_indices : tuple of int, optional
+            Indices of input features used by this function.
+        log_scale : bool
+            If True, search in log-space (useful for parameters that span
+            orders of magnitude).
+
+        Returns
+        -------
+        self : BasisLibrary
+            For method chaining.
+
+        Examples
+        --------
+        >>> library.add_parametric(
+        ...     name="exp(-a*x)",
+        ...     func=lambda X, a: jnp.exp(-a * X[:, 0]),
+        ...     param_bounds={"a": (0.01, 10.0)},
+        ...     feature_indices=(0,),
+        ... )
+        """
+        import re
+
+        # Compute initial guesses
+        initial_params: Dict[str, float] = {}
+        for pname, (lo, hi) in param_bounds.items():
+            if log_scale and lo > 0 and hi > 0:
+                initial_params[pname] = float(
+                    np.exp((np.log(lo) + np.log(hi)) / 2)
+                )
+            else:
+                initial_params[pname] = (lo + hi) / 2.0
+
+        # Create readable initial name with values substituted
+        initial_name = name
+        for pname, val in initial_params.items():
+            initial_name = re.sub(
+                r"\b" + re.escape(pname) + r"\b",
+                f"{val:.4g}",
+                initial_name,
+            )
+
+        # Evaluation closure pinned to *initial_params*
+        def _make_func(f, params):
+            return lambda X: f(X, **params)
+
+        bf = BasisFunction(
+            name=initial_name,
+            func=_make_func(func, initial_params),
+            complexity=complexity,
+            feature_indices=feature_indices or (),
+            func_type="parametric",
+            func_config={
+                "name": name,
+                "param_bounds": {k: list(v) for k, v in param_bounds.items()},
+                "log_scale": log_scale,
+            },
+        )
+
+        idx = len(self.basis_functions)
+        self.basis_functions.append(bf)
+
+        self._parametric_info.append(
+            ParametricBasisInfo(
+                basis_index=idx,
+                name=name,
+                func=func,
+                param_bounds=param_bounds,
+                initial_params=initial_params,
+                log_scale=log_scale,
+            )
+        )
+
+        self._compiled_evaluate = None
+        return self
+
+    @staticmethod
+    def _resolve_parametric_name(
+        name: str, params: Dict[str, float]
+    ) -> str:
+        """Substitute optimised values into a parametric basis-function name."""
+        import re
+
+        resolved = name
+        for pname, val in params.items():
+            resolved = re.sub(
+                r"\b" + re.escape(pname) + r"\b",
+                f"{val:.4g}",
+                resolved,
+            )
+        return resolved
 
     def add_polynomial_interactions(
         self,
@@ -1024,6 +1182,11 @@ class BasisLibrary:
                     func_type="ratio",
                     func_config=fc,
                 ))
+            elif func_type == "parametric":
+                raise ValueError(
+                    f"Cannot deserialize parametric function '{bf_config['name']}'. "
+                    "Re-add it manually using add_parametric()."
+                )
             elif func_type == "custom":
                 raise ValueError(
                     f"Cannot deserialize custom function '{bf_config['name']}'. "
