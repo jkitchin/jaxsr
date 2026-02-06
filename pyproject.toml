@@ -39,12 +39,25 @@ dev = [
     "ruff",
     "mypy",
 ]
+cli = [
+    "click>=8.0",
+]
+excel = [
+    "openpyxl>=3.1",
+    "xlsxwriter>=3.1",
+]
+reports = [
+    "python-docx>=1.0",
+]
 docs = [
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings[python]",
 ]
-all = ["jaxsr[dev,docs]"]
+all = ["jaxsr[dev,docs,cli,excel,reports]"]
+
+[project.scripts]
+jaxsr = "jaxsr.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jkitchin/jaxsr"

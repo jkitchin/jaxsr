@@ -345,7 +345,12 @@ class DOEStudy:
 
         discrete_dims = None
         if self.categories is not None:
-            discrete_dims = self.categories
+            # Map string category levels to numeric indices for sampling.
+            # The sampler works in index space; we store the mapping for
+            # converting back to labels in display/export.
+            discrete_dims = {
+                idx: list(range(len(levels))) for idx, levels in self.categories.items()
+            }
 
         rsm_methods = {"factorial", "ccd", "box_behnken", "fractional_factorial"}
         sampling_methods = {"latin_hypercube", "sobol", "halton", "grid"}
