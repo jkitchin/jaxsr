@@ -150,6 +150,7 @@ The `weight` parameter controls how strongly soft constraints are enforced.
 ## Complete Example
 
 ```python
+import numpy as np
 from jaxsr import BasisLibrary, SymbolicRegressor, Constraints
 
 # Build library
@@ -168,6 +169,10 @@ constraints = (Constraints()
     .add_concave("T")                                  # Diminishing returns in T
     .add_sign_constraint("T", sign="positive")         # Positive T coefficient
 )
+
+# Prepare data (replace with your own)
+X = np.random.randn(100, 2)
+y = 3.0 * X[:, 0] + 1.5 * X[:, 1] - 0.5 * X[:, 0]**2
 
 # Fit with constraints
 model = SymbolicRegressor(

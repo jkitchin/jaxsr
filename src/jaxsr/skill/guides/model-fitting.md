@@ -6,6 +6,27 @@ Model fitting in JAXSR has two key choices:
 1. **Selection strategy** — the algorithm that searches through candidate models
 2. **Information criterion** — the metric that balances fit quality vs. complexity
 
+## Prerequisites
+
+All code blocks below assume you have a basis library, data, and imports ready:
+
+```python
+import numpy as np
+from jaxsr import BasisLibrary, SymbolicRegressor
+
+# Build a basis library (see guides/basis-library.md for details)
+library = (BasisLibrary(n_features=2, feature_names=["x", "y"])
+    .add_constant()
+    .add_linear()
+    .add_polynomials(max_degree=3)
+    .add_interactions(max_order=2)
+)
+
+# Prepare data
+X = np.random.randn(100, 2)
+y = 2.5 * X[:, 0] - 0.8 * X[:, 1]**2 + 1.2 * X[:, 0] * X[:, 1]
+```
+
 ## Selection Strategies
 
 ### `greedy_forward` (Default, Recommended)
@@ -76,7 +97,9 @@ model = SymbolicRegressor(strategy="exhaustive", max_terms=5)
 
 ### `lasso_path`
 
-**Algorithm:** Sweep the LASSO regularization parameter from high to low.
+**Algorithm:** Sweep the LASSO (Least Absolute Shrinkage and Selection Operator)
+regularization parameter from high to low. LASSO adds an L1 penalty that drives
+some coefficients exactly to zero, performing automatic feature selection.
 At each regularization level, some coefficients are zero. This traces a path
 from empty model to full model. Select the point on the path that optimizes
 the information criterion.
@@ -146,6 +169,10 @@ Is n/k < 40? (few data points per parameter)
 
 **Default recommendation:** `"bic"` for interpretability, `"aicc"` for small datasets.
 
+**Why BIC over AIC?** BIC penalizes complexity more heavily, so it avoids overfitting
+and selects simpler models. When your goal is a compact, interpretable equation, BIC
+is the right choice. AIC is better when prediction accuracy matters more than simplicity.
+
 ## Regularization
 
 Optional L2 (ridge) regularization stabilizes coefficient estimates when basis
@@ -175,8 +202,10 @@ print(f"CV R²: {result['mean_test_score']:.4f} ± {result['std_test_score']:.4f
 
 ## Pareto Front
 
-After fitting, JAXSR computes a Pareto front: the set of models where no other model
-is both simpler AND more accurate.
+After fitting, JAXSR computes a **Pareto front** — the set of models where no other
+model is both simpler AND more accurate. Each point on the front represents a different
+trade-off between complexity (number of terms) and fit quality (MSE). This lets you
+inspect how accuracy improves as you add terms.
 
 ```python
 model.fit(X, y)

@@ -52,7 +52,7 @@ Main symbolic regression model with scikit-learn interface.
 - `basis_library` (BasisLibrary): Candidate basis functions
 - `max_terms` (int): Maximum terms in expression
 - `strategy` (str): Selection strategy
-- `information_criterion` (str): Model selection criterion
+- `information_criterion` (str): Information criterion (`"aic"`, `"aicc"`, or `"bic"`)
 - `constraints` (Constraints): Physical constraints
 
 **Attributes (after fitting):**
@@ -209,7 +209,7 @@ from jaxsr import BayesianModelAverage
 class BayesianModelAverage(model, criterion="bic", use_pareto=True, top_k=None)
 ```
 
-IC-weighted model averaging across multiple models.
+Information-criterion-weighted model averaging across multiple models.
 
 **Properties:**
 - `weights`: dict mapping expression string to weight

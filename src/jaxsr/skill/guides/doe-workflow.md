@@ -30,6 +30,8 @@ study.save("catalyst.jaxsr")
 
 ### With Categorical Factors
 
+Continuing from the import above:
+
 ```python
 study = DOEStudy(
     name="catalyst_optimization",
@@ -80,6 +82,8 @@ jaxsr init catalyst_optimization \
 Rule of thumb: At least 3-5 points per basis function you expect in the final model.
 
 ### Python API
+
+Continuing from Step 1 (or loading a saved study):
 
 ```python
 study = DOEStudy.load("catalyst.jaxsr")
@@ -137,12 +141,13 @@ you collect the response values.
 
 ```python
 import numpy as np
+from jaxsr import DOEStudy
 
 study = DOEStudy.load("catalyst.jaxsr")
 
-# Add observations
-X_measured = np.array([[350, 5, 1.0], [400, 3, 0.5], ...])
-y_measured = np.array([85.2, 91.3, ...])
+# Add observations (replace with your real data)
+X_measured = np.array([[350, 5, 1.0], [400, 3, 0.5]])
+y_measured = np.array([85.2, 91.3])
 study.add_observations(X_measured, y_measured, notes="Batch 1, 2024-01-15")
 study.save("catalyst.jaxsr")
 
@@ -290,13 +295,14 @@ You can share `.jaxsr` files with collaborators to reproduce the analysis.
 ## Multi-Round Example
 
 ```python
+import numpy as np
 from jaxsr import DOEStudy
 
 # Round 1: Initial design
 study = DOEStudy("reactor", ["T", "P", "residence_time"],
                  bounds=[(350, 550), (1, 20), (1, 60)])
 X1 = study.create_design(method="latin_hypercube", n_points=15)
-# ... run experiments ...
+y1 = ...  # Run experiments and collect response values
 study.add_observations(X1, y1, notes="Round 1: screening")
 model = study.fit(max_terms=5)
 study.save("reactor.jaxsr")
@@ -304,7 +310,7 @@ study.save("reactor.jaxsr")
 # Round 2: Targeted experiments
 study = DOEStudy.load("reactor.jaxsr")
 X2 = study.suggest_next(n_points=5, strategy="uncertainty")
-# ... run experiments ...
+y2 = ...  # Run experiments at suggested points
 study.add_observations(X2, y2, notes="Round 2: uncertainty reduction")
 model = study.fit(max_terms=5)
 study.save("reactor.jaxsr")
@@ -312,7 +318,7 @@ study.save("reactor.jaxsr")
 # Round 3: Final refinement
 study = DOEStudy.load("reactor.jaxsr")
 X3 = study.suggest_next(n_points=3, strategy="error")
-# ... run experiments ...
+y3 = ...  # Run experiments at suggested points
 study.add_observations(X3, y3, notes="Round 3: error reduction")
 model = study.fit(max_terms=5)
 study.save("reactor.jaxsr")

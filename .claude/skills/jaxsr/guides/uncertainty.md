@@ -5,6 +5,32 @@
 A prediction without uncertainty bounds is incomplete. JAXSR provides five UQ methods,
 each with different assumptions, strengths, and computational costs.
 
+## Prerequisites
+
+All code blocks below assume you have a fitted model and test data:
+
+```python
+import numpy as np
+from jaxsr import BasisLibrary, SymbolicRegressor
+
+# Build library and fit model
+library = (BasisLibrary(n_features=2, feature_names=["x", "y"])
+    .add_constant().add_linear()
+    .add_polynomials(max_degree=2).add_interactions(max_order=2)
+)
+
+np.random.seed(42)
+X = np.random.randn(100, 2)
+y = 2.5 * X[:, 0] - 0.8 * X[:, 1]**2 + 0.3 * np.random.randn(100)
+
+model = SymbolicRegressor(basis_library=library, max_terms=5)
+model.fit(X, y)
+
+# Test / new data for predictions
+X_new = np.random.randn(20, 2)
+X_test = X_new  # alias used in some examples
+```
+
 ## Method Overview
 
 | Method | Assumptions | Speed | Best For |
@@ -17,7 +43,8 @@ each with different assumptions, strengths, and computational costs.
 
 ## Method 1: OLS Prediction Intervals (Default)
 
-Classical linear regression intervals based on the t-distribution.
+OLS (Ordinary Least Squares) intervals are classical linear regression intervals
+based on the t-distribution.
 
 ```python
 # Prediction interval (for new individual observations)
@@ -140,6 +167,11 @@ stability = bootstrap_model_selection(model, X, y, n_bootstrap=100)
 - Assess sensitivity to individual data points
 - No distributional assumptions needed
 - Check if model structure is stable (same terms selected across resamples)
+
+**Why bootstrap over OLS intervals?** OLS intervals assume normally distributed errors
+and a correctly specified model. Bootstrap makes no distributional assumptions and also
+captures model selection instability — if a different term is selected in some bootstrap
+samples, that uncertainty is reflected in wider intervals.
 
 **Computational cost:** Refits the model n_bootstrap times. Use n_bootstrap=200-1000.
 

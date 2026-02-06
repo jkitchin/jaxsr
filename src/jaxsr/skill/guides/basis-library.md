@@ -20,7 +20,7 @@ library = (BasisLibrary(n_features=3, feature_names=["T", "P", "v"])
     .add_linear()             # T, P, v
     .add_polynomials(max_degree=3)  # T^2, T^3, P^2, P^3, v^2, v^3
     .add_interactions(max_order=2)  # T*P, T*v, P*v
-    .add_transcendental()     # log(T), exp(T), sqrt(T), sin(T), ...
+    .add_transcendental()     # log(T), exp(T), sqrt(T), inv(T) (4 defaults)
 )
 ```
 
@@ -214,8 +214,15 @@ print(f"Library has {len(library)} basis functions")
 
 ## Recipes by Domain
 
+Each recipe below is self-contained — just replace the data with your own.
+
 ### Polynomial Response Surface (DOE)
 ```python
+from jaxsr import BasisLibrary
+
+# Replace k and names with your factor count and names
+k = 3
+names = ["T", "P", "flow"]
 library = (BasisLibrary(n_features=k, feature_names=names)
     .add_constant()
     .add_linear()
@@ -226,6 +233,8 @@ library = (BasisLibrary(n_features=k, feature_names=names)
 
 ### Engineering Correlation (Nusselt, friction factor)
 ```python
+from jaxsr import BasisLibrary
+
 library = (BasisLibrary(n_features=3, feature_names=["Re", "Pr", "L_D"])
     .add_constant()
     .add_linear()
@@ -238,6 +247,11 @@ library = (BasisLibrary(n_features=3, feature_names=["Re", "Pr", "L_D"])
 
 ### Chemical Kinetics
 ```python
+import jax.numpy as jnp
+from jaxsr import BasisLibrary
+
+arrhenius_fn = lambda X, Ea: jnp.exp(-Ea / (8.314 * X[:, 0]))
+
 library = (BasisLibrary(n_features=2, feature_names=["T", "C"])
     .add_constant()
     .add_linear()
@@ -250,12 +264,16 @@ library = (BasisLibrary(n_features=2, feature_names=["T", "C"])
 
 ### Minimal Screening (many features)
 ```python
+from jaxsr import BasisLibrary, SymbolicRegressor
+
+# Replace with your feature names
+names = [f"x{i}" for i in range(20)]
 library = (BasisLibrary(n_features=20, feature_names=names)
     .add_constant()
     .add_linear()
     .add_interactions(max_order=2)
 )
-# Use lasso_path for fast screening
+# Use lasso_path for fast screening of large libraries
 model = SymbolicRegressor(basis_library=library, strategy="lasso_path")
 ```
 

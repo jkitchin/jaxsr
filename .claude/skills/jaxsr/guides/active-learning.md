@@ -16,7 +16,7 @@ This can dramatically reduce the number of experiments needed.
 from jaxsr import AdaptiveSampler
 
 sampler = AdaptiveSampler(
-    model=fitted_model,
+    model=model,  # a fitted SymbolicRegressor
     bounds=[(300, 500), (1, 10)],  # Feature bounds
     strategy="uncertainty",
     batch_size=5,
@@ -89,7 +89,9 @@ Do you have a fitted model?
 
 ## Acquisition Functions: Advanced Interface
 
-For fine-grained control, use acquisition functions directly:
+An **acquisition function** scores candidate points by how useful they would be as
+the next experiment. Higher scores mean more informative. For fine-grained control,
+use acquisition functions directly:
 
 ```python
 from jaxsr.acquisition import (
@@ -157,7 +159,7 @@ Combine multiple acquisition functions with weights:
 # 70% uncertainty + 30% space-filling
 combined = 0.7 * PredictionVariance() + 0.3 * AOptimal()
 
-learner = ActiveLearner(model, combined, bounds=bounds)
+learner = ActiveLearner(model, bounds=bounds, acquisition=combined)
 result = learner.suggest(n_points=5)
 ```
 
@@ -172,9 +174,14 @@ combined = Composite(functions=[(0.7, PredictionVariance()), (0.3, AOptimal())])
 import numpy as np
 from jaxsr import BasisLibrary, SymbolicRegressor, AdaptiveSampler
 
+# Define your experiment (replace with real measurements)
+def true_function(X):
+    """Placeholder — replace with your actual experiment or simulation."""
+    return 3.0 * X[:, 0] + 0.5 * X[:, 1] - 0.01 * X[:, 0]**2
+
 # Initial data (small)
 X_init = np.random.uniform([300, 1], [500, 10], size=(10, 2))
-y_init = true_function(X_init)  # Your experiment
+y_init = true_function(X_init)
 
 # Build library
 library = (BasisLibrary(n_features=2, feature_names=["T", "P"])

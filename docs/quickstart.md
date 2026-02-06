@@ -236,6 +236,6 @@ plot_bma_weights(model)
 
 ## Next Steps
 
-- See the [Examples](examples/) for application-specific tutorials
+- See the [Examples](../examples/) for application-specific tutorials
 - Read the [API Reference](api.md) for detailed documentation
 - Check the [Literature Review](literature_review.md) for background

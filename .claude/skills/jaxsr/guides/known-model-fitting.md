@@ -11,7 +11,8 @@ kinetics) and want to:
 4. **Report** the results with confidence intervals
 
 This guide uses the Langmuir isotherm as a worked example, but the pattern applies
-to any known model.
+to any known model. Steps 1-9 below form a sequential workflow — each step builds
+on variables defined in prior steps. A complete self-contained script is at the end.
 
 ## The Langmuir Isotherm
 

@@ -77,6 +77,7 @@ y_pred = model.predict(X_jax)
 JAXSR provides a flexible system for defining candidate basis functions:
 
 ```python
+import jax.numpy as jnp
 from jaxsr import BasisLibrary
 
 library = (BasisLibrary(n_features=3, feature_names=["T", "P", "C"])
@@ -92,9 +93,6 @@ library = (BasisLibrary(n_features=3, feature_names=["T", "P", "C"])
         complexity=3
     )
 )
-
-# Evaluate to get design matrix
-Phi = library.evaluate(X)  # Shape: (n_samples, n_basis)
 ```
 
 ## Selection Strategies
@@ -107,6 +105,8 @@ Phi = library.evaluate(X)  # Shape: (n_samples, n_basis)
 | `lasso_path` | LASSO regularization path | Fast screening |
 
 ```python
+from jaxsr import SymbolicRegressor
+
 model = SymbolicRegressor(
     basis_library=library,
     max_terms=5,

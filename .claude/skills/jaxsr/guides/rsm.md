@@ -42,9 +42,10 @@ print(f"Design has {len(X_coded)} runs")
 An alternative that avoids extreme factor combinations (no corner points).
 
 ```python
-from jaxsr import box_behnken_design
+from jaxsr import box_behnken_design, decode
 
 X_coded = box_behnken_design(n_factors=3)
+bounds = [(300, 500), (1, 10), (0.1, 2.0)]
 X_natural = decode(X_coded, bounds)
 ```
 
@@ -62,7 +63,8 @@ from jaxsr import factorial_design, fractional_factorial_design
 X_coded = factorial_design(levels=2, n_factors=3)  # 8 runs
 
 # Fractional factorial (reduced runs via aliasing)
-X_coded = fractional_factorial_design(n_factors=5, resolution=3)  # Resolution III design
+# Resolution III: main effects not aliased with each other (but may be with interactions)
+X_coded = fractional_factorial_design(n_factors=5, resolution=3)
 ```
 
 ### Design Comparison
@@ -111,7 +113,7 @@ rs = ResponseSurface(
 # Generate design (use dedicated methods)
 X_design = rs.ccd(alpha="rotatable", center_points=3)  # or rs.box_behnken()
 
-# After collecting data
+# After collecting data (replace X_data, y_data with your observations)
 rs.fit(X_data, y_data)
 
 # Results
@@ -167,7 +169,11 @@ names = ["T", "P", "flow"]
 X_coded = central_composite_design(n_factors=3)
 X_natural = decode(X_coded, bounds)
 
-# 2. Run experiments (replace with actual experiments)
+# 2. Run experiments (replace with your actual experiment or simulation)
+def your_experiment(X):
+    """Placeholder — replace with real measurements."""
+    return 50 + 3 * X[:, 0] - 2 * X[:, 1] + 0.01 * X[:, 0]**2
+
 y = your_experiment(X_natural)
 
 # 3. Fit quadratic model
