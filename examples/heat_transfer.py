@@ -10,7 +10,7 @@ Demonstrates discovering heat transfer correlations from data, including:
 import jax.numpy as jnp
 import numpy as np
 
-from jaxsr import BasisLibrary, SymbolicRegressor, Constraints
+from jaxsr import BasisLibrary, Constraints, SymbolicRegressor
 
 
 def example_forced_convection():
@@ -31,7 +31,7 @@ def example_forced_convection():
     Pr = np.random.uniform(0.7, 100, n_samples)
 
     # Dittus-Boelter correlation
-    Nu_true = 0.023 * Re ** 0.8 * Pr ** 0.4
+    Nu_true = 0.023 * Re**0.8 * Pr**0.4
     Nu = Nu_true * (1 + np.random.randn(n_samples) * 0.05)
 
     # Work in log space for power law discovery
@@ -42,7 +42,7 @@ def example_forced_convection():
     X = jnp.column_stack([log_Re, log_Pr])
     y = jnp.array(log_Nu)
 
-    print(f"\nTrue model: Nu = 0.023 * Re^0.8 * Pr^0.4")
+    print("\nTrue model: Nu = 0.023 * Re^0.8 * Pr^0.4")
     print(f"Log form: ln(Nu) = {np.log(0.023):.3f} + 0.8*ln(Re) + 0.4*ln(Pr)")
 
     library = (
@@ -59,7 +59,7 @@ def example_forced_convection():
     )
     model.fit(X, y)
 
-    print(f"\nDiscovered expression (log space):")
+    print("\nDiscovered expression (log space):")
     print(f"  {model.expression_}")
     print(f"  R² = {model.metrics_['r2']:.4f}")
 
@@ -97,7 +97,7 @@ def example_natural_convection():
     # Churchill-Chu correlation (simplified for laminar)
     C = 0.59
     n = 0.25
-    Nu_true = C * Ra ** n
+    Nu_true = C * Ra**n
     Nu = Nu_true * (1 + np.random.randn(n_samples) * 0.03)
 
     # Log transformation
@@ -107,14 +107,10 @@ def example_natural_convection():
     X = jnp.array(log_Ra).reshape(-1, 1)
     y = jnp.array(log_Nu)
 
-    print(f"\nTrue model: Nu = 0.59 * Ra^0.25")
+    print("\nTrue model: Nu = 0.59 * Ra^0.25")
     print(f"Log form: log10(Nu) = {np.log10(C):.3f} + 0.25*log10(Ra)")
 
-    library = (
-        BasisLibrary(n_features=1, feature_names=["log_Ra"])
-        .add_constant()
-        .add_linear()
-    )
+    library = BasisLibrary(n_features=1, feature_names=["log_Ra"]).add_constant().add_linear()
 
     model = SymbolicRegressor(
         basis_library=library,
@@ -123,7 +119,7 @@ def example_natural_convection():
     )
     model.fit(X, y)
 
-    print(f"\nDiscovered expression:")
+    print("\nDiscovered expression:")
     print(f"  {model.expression_}")
     print(f"  R² = {model.metrics_['r2']:.4f}")
 
@@ -154,7 +150,7 @@ def example_fin_efficiency():
     X = jnp.array(mL).reshape(-1, 1)
     y = jnp.array(eta)
 
-    print(f"\nTrue model: eta = tanh(mL) / mL")
+    print("\nTrue model: eta = tanh(mL) / mL")
 
     # Build library with hyperbolic functions
     library = (
@@ -183,7 +179,7 @@ def example_fin_efficiency():
     )
     model.fit(X, y)
 
-    print(f"\nDiscovered expression:")
+    print("\nDiscovered expression:")
     print(f"  {model.expression_}")
     print(f"  R² = {model.metrics_['r2']:.4f}")
 
@@ -214,7 +210,7 @@ def example_heat_exchanger():
     X = jnp.column_stack([NTU, C])
     y = jnp.array(eps)
 
-    print(f"\nTrue model: eps = (1 - exp(-NTU*(1+C))) / (1+C)")
+    print("\nTrue model: eps = (1 - exp(-NTU*(1+C))) / (1+C)")
 
     library = (
         BasisLibrary(n_features=2, feature_names=["NTU", "C"])
@@ -253,7 +249,7 @@ def example_heat_exchanger():
     )
     model.fit(X, y)
 
-    print(f"\nDiscovered expression:")
+    print("\nDiscovered expression:")
     print(f"  {model.expression_}")
     print(f"  R² = {model.metrics_['r2']:.4f}")
 

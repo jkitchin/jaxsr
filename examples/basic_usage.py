@@ -7,7 +7,6 @@ algebraic expressions from data.
 
 import jax.numpy as jnp
 import numpy as np
-import matplotlib.pyplot as plt
 
 from jaxsr import BasisLibrary, SymbolicRegressor, fit_symbolic
 
@@ -28,7 +27,7 @@ def example_polynomial():
     X_jax = jnp.array(X)
     y_jax = jnp.array(y)
 
-    print(f"\nTrue model: y = 2.5*x0 + 1.2*x0*x1 - 0.8*x1^2")
+    print("\nTrue model: y = 2.5*x0 + 1.2*x0*x1 - 0.8*x1^2")
     print(f"Data: {n_samples} samples, 2 features, noise std=0.1")
 
     # Build basis library
@@ -52,9 +51,9 @@ def example_polynomial():
     model.fit(X_jax, y_jax)
 
     # Results
-    print(f"\nDiscovered expression:")
+    print("\nDiscovered expression:")
     print(f"  {model.expression_}")
-    print(f"\nMetrics:")
+    print("\nMetrics:")
     print(f"  R² score: {model.score(X_jax, y_jax):.6f}")
     print(f"  MSE: {model.metrics_['mse']:.6f}")
     print(f"  BIC: {model.metrics_['bic']:.2f}")
@@ -79,7 +78,7 @@ def example_transcendental():
     X_jax = jnp.array(X)
     y_jax = jnp.array(y)
 
-    print(f"\nTrue model: y = exp(-0.5*x) + log(x+1)")
+    print("\nTrue model: y = exp(-0.5*x) + log(x+1)")
     print(f"Data: {n_samples} samples, 1 feature")
 
     # Build library with transcendental functions
@@ -100,7 +99,7 @@ def example_transcendental():
     )
     model.fit(X_jax, y_jax)
 
-    print(f"\nDiscovered expression:")
+    print("\nDiscovered expression:")
     print(f"  {model.expression_}")
     print(f"  R² score: {model.score(X_jax, y_jax):.6f}")
 
@@ -119,7 +118,7 @@ def example_convenience_function():
     y = 3.0 * X[:, 0] ** 2 - 2.0 * X[:, 1] + 1.0
     y += np.random.randn(100) * 0.05
 
-    print(f"\nTrue model: y = 3*a^2 - 2*b + 1")
+    print("\nTrue model: y = 3*a^2 - 2*b + 1")
 
     # Quick fit
     model = fit_symbolic(
@@ -212,7 +211,7 @@ def example_model_export():
     predict_fn = model.to_callable()
     X_test = np.array([[1.0, 2.0], [3.0, 4.0]])
     y_pred = predict_fn(X_test)
-    print(f"\nPure NumPy predictions:")
+    print("\nPure NumPy predictions:")
     print(f"  X = {X_test.tolist()}")
     print(f"  y_pred = {y_pred.tolist()}")
 
@@ -235,7 +234,7 @@ def example_uncertainty():
     X_jax = jnp.array(X)
     y_jax = jnp.array(y)
 
-    print(f"\nTrue model: y = 2*x + 1 (noise std = 0.5)")
+    print("\nTrue model: y = 2*x + 1 (noise std = 0.5)")
 
     # Fit model
     library = (
@@ -256,7 +255,7 @@ def example_uncertainty():
     print(f"Estimated noise std: {model.sigma_:.4f} (true: 0.5)")
 
     # Coefficient confidence intervals
-    print(f"\n95% coefficient intervals:")
+    print("\n95% coefficient intervals:")
     for name, (est, lo, hi, se) in model.coefficient_intervals().items():
         print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}]")
 
@@ -265,15 +264,17 @@ def example_uncertainty():
     y_pred, pred_lo, pred_hi = model.predict_interval(X_new)
     y_pred_c, conf_lo, conf_hi = model.confidence_band(X_new)
 
-    print(f"\nPrediction vs confidence intervals:")
+    print("\nPrediction vs confidence intervals:")
     for i in range(3):
         x = float(X_new[i, 0])
-        print(f"  x={x:.1f}: pred=[{float(pred_lo[i]):.2f}, {float(pred_hi[i]):.2f}], "
-              f"conf=[{float(conf_lo[i]):.2f}, {float(conf_hi[i]):.2f}]")
+        print(
+            f"  x={x:.1f}: pred=[{float(pred_lo[i]):.2f}, {float(pred_hi[i]):.2f}], "
+            f"conf=[{float(conf_lo[i]):.2f}, {float(conf_hi[i]):.2f}]"
+        )
 
     # Conformal prediction (distribution-free)
     y_pred_conf, lo_conf, hi_conf = model.predict_conformal(X_new, alpha=0.05)
-    print(f"\nConformal 95% intervals (Jackknife+):")
+    print("\nConformal 95% intervals (Jackknife+):")
     for i in range(3):
         x = float(X_new[i, 0])
         print(f"  x={x:.1f}: [{float(lo_conf[i]):.2f}, {float(hi_conf[i]):.2f}]")

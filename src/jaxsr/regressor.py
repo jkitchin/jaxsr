@@ -16,6 +16,7 @@ import numpy as np
 
 from .basis import BasisLibrary
 from .constraints import Constraints, fit_constrained_ols
+from .metrics import compute_information_criterion
 from .selection import (
     SelectionPath,
     SelectionResult,
@@ -306,17 +307,19 @@ class SymbolicRegressor:
             selected_indices=indices,
         )
 
-        # Update result
+        # Update result with recalculated information criteria
+        n = len(y)
+        k = len(coeffs)
         self._result = SelectionResult(
             coefficients=coeffs,
             selected_indices=indices,
             selected_names=basis_names_subset,
             mse=mse,
             complexity=self._result.complexity,
-            aic=self._result.aic,  # Recalculate if needed
-            bic=self._result.bic,
-            aicc=self._result.aicc,
-            n_samples=len(y),
+            aic=compute_information_criterion(n, k, mse, "aic"),
+            bic=compute_information_criterion(n, k, mse, "bic"),
+            aicc=compute_information_criterion(n, k, mse, "aicc"),
+            n_samples=n,
             parametric_params=self._result.parametric_params,
         )
 
@@ -758,6 +761,25 @@ class SymbolicRegressor:
         if name in symbols:
             return symbols[name]
 
+        # Handle categorical interaction: I(color=2)*temperature
+        if name.startswith("I(") and ")*" in name:
+            indicator_part, cont_part = name.split(")*", 1)
+            inner = indicator_part[2:]  # "color=2"
+            feat_name, cat_val_str = inner.split("=", 1)
+            x = symbols.get(feat_name, sympy.Symbol(feat_name))
+            cat_val = float(cat_val_str)
+            indicator = sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
+            cont_sym = symbols.get(cont_part, sympy.Symbol(cont_part))
+            return indicator * cont_sym
+
+        # Handle indicator: I(color=2)
+        if name.startswith("I(") and name.endswith(")") and "=" in name:
+            inner = name[2:-1]  # "color=2"
+            feat_name, cat_val_str = inner.split("=", 1)
+            x = symbols.get(feat_name, sympy.Symbol(feat_name))
+            cat_val = float(cat_val_str)
+            return sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
+
         # Handle powers: x^2, x^0.8, x^(1/3), etc.
         if "^" in name and "/" not in name:
             # Split only on first '^'
@@ -849,7 +871,6 @@ class SymbolicRegressor:
 
         # Extract coefficients and indices
         coefficients = np.array(self._result.coefficients)
-        list(self._result.selected_indices)
         names = self._result.selected_names
         feature_names = self.basis_library.feature_names
 
@@ -873,8 +894,14 @@ class SymbolicRegressor:
                     parts = name.split("*")
                     term = np.ones(n_samples)
                     for part in parts:
-                        idx = feature_names.index(part)
-                        term = term * X[:, idx]
+                        part = part.strip()
+                        if "^" in part:
+                            base, power = part.split("^")
+                            idx = feature_names.index(base)
+                            term = term * X[:, idx] ** float(power)
+                        else:
+                            idx = feature_names.index(part)
+                            term = term * X[:, idx]
                 elif name.startswith("log("):
                     inner = name[4:-1]
                     idx = feature_names.index(inner)
@@ -887,6 +914,22 @@ class SymbolicRegressor:
                     inner = name[5:-1]
                     idx = feature_names.index(inner)
                     term = np.sqrt(X[:, idx])
+                elif name.startswith("I(") and ")*" in name:
+                    # Categorical interaction: I(color=2)*temperature
+                    indicator_part, cont_part = name.split(")*", 1)
+                    inner = indicator_part[2:]  # "color=2"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    cat_idx = feature_names.index(feat_name)
+                    cat_val = float(cat_val_str)
+                    cont_idx = feature_names.index(cont_part)
+                    term = (X[:, cat_idx] == cat_val).astype(float) * X[:, cont_idx]
+                elif name.startswith("I(") and name.endswith(")") and "=" in name:
+                    # Indicator: I(color=2)
+                    inner = name[2:-1]  # "color=2"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    idx = feature_names.index(feat_name)
+                    cat_val = float(cat_val_str)
+                    term = (X[:, idx] == cat_val).astype(float)
                 elif name.startswith("1/"):
                     inner = name[2:]
                     idx = feature_names.index(inner)

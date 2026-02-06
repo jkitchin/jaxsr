@@ -1178,7 +1178,7 @@ def compute_pareto_front(results: list[SelectionResult]) -> list[SelectionResult
 
 def compute_pareto_front_multi(
     results: list[SelectionResult],
-    objectives: list[str] = None,
+    objectives: list[str] | None = None,
 ) -> list[SelectionResult]:
     """
     Compute Pareto front for multiple objectives.

@@ -144,15 +144,21 @@ class BasisLibrary:
     >>> Phi = library.evaluate(X)
     """
 
+    _VALID_FEATURE_TYPES = {"continuous", "categorical"}
+
     def __init__(
         self,
         n_features: int,
         feature_names: list[str] | None = None,
         feature_bounds: list[tuple[float, float]] | None = None,
+        feature_types: list[str] | None = None,
+        categories: dict[int, list] | None = None,
     ):
         self.n_features = n_features
         self.feature_names = feature_names or [f"x{i}" for i in range(n_features)]
         self.feature_bounds = feature_bounds
+        self.feature_types = feature_types or ["continuous"] * n_features
+        self.categories: dict[int, list] = categories or {}
         self.basis_functions: list[BasisFunction] = []
         self._compiled_evaluate: Callable | None = None
         self._parametric_info: list[ParametricBasisInfo] = []
@@ -162,6 +168,35 @@ class BasisLibrary:
                 f"Number of feature names ({len(self.feature_names)}) "
                 f"must match n_features ({n_features})"
             )
+
+        if len(self.feature_types) != n_features:
+            raise ValueError(
+                f"Number of feature_types ({len(self.feature_types)}) "
+                f"must match n_features ({n_features})"
+            )
+
+        for ft in self.feature_types:
+            if ft not in self._VALID_FEATURE_TYPES:
+                raise ValueError(
+                    f"Invalid feature type '{ft}'. Must be one of {self._VALID_FEATURE_TYPES}"
+                )
+
+        for idx in self.categorical_indices:
+            if idx not in self.categories:
+                raise ValueError(
+                    f"Feature {idx} ('{self.feature_names[idx]}') is categorical but "
+                    f"no categories provided. Pass categories={{idx: [val1, val2, ...]}}"
+                )
+
+    @property
+    def continuous_indices(self) -> list[int]:
+        """Indices of continuous features."""
+        return [i for i, t in enumerate(self.feature_types) if t == "continuous"]
+
+    @property
+    def categorical_indices(self) -> list[int]:
+        """Indices of categorical features."""
+        return [i for i, t in enumerate(self.feature_types) if t == "categorical"]
 
     def add_constant(self) -> BasisLibrary:
         """Add constant (intercept) term."""
@@ -179,8 +214,8 @@ class BasisLibrary:
         return self
 
     def add_linear(self) -> BasisLibrary:
-        """Add linear terms: x_i for each feature."""
-        for i in range(self.n_features):
+        """Add linear terms: x_i for each continuous feature."""
+        for i in self.continuous_indices:
             name = self.feature_names[i]
             # Use default argument to capture i correctly
             self.basis_functions.append(
@@ -208,7 +243,7 @@ class BasisLibrary:
         if max_degree < 2:
             return self
 
-        for i in range(self.n_features):
+        for i in self.continuous_indices:
             for d in range(2, max_degree + 1):
                 name = f"{self.feature_names[i]}^{d}"
                 self.basis_functions.append(
@@ -234,7 +269,7 @@ class BasisLibrary:
             Maximum interaction order (default 2 for pairwise).
         """
         for order in range(2, max_order + 1):
-            for combo in itertools.combinations(range(self.n_features), order):
+            for combo in itertools.combinations(self.continuous_indices, order):
                 name = "*".join(self.feature_names[i] for i in combo)
                 combo_list = list(combo)
                 self.basis_functions.append(
@@ -286,7 +321,7 @@ class BasisLibrary:
             "square": (jnp.square, "({})**2", 2),
         }
 
-        for i in range(self.n_features):
+        for i in self.continuous_indices:
             for func_name in funcs:
                 if func_name not in transcendental_map:
                     raise ValueError(
@@ -317,8 +352,8 @@ class BasisLibrary:
         safe : bool
             If True, use safe division that returns NaN for zero denominator.
         """
-        for i in range(self.n_features):
-            for j in range(self.n_features):
+        for i in self.continuous_indices:
+            for j in self.continuous_indices:
                 if i != j:
                     name = f"{self.feature_names[i]}/{self.feature_names[j]}"
                     if safe:
@@ -392,6 +427,123 @@ class BasisLibrary:
                 func_config={"name": name},
             )
         )
+        self._compiled_evaluate = None
+        return self
+
+    # ------------------------------------------------------------------
+    # Categorical basis functions
+    # ------------------------------------------------------------------
+
+    def add_categorical_indicators(
+        self,
+        features: list[int] | None = None,
+    ) -> BasisLibrary:
+        """
+        Add indicator (dummy variable) basis functions for categorical features.
+
+        For each categorical feature with K categories, adds K-1 indicator
+        functions using reference encoding (first category dropped) to avoid
+        multicollinearity with the intercept.
+
+        Parameters
+        ----------
+        features : list of int, optional
+            Indices of categorical features to encode. Defaults to all
+            categorical features.
+
+        Returns
+        -------
+        self : BasisLibrary
+            For method chaining.
+
+        Raises
+        ------
+        ValueError
+            If a specified feature is not categorical.
+        """
+        features = features if features is not None else self.categorical_indices
+
+        for i in features:
+            if self.feature_types[i] != "categorical":
+                raise ValueError(f"Feature {i} ('{self.feature_names[i]}') is not categorical")
+
+            cats = self.categories[i]
+            # Reference encoding: drop the first category
+            for cat_val in cats[1:]:
+                name = f"I({self.feature_names[i]}={cat_val})"
+                self.basis_functions.append(
+                    BasisFunction(
+                        name=name,
+                        func=partial(
+                            lambda X, idx, val: (X[:, idx] == val).astype(jnp.float32),
+                            idx=i,
+                            val=cat_val,
+                        ),
+                        complexity=1,
+                        feature_indices=(i,),
+                        func_type="indicator",
+                        func_config={"feature_index": i, "category_value": cat_val},
+                    )
+                )
+
+        self._compiled_evaluate = None
+        return self
+
+    def add_categorical_interactions(
+        self,
+        cat_features: list[int] | None = None,
+        cont_features: list[int] | None = None,
+    ) -> BasisLibrary:
+        """
+        Add interactions between categorical indicators and continuous features.
+
+        For each (categorical feature, continuous feature) pair, creates
+        indicator * continuous terms. This allows the model to learn
+        different slopes per category.
+
+        Parameters
+        ----------
+        cat_features : list of int, optional
+            Categorical feature indices. Defaults to all categorical.
+        cont_features : list of int, optional
+            Continuous feature indices. Defaults to all continuous.
+
+        Returns
+        -------
+        self : BasisLibrary
+            For method chaining.
+        """
+        cat_features = cat_features if cat_features is not None else self.categorical_indices
+        cont_features = cont_features if cont_features is not None else self.continuous_indices
+
+        for ci in cat_features:
+            cats = self.categories[ci]
+            # Reference encoding: drop the first category
+            for cat_val in cats[1:]:
+                for cj in cont_features:
+                    name = f"I({self.feature_names[ci]}={cat_val})" f"*{self.feature_names[cj]}"
+                    self.basis_functions.append(
+                        BasisFunction(
+                            name=name,
+                            func=partial(
+                                lambda X, ci, val, cj: (
+                                    (X[:, ci] == val).astype(jnp.float32) * X[:, cj]
+                                ),
+                                ci=ci,
+                                val=cat_val,
+                                cj=cj,
+                            ),
+                            complexity=2,
+                            feature_indices=(ci, cj),
+                            func_type="categorical_interaction",
+                            func_config={
+                                "categorical_index": ci,
+                                "category_value": cat_val,
+                                "continuous_index": cj,
+                            },
+                        )
+                    )
+
         self._compiled_evaluate = None
         return self
 
@@ -532,15 +684,21 @@ class BasisLibrary:
         max_individual_degree : int
             Maximum exponent for any single variable (default 2).
         """
-        # Generate all combinations of exponents
+        # Generate all combinations of exponents over continuous features
+        cont_idx = self.continuous_indices
+        n_cont = len(cont_idx)
         for total_deg in range(2, max_total_degree + 1):
-            # Generate partitions of total_deg across n_features
-            for exponents in self._generate_exponent_combinations(
-                self.n_features, total_deg, max_individual_degree
+            for cont_exponents in self._generate_exponent_combinations(
+                n_cont, total_deg, max_individual_degree
             ):
                 # Skip if only one variable (handled by add_polynomials)
-                if sum(1 for e in exponents if e > 0) < 2:
+                if sum(1 for e in cont_exponents if e > 0) < 2:
                     continue
+
+                # Map back to full feature space
+                exponents = [0] * self.n_features
+                for ci, exp in zip(cont_idx, cont_exponents, strict=True):
+                    exponents[ci] = exp
 
                 # Build name and function
                 terms = []
@@ -619,6 +777,11 @@ class BasisLibrary:
         if include_ratios:
             self.add_ratios()
 
+        if self.categorical_indices:
+            self.add_categorical_indicators()
+            if self.continuous_indices:
+                self.add_categorical_interactions()
+
         return self
 
     def add_compositions(
@@ -655,10 +818,8 @@ class BasisLibrary:
             "tanh": (jnp.tanh, "tanh"),
         }
 
-        for i in range(self.n_features):
-            for j in range(self.n_features):
-                if i >= j and "product" in inner_forms:
-                    continue  # Avoid duplicates for symmetric operations
+        for i in self.continuous_indices:
+            for j in self.continuous_indices:
                 if i == j:
                     continue
 
@@ -669,6 +830,10 @@ class BasisLibrary:
 
                     for inner_form in inner_forms:
                         fi, fj = self.feature_names[i], self.feature_names[j]
+
+                        # Skip duplicate pairs for symmetric operations
+                        if inner_form == "product" and i > j:
+                            continue
 
                         if inner_form == "product":
                             name = f"{outer_str}({fi}*{fj})"
@@ -742,7 +907,7 @@ class BasisLibrary:
         # Adds: x/(1+y), x*y/(1+x), x/(1+x+y), etc.
         """
         # Single variable rational forms: x/(1+x), x/(1+x^2)
-        for i in range(self.n_features):
+        for i in self.continuous_indices:
             fi = self.feature_names[i]
 
             # x / (1 + x)
@@ -770,8 +935,8 @@ class BasisLibrary:
             )
 
         # Two-variable rational forms
-        for i in range(self.n_features):
-            for j in range(self.n_features):
+        for i in self.continuous_indices:
+            for j in self.continuous_indices:
                 if i == j:
                     continue
 
@@ -834,7 +999,7 @@ class BasisLibrary:
         """
         exponents = exponents or [0.25, 0.33, 0.5, 0.67, 0.75, 1.5, 2.0]
 
-        for i in range(self.n_features):
+        for i in self.continuous_indices:
             fi = self.feature_names[i]
 
             for exp in exponents:
@@ -897,9 +1062,9 @@ class BasisLibrary:
         """
         operations = operations or ["mul", "div", "sq", "sqrt"]
 
-        # Start with linear features
+        # Start with continuous features only
         current_features = []
-        for i in range(self.n_features):
+        for i in self.continuous_indices:
             current_features.append(
                 {
                     "name": self.feature_names[i],
@@ -1139,12 +1304,16 @@ class BasisLibrary:
         is saved, but custom functions will need to be re-added manually
         after loading.
         """
-        return {
+        d = {
             "n_features": self.n_features,
             "feature_names": self.feature_names,
             "feature_bounds": self.feature_bounds,
             "basis_functions": [bf.to_dict() for bf in self.basis_functions],
         }
+        if any(t != "continuous" for t in self.feature_types):
+            d["feature_types"] = self.feature_types
+            d["categories"] = {str(k): v for k, v in self.categories.items()}
+        return d
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> BasisLibrary:
@@ -1162,10 +1331,14 @@ class BasisLibrary:
             Reconstructed library. Custom functions will raise an error
             and need to be re-added manually.
         """
+        categories_raw = config.get("categories", {})
+        categories = {int(k): v for k, v in categories_raw.items()} if categories_raw else {}
         library = cls(
             n_features=config["n_features"],
             feature_names=config["feature_names"],
             feature_bounds=config.get("feature_bounds"),
+            feature_types=config.get("feature_types"),
+            categories=categories or None,
         )
 
         for bf_config in config["basis_functions"]:
@@ -1230,6 +1403,44 @@ class BasisLibrary:
                         complexity=bf_config["complexity"],
                         feature_indices=(num, den),
                         func_type="ratio",
+                        func_config=fc,
+                    )
+                )
+            elif func_type == "indicator":
+                i = fc["feature_index"]
+                cat_val = fc["category_value"]
+                library.basis_functions.append(
+                    BasisFunction(
+                        name=bf_config["name"],
+                        func=partial(
+                            lambda X, idx, val: (X[:, idx] == val).astype(jnp.float32),
+                            idx=i,
+                            val=cat_val,
+                        ),
+                        complexity=bf_config["complexity"],
+                        feature_indices=(i,),
+                        func_type="indicator",
+                        func_config=fc,
+                    )
+                )
+            elif func_type == "categorical_interaction":
+                ci = fc["categorical_index"]
+                cat_val = fc["category_value"]
+                cj = fc["continuous_index"]
+                library.basis_functions.append(
+                    BasisFunction(
+                        name=bf_config["name"],
+                        func=partial(
+                            lambda X, ci, val, cj: (
+                                (X[:, ci] == val).astype(jnp.float32) * X[:, cj]
+                            ),
+                            ci=ci,
+                            val=cat_val,
+                            cj=cj,
+                        ),
+                        complexity=bf_config["complexity"],
+                        feature_indices=(ci, cj),
+                        func_type="categorical_interaction",
                         func_config=fc,
                     )
                 )

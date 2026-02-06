@@ -52,6 +52,19 @@ from .metrics import (
 )
 from .regressor import SymbolicRegressor, fit_symbolic
 
+# Response Surface Methodology
+from .rsm import (
+    CanonicalAnalysis,
+    ResponseSurface,
+    box_behnken_design,
+    canonical_analysis,
+    central_composite_design,
+    decode,
+    encode,
+    factorial_design,
+    fractional_factorial_design,
+)
+
 # Sampling utilities
 from .sampling import (
     AdaptiveSampler,
@@ -75,19 +88,7 @@ from .selection import (
 
 # Simplification
 from .simplify import SimplificationResult, simplify_expression
-
-# Response Surface Methodology
-from .rsm import (
-    CanonicalAnalysis,
-    ResponseSurface,
-    box_behnken_design,
-    canonical_analysis,
-    central_composite_design,
-    decode,
-    encode,
-    factorial_design,
-    fractional_factorial_design,
-)
+from .study import DOEStudy
 
 # Uncertainty Quantification
 from .uncertainty import (
@@ -123,6 +124,7 @@ __all__ = [
     "BasisLibrary",
     "SymbolicRegressor",
     "fit_symbolic",
+    "DOEStudy",
     "Constraints",
     "Constraint",
     "ConstraintType",

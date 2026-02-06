@@ -39,12 +39,25 @@ dev = [
     "ruff",
     "mypy",
 ]
+cli = [
+    "click>=8.0",
+]
+excel = [
+    "openpyxl>=3.1",
+    "xlsxwriter>=3.1",
+]
+reports = [
+    "python-docx>=1.0",
+]
 docs = [
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings[python]",
 ]
-all = ["jaxsr[dev,docs]"]
+all = ["jaxsr[dev,docs,cli,excel,reports]"]
+
+[project.scripts]
+jaxsr = "jaxsr.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jkitchin/jaxsr"
@@ -77,6 +90,24 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = ["E501"]
+
+[tool.coverage.run]
+source = ["jaxsr"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 60
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
 
 [tool.mypy]
 python_version = "3.10"

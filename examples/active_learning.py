@@ -18,6 +18,7 @@ import numpy as np
 
 from jaxsr import BasisLibrary, SymbolicRegressor
 from jaxsr.acquisition import (
+    LCB,
     ActiveLearner,
     AOptimal,
     BMAUncertainty,
@@ -25,17 +26,13 @@ from jaxsr.acquisition import (
     DOptimal,
     EnsembleDisagreement,
     ExpectedImprovement,
-    LCB,
     ModelDiscrimination,
-    ModelMax,
     ModelMin,
     PredictionVariance,
     ProbabilityOfImprovement,
     ThompsonSampling,
-    UCB,
     suggest_points,
 )
-
 
 # =========================================================================
 # Shared setup: fit a model we'll use across examples
@@ -54,9 +51,7 @@ def make_model():
         .add_linear()
         .add_polynomials(max_degree=3)
     )
-    model = SymbolicRegressor(
-        basis_library=library, max_terms=4, strategy="greedy_forward"
-    )
+    model = SymbolicRegressor(basis_library=library, max_terms=4, strategy="greedy_forward")
     model.fit(jnp.array(X), jnp.array(y))
     return model
 
@@ -115,9 +110,7 @@ def example_exploration():
     ]
 
     for name, acq in strategies:
-        result = suggest_points(
-            model, bounds, acq, n_points=3, random_state=42
-        )
+        result = suggest_points(model, bounds, acq, n_points=3, random_state=42)
         pts = np.array(result.points).ravel()
         print(f"  {name:30s} -> x = [{', '.join(f'{p:.2f}' for p in pts)}]")
 
@@ -167,7 +160,7 @@ def example_optimisation():
     bounds = [(0.0, 5.0)]
 
     print(f"Model: {model.expression_}")
-    print(f"True minimum at x=1.5 (y = 2.25 - 4.5 + 2 = -0.25)")
+    print("True minimum at x=1.5 (y = 2.25 - 4.5 + 2 = -0.25)")
     print()
 
     strategies = [
@@ -181,9 +174,7 @@ def example_optimisation():
     ]
 
     for name, acq in strategies:
-        result = suggest_points(
-            model, bounds, acq, n_points=3, random_state=42
-        )
+        result = suggest_points(model, bounds, acq, n_points=3, random_state=42)
         pts = np.array(result.points).ravel()
         print(f"  {name:35s} -> x = [{', '.join(f'{p:.2f}' for p in pts)}]")
 
@@ -228,9 +219,7 @@ def example_discrimination():
     ]
 
     for name, acq in acqs:
-        result = suggest_points(
-            model, bounds, acq, n_points=5, random_state=42
-        )
+        result = suggest_points(model, bounds, acq, n_points=5, random_state=42)
         pts = np.array(result.points).ravel()
         print(f"  {name:25s} -> x = [{', '.join(f'{p:.2f}' for p in pts)}]")
 
@@ -270,9 +259,7 @@ def example_batch_strategies():
     model = make_model()
     bounds = [(0.0, 5.0)]
 
-    learner = ActiveLearner(
-        model, bounds, PredictionVariance(), random_state=42
-    )
+    learner = ActiveLearner(model, bounds, PredictionVariance(), random_state=42)
 
     for strategy in ["greedy", "penalized", "kriging_believer", "d_optimal"]:
         result = learner.suggest(n_points=5, batch_strategy=strategy)
@@ -322,9 +309,7 @@ def example_full_loop():
         .add_linear()
         .add_polynomials(max_degree=3)
     )
-    model = SymbolicRegressor(
-        basis_library=library, max_terms=4, strategy="greedy_forward"
-    )
+    model = SymbolicRegressor(basis_library=library, max_terms=4, strategy="greedy_forward")
     model.fit(jnp.array(X_init), jnp.array(y_init))
 
     print(f"Initial model ({len(y_init)} points): {model.expression_}")
@@ -403,9 +388,7 @@ def example_composite():
     ]
 
     for name, acq in composites:
-        result = suggest_points(
-            model, bounds, acq, n_points=3, random_state=42
-        )
+        result = suggest_points(model, bounds, acq, n_points=3, random_state=42)
         pts = np.array(result.points).ravel()
         print(f"  {name:30s} -> x = [{', '.join(f'{p:.2f}' for p in pts)}]")
 

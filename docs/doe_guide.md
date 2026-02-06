@@ -77,16 +77,16 @@ bounds = [
 ]
 
 # Latin Hypercube — good general-purpose default
-X_init = latin_hypercube_sample(bounds, n_points=20, random_state=42)
+X_init = latin_hypercube_sample(20, bounds, random_state=42)
 
 # Sobol sequence — better uniformity in high dimensions
-X_init = sobol_sample(bounds, n_points=20, random_state=42)
+X_init = sobol_sample(20, bounds, random_state=42)
 
 # Halton sequence — similar to Sobol, different construction
-X_init = halton_sample(bounds, n_points=20, random_state=42)
+X_init = halton_sample(20, bounds, random_state=42)
 
 # Full factorial grid — use only for ≤3 features with few levels
-X_init = grid_sample(bounds, n_points_per_dim=5)
+X_init = grid_sample(5, bounds)
 ```
 
 ### How many initial points?
@@ -363,9 +363,10 @@ from jaxsr.constraints import Constraints
 
 constraints = (
     Constraints()
-    .add_bounds(lower=0)                    # response must be non-negative
-    .add_monotonicity(feature=0, increasing=True)  # rate increases with T
-    .add_sign("+", terms=["T", "T^2"])      # positive temperature terms
+    .add_bounds(target="y", lower=0)                       # response must be non-negative
+    .add_monotonic(feature="T", direction="increasing")    # rate increases with T
+    .add_sign_constraint("T", sign="positive")             # positive temperature terms
+    .add_sign_constraint("T^2", sign="positive")
 )
 
 model = SymbolicRegressor(
@@ -386,15 +387,15 @@ in turn makes the acquisition function suggestions more reliable.
 Track how uncertainty shrinks as you add data:
 
 ```python
-from jaxsr.uncertainty import prediction_intervals, coefficient_intervals
+from jaxsr.uncertainty import prediction_interval, coefficient_intervals
 
 # Prediction intervals at test points
-pi = prediction_intervals(model, X_test, alpha=0.05)
-print(f"Mean CI width: {(pi.upper - pi.lower).mean():.3f}")
+pi = prediction_interval(Phi_train, y_train, model.coefficients_, Phi_test, alpha=0.05)
+print(f"Mean PI width: {(pi['pred_upper'] - pi['pred_lower']).mean():.3f}")
 
 # Coefficient confidence intervals
-ci = coefficient_intervals(model, alpha=0.05)
-for name, lo, hi in zip(ci.names, ci.lower, ci.upper):
+ci = coefficient_intervals(Phi_train, y_train, model.coefficients_, model.selected_features_, alpha=0.05)
+for name, (est, lo, hi, se) in ci.items():
     print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
 ```
 

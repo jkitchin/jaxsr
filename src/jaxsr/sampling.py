@@ -93,6 +93,7 @@ class AdaptiveSampler:
         batch_size: int = 5,
         n_candidates: int = 1000,
         random_state: int | None = None,
+        discrete_dims: dict[int, list] | None = None,
     ):
         self.model = model
         self.bounds = bounds
@@ -100,6 +101,7 @@ class AdaptiveSampler:
         self.batch_size = batch_size
         self.n_candidates = n_candidates
         self.random_state = random_state
+        self.discrete_dims = discrete_dims or {}
 
         self._rng = np.random.RandomState(random_state)
         self._bounds_array = np.array(bounds)
@@ -181,7 +183,14 @@ class AdaptiveSampler:
         # Scale to bounds
         lower = self._bounds_array[:, 0]
         upper = self._bounds_array[:, 1]
-        candidates = qmc.scale(samples, lower, upper)
+        candidates = np.array(qmc.scale(samples, lower, upper))
+
+        # Snap discrete dimensions to valid values
+        for dim_idx, values in self.discrete_dims.items():
+            values_arr = np.array(values, dtype=float)
+            for row in range(len(candidates)):
+                dists = np.abs(values_arr - candidates[row, dim_idx])
+                candidates[row, dim_idx] = values_arr[np.argmin(dists)]
 
         return jnp.array(candidates)
 
@@ -357,10 +366,24 @@ class AdaptiveSampler:
 # =============================================================================
 
 
+def _snap_discrete(samples: np.ndarray, discrete_dims: dict[int, list]) -> np.ndarray:
+    """Snap discrete dimensions to their nearest valid values."""
+    if not discrete_dims:
+        return samples
+    samples = np.array(samples)
+    for dim_idx, values in discrete_dims.items():
+        values_arr = np.array(values, dtype=float)
+        for row in range(len(samples)):
+            dists = np.abs(values_arr - samples[row, dim_idx])
+            samples[row, dim_idx] = values_arr[np.argmin(dists)]
+    return samples
+
+
 def latin_hypercube_sample(
     n_samples: int,
     bounds: list[tuple[float, float]],
     random_state: int | None = None,
+    discrete_dims: dict[int, list] | None = None,
 ) -> jnp.ndarray:
     """
     Generate Latin Hypercube samples.
@@ -373,6 +396,10 @@ def latin_hypercube_sample(
         Bounds (lower, upper) for each dimension.
     random_state : int, optional
         Random seed.
+    discrete_dims : dict, optional
+        Mapping of dimension index to list of valid discrete values.
+        Continuous dimensions are sampled normally; discrete dimensions
+        are snapped to the nearest valid value.
 
     Returns
     -------
@@ -387,6 +414,7 @@ def latin_hypercube_sample(
     upper = bounds_array[:, 1]
 
     samples = qmc.scale(samples, lower, upper)
+    samples = _snap_discrete(samples, discrete_dims or {})
     return jnp.array(samples)
 
 
@@ -394,6 +422,7 @@ def sobol_sample(
     n_samples: int,
     bounds: list[tuple[float, float]],
     random_state: int | None = None,
+    discrete_dims: dict[int, list] | None = None,
 ) -> jnp.ndarray:
     """
     Generate Sobol sequence samples.
@@ -406,6 +435,8 @@ def sobol_sample(
         Bounds (lower, upper) for each dimension.
     random_state : int, optional
         Random seed for scrambling.
+    discrete_dims : dict, optional
+        Mapping of dimension index to list of valid discrete values.
 
     Returns
     -------
@@ -420,6 +451,7 @@ def sobol_sample(
     upper = bounds_array[:, 1]
 
     samples = qmc.scale(samples, lower, upper)
+    samples = _snap_discrete(samples, discrete_dims or {})
     return jnp.array(samples)
 
 
@@ -427,6 +459,7 @@ def halton_sample(
     n_samples: int,
     bounds: list[tuple[float, float]],
     random_state: int | None = None,
+    discrete_dims: dict[int, list] | None = None,
 ) -> jnp.ndarray:
     """
     Generate Halton sequence samples.
@@ -439,6 +472,8 @@ def halton_sample(
         Bounds (lower, upper) for each dimension.
     random_state : int, optional
         Random seed for scrambling.
+    discrete_dims : dict, optional
+        Mapping of dimension index to list of valid discrete values.
 
     Returns
     -------
@@ -453,12 +488,14 @@ def halton_sample(
     upper = bounds_array[:, 1]
 
     samples = qmc.scale(samples, lower, upper)
+    samples = _snap_discrete(samples, discrete_dims or {})
     return jnp.array(samples)
 
 
 def grid_sample(
     n_per_dim: int,
     bounds: list[tuple[float, float]],
+    discrete_dims: dict[int, list] | None = None,
 ) -> jnp.ndarray:
     """
     Generate grid samples.
@@ -466,16 +503,25 @@ def grid_sample(
     Parameters
     ----------
     n_per_dim : int
-        Number of samples per dimension.
+        Number of samples per dimension (for continuous dims).
     bounds : list of tuple
         Bounds (lower, upper) for each dimension.
+    discrete_dims : dict, optional
+        Mapping of dimension index to list of valid discrete values.
+        Discrete dimensions use their exact values instead of linspace.
 
     Returns
     -------
     samples : jnp.ndarray
         Sample points.
     """
-    grids = [np.linspace(lower, upper, n_per_dim) for lower, upper in bounds]
+    discrete_dims = discrete_dims or {}
+    grids = []
+    for i, (lower, upper) in enumerate(bounds):
+        if i in discrete_dims:
+            grids.append(np.array(discrete_dims[i], dtype=float))
+        else:
+            grids.append(np.linspace(lower, upper, n_per_dim))
     mesh = np.meshgrid(*grids, indexing="ij")
     samples = np.stack([m.ravel() for m in mesh], axis=1)
     return jnp.array(samples)

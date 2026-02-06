@@ -906,7 +906,9 @@ class AnovaResult:
         for r in self.rows:
             f_str = f"{r.f_value:10.4f}" if r.f_value is not None else " " * 10
             p_str = f"{r.p_value:10.4g}" if r.p_value is not None else " " * 10
-            body += f"{r.source:<25s} {r.df:4d} {r.sum_sq:12.4f} {r.mean_sq:12.4f} {f_str} {p_str}\n"
+            body += (
+                f"{r.source:<25s} {r.df:4d} {r.sum_sq:12.4f} {r.mean_sq:12.4f} {f_str} {p_str}\n"
+            )
         warn = ""
         if self.warnings:
             warn = "\nWarnings:\n" + "\n".join(f"  - {w}" for w in self.warnings) + "\n"
@@ -971,9 +973,7 @@ def anova(
     model._check_is_fitted()
     anova_type = anova_type.lower()
     if anova_type not in ("sequential", "marginal"):
-        raise ValueError(
-            f"anova_type must be 'sequential' or 'marginal', got '{anova_type}'"
-        )
+        raise ValueError(f"anova_type must be 'sequential' or 'marginal', got '{anova_type}'")
 
     X = model._X_train
     y = model._y_train
@@ -1022,10 +1022,16 @@ def anova(
             ms_term = ss_term  # df = 1 per term
             f_val = ms_term / ms_res if ms_res > 0 else float("inf")
             p_val = float(1.0 - stats.f.cdf(f_val, 1, df_res)) if df_res > 0 else float("nan")
-            rows.append(AnovaRow(
-                source=names[k], df=1, sum_sq=ss_term,
-                mean_sq=ms_term, f_value=f_val, p_value=p_val,
-            ))
+            rows.append(
+                AnovaRow(
+                    source=names[k],
+                    df=1,
+                    sum_sq=ss_term,
+                    mean_sq=ms_term,
+                    f_value=f_val,
+                    p_value=p_val,
+                )
+            )
             ss_prev = ss_res_k
     else:
         # Type III: each term's contribution is the extra SS when adding
@@ -1044,10 +1050,16 @@ def anova(
             ms_term = ss_term
             f_val = ms_term / ms_res if ms_res > 0 else float("inf")
             p_val = float(1.0 - stats.f.cdf(f_val, 1, df_res)) if df_res > 0 else float("nan")
-            rows.append(AnovaRow(
-                source=names[k], df=1, sum_sq=ss_term,
-                mean_sq=ms_term, f_value=f_val, p_value=p_val,
-            ))
+            rows.append(
+                AnovaRow(
+                    source=names[k],
+                    df=1,
+                    sum_sq=ss_term,
+                    mean_sq=ms_term,
+                    f_value=f_val,
+                    p_value=p_val,
+                )
+            )
 
     # -- Summary rows -----------------------------------------------------
     # SS_total is about the mean (df = n-1), so df_model = n - 1 - df_res
@@ -1058,18 +1070,31 @@ def anova(
     f_model = ms_model / ms_res if ms_res > 0 else float("inf")
     p_model = float(1.0 - stats.f.cdf(f_model, df_model, df_res)) if df_res > 0 else float("nan")
 
-    rows.append(AnovaRow(
-        source="Model", df=df_model, sum_sq=ss_model,
-        mean_sq=ms_model,
-        f_value=f_model, p_value=p_model,
-    ))
-    rows.append(AnovaRow(
-        source="Residual", df=df_res, sum_sq=ss_res_full,
-        mean_sq=ms_res,
-    ))
-    rows.append(AnovaRow(
-        source="Total", df=n - 1, sum_sq=ss_tot,
-        mean_sq=ss_tot / (n - 1) if n > 1 else 0.0,
-    ))
+    rows.append(
+        AnovaRow(
+            source="Model",
+            df=df_model,
+            sum_sq=ss_model,
+            mean_sq=ms_model,
+            f_value=f_model,
+            p_value=p_model,
+        )
+    )
+    rows.append(
+        AnovaRow(
+            source="Residual",
+            df=df_res,
+            sum_sq=ss_res_full,
+            mean_sq=ms_res,
+        )
+    )
+    rows.append(
+        AnovaRow(
+            source="Total",
+            df=n - 1,
+            sum_sq=ss_tot,
+            mean_sq=ss_tot / (n - 1) if n > 1 else 0.0,
+        )
+    )
 
     return AnovaResult(rows=rows, type=anova_type, warnings=warn)

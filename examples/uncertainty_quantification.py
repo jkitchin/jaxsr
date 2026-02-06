@@ -60,14 +60,14 @@ def example_classical_intervals():
     )
     model.fit(X_jax, y_jax)
 
-    print(f"\nTrue model: y = 2*x + 1 (noise std = 0.5)")
+    print("\nTrue model: y = 2*x + 1 (noise std = 0.5)")
     print(f"Discovered: {model.expression_}")
 
     # Noise estimate
     print(f"\nEstimated noise (sigma): {model.sigma_:.4f} (true: 0.5)")
 
     # Coefficient intervals
-    print(f"\nCoefficient 95% confidence intervals:")
+    print("\nCoefficient 95% confidence intervals:")
     intervals = model.coefficient_intervals(alpha=0.05)
     for name, (est, lo, hi, se) in intervals.items():
         print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}]  (SE={se:.4f})")
@@ -77,8 +77,10 @@ def example_classical_intervals():
     y_pred, pred_lo, pred_hi = model.predict_interval(X_new, alpha=0.05)
     y_pred_c, conf_lo, conf_hi = model.confidence_band(X_new, alpha=0.05)
 
-    print(f"\nPrediction and confidence intervals at selected points:")
-    print(f"  {'x':>5}  {'y_pred':>8}  {'pred_lo':>8}  {'pred_hi':>8}  {'conf_lo':>8}  {'conf_hi':>8}")
+    print("\nPrediction and confidence intervals at selected points:")
+    print(
+        f"  {'x':>5}  {'y_pred':>8}  {'pred_lo':>8}  {'pred_hi':>8}  {'conf_lo':>8}  {'conf_hi':>8}"
+    )
     for i in range(len(X_new)):
         print(
             f"  {float(X_new[i, 0]):5.1f}  "
@@ -89,11 +91,11 @@ def example_classical_intervals():
             f"{float(conf_hi[i]):8.3f}"
         )
 
-    print(f"\nNote: Confidence band is narrower — it estimates E[y|x], not a new y.")
+    print("\nNote: Confidence band is narrower — it estimates E[y|x], not a new y.")
 
     # Covariance matrix
     cov = model.covariance_matrix_
-    print(f"\nCoefficient covariance matrix:")
+    print("\nCoefficient covariance matrix:")
     print(f"  {np.array(cov)}")
 
     return model
@@ -131,7 +133,7 @@ def example_ensemble_predictions():
     print(f"\nBest model: {model.expression_}")
 
     # Pareto front models
-    print(f"\nPareto front models:")
+    print("\nPareto front models:")
     for r in model.pareto_front_:
         print(f"  Complexity {r.complexity}: {r.expression()}")
 
@@ -139,7 +141,7 @@ def example_ensemble_predictions():
     X_new = jnp.linspace(-2, 3, 5).reshape(-1, 1)
     result = model.predict_ensemble(X_new)
 
-    print(f"\nEnsemble predictions at selected points:")
+    print("\nEnsemble predictions at selected points:")
     print(f"  {'x':>5}  {'mean':>8}  {'std':>8}  {'min':>8}  {'max':>8}")
     for i in range(len(X_new)):
         print(
@@ -185,7 +187,7 @@ def example_bayesian_model_averaging():
     # Create BMA
     bma = BayesianModelAverage(model, criterion="bic")
 
-    print(f"\nBMA model weights (BIC-based):")
+    print("\nBMA model weights (BIC-based):")
     for expr, weight in bma.weights.items():
         print(f"  {weight:.4f}  {expr}")
 
@@ -193,14 +195,14 @@ def example_bayesian_model_averaging():
     X_new = jnp.linspace(0, 5, 5).reshape(-1, 1)
     y_mean, y_std = bma.predict(X_new)
 
-    print(f"\nBMA predictions:")
+    print("\nBMA predictions:")
     print(f"  {'x':>5}  {'mean':>8}  {'std':>8}")
     for i in range(len(X_new)):
         print(f"  {float(X_new[i, 0]):5.1f}  {float(y_mean[i]):8.3f}  {float(y_std[i]):8.3f}")
 
     # Convenience method with intervals
     y_pred, lower, upper = model.predict_bma(X_new, criterion="bic", alpha=0.05)
-    print(f"\n95% BMA prediction intervals:")
+    print("\n95% BMA prediction intervals:")
     print(f"  {'x':>5}  {'pred':>8}  {'lower':>8}  {'upper':>8}")
     for i in range(len(X_new)):
         print(
@@ -236,11 +238,7 @@ def example_conformal_prediction():
     X_cal, y_cal = jnp.array(X_all[150:250]), jnp.array(y_all[150:250])
     X_test, y_test = jnp.array(X_all[250:]), jnp.array(y_all[250:])
 
-    library = (
-        BasisLibrary(n_features=1, feature_names=["x"])
-        .add_constant()
-        .add_linear()
-    )
+    library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
 
     model = SymbolicRegressor(
         basis_library=library,
@@ -257,17 +255,15 @@ def example_conformal_prediction():
     )
     covered = (y_test >= lower) & (y_test <= upper)
     coverage = float(jnp.mean(covered))
-    print(f"\nSplit conformal (target 90% coverage):")
+    print("\nSplit conformal (target 90% coverage):")
     print(f"  Actual coverage: {coverage:.1%}")
     print(f"  Avg interval width: {float(jnp.mean(upper - lower)):.3f}")
 
     # Jackknife+
-    y_pred_j, lower_j, upper_j = model.predict_conformal(
-        X_test, alpha=0.10, method="jackknife+"
-    )
+    y_pred_j, lower_j, upper_j = model.predict_conformal(X_test, alpha=0.10, method="jackknife+")
     covered_j = (y_test >= lower_j) & (y_test <= upper_j)
     coverage_j = float(jnp.mean(covered_j))
-    print(f"\nJackknife+ (target 90% coverage):")
+    print("\nJackknife+ (target 90% coverage):")
     print(f"  Actual coverage: {coverage_j:.1%}")
     print(f"  Avg interval width: {float(jnp.mean(upper_j - lower_j)):.3f}")
 
@@ -289,11 +285,7 @@ def example_bootstrap():
     X = np.random.uniform(0, 5, (100, 1))
     y = 2.0 * X[:, 0] + 1.0 + np.random.randn(100) * 0.5
 
-    library = (
-        BasisLibrary(n_features=1, feature_names=["x"])
-        .add_constant()
-        .add_linear()
-    )
+    library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
 
     model = SymbolicRegressor(
         basis_library=library,
@@ -306,7 +298,7 @@ def example_bootstrap():
 
     # Bootstrap coefficient CIs
     result = bootstrap_coefficients(model, n_bootstrap=2000, alpha=0.05, seed=42)
-    print(f"\nBootstrap 95% coefficient CIs (B=2000):")
+    print("\nBootstrap 95% coefficient CIs (B=2000):")
     for i, name in enumerate(result["names"]):
         print(
             f"  {name}: {float(result['mean'][i]):.4f} "
@@ -318,7 +310,7 @@ def example_bootstrap():
     X_new = jnp.linspace(0, 5, 5).reshape(-1, 1)
     pred_result = bootstrap_predict(model, X_new, n_bootstrap=2000, alpha=0.05, seed=42)
 
-    print(f"\nBootstrap 95% prediction intervals:")
+    print("\nBootstrap 95% prediction intervals:")
     print(f"  {'x':>5}  {'pred':>8}  {'lower':>8}  {'upper':>8}")
     for i in range(len(X_new)):
         print(
@@ -341,8 +333,10 @@ def example_visualization():
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")  # Non-interactive backend
         import matplotlib.pyplot as plt
+
         from jaxsr.plotting import (
             plot_bma_weights,
             plot_coefficient_intervals,
