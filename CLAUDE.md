@@ -15,6 +15,10 @@ black --check src/ tests/        # Check formatting
 ruff check src/ tests/           # Check linting
 black src/ tests/                # Auto-format
 ruff check --fix src/ tests/     # Auto-fix lint issues
+
+# Coverage
+pytest tests/ --cov=jaxsr --cov-report=term-missing   # Coverage to terminal
+pytest tests/ --cov=jaxsr --cov-report=html            # Coverage HTML report → htmlcov/
 ```
 
 ## CI Requirements
@@ -136,3 +140,36 @@ ruff check src/ tests/
   `expression_`); leading underscore for private attributes (`_X_train`, `_is_fitted`)
 - Avoid broad `except Exception` — catch specific exceptions (`ValueError`, `LinAlgError`, etc.)
 - Prefer `strict=False` on `zip()` calls to satisfy ruff B905, unless lengths are guaranteed equal
+
+## Test Coverage
+
+Coverage is configured in `pyproject.toml` under `[tool.coverage.*]` sections.
+The `fail_under` threshold is **60%**. Coverage reports exclude `pragma: no cover`,
+`TYPE_CHECKING` blocks, and `NotImplementedError` stubs.
+
+### Current coverage baseline (294 tests passing)
+
+| Module | Coverage | Notes |
+|--------|----------|-------|
+| `acquisition.py` | 95% | Well tested |
+| `rsm.py` | 94% | Well tested |
+| `__init__.py` | 88% | Mostly re-exports |
+| `uncertainty.py` | 87% | Well tested |
+| `regressor.py` | 80% | Core module, good coverage |
+| `sampling.py` | 79% | Needs dedicated test file |
+| `selection.py` | 72% | Some advanced strategies untested |
+| `constraints.py` | 71% | Some constraint types untested |
+| `basis.py` | 58% | Many builder methods untested (SISSO, power laws, rational forms) |
+| `utils.py` | 40% | Needs dedicated test file |
+| `metrics.py` | 28% | Needs dedicated test file — most metric functions untested |
+| `simplify.py` | 11% | Needs dedicated test file — nearly all code untested |
+| `plotting.py` | 0% | Needs dedicated test file — entirely untested |
+| **TOTAL** | **64%** | |
+
+### Priority modules for new tests
+
+1. **plotting.py** (0%) — At minimum, test that functions don't error with valid inputs
+2. **simplify.py** (11%) — Test sympy conversion, expression simplification
+3. **metrics.py** (28%) — Test all metric functions with known inputs/outputs
+4. **utils.py** (40%) — Test utility functions
+5. **basis.py** (58%) — Test SISSO, power laws, rational forms builders

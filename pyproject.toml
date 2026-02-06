@@ -78,6 +78,24 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
 ignore = ["E501"]
 
+[tool.coverage.run]
+source = ["jaxsr"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 60
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
