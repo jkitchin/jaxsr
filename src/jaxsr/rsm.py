@@ -593,12 +593,16 @@ class ResponseSurface:
         max_terms: int | None = None,
         strategy: str = "greedy_forward",
         allow_transcendental: bool = False,
+        feature_types: list[str] | None = None,
+        categories: dict[int, list] | None = None,
     ):
         self.n_factors = n_factors
         self.bounds = list(bounds)
         self.factor_names = factor_names or [f"x{i}" for i in range(n_factors)]
         self.max_degree = max_degree
         self.strategy = strategy
+        self.feature_types = feature_types
+        self.categories = categories
 
         if len(self.bounds) != n_factors:
             raise ValueError(
@@ -610,6 +614,8 @@ class ResponseSurface:
             BasisLibrary(
                 n_features=n_factors,
                 feature_names=self.factor_names,
+                feature_types=feature_types,
+                categories=categories,
             )
             .add_constant()
             .add_linear()
@@ -619,6 +625,12 @@ class ResponseSurface:
             library.add_interactions(max_order=min(max_degree, n_factors))
         if allow_transcendental:
             library.add_transcendental(["log", "exp", "sqrt", "inv"])
+
+        # Add categorical basis functions if any categorical features exist
+        if library.categorical_indices:
+            library.add_categorical_indicators()
+            if library.continuous_indices:
+                library.add_categorical_interactions()
 
         if max_terms is None:
             # Default: enough for a full quadratic + some headroom

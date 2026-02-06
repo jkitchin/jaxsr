@@ -761,6 +761,25 @@ class SymbolicRegressor:
         if name in symbols:
             return symbols[name]
 
+        # Handle categorical interaction: I(color=2)*temperature
+        if name.startswith("I(") and ")*" in name:
+            indicator_part, cont_part = name.split(")*", 1)
+            inner = indicator_part[2:]  # "color=2"
+            feat_name, cat_val_str = inner.split("=", 1)
+            x = symbols.get(feat_name, sympy.Symbol(feat_name))
+            cat_val = float(cat_val_str)
+            indicator = sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
+            cont_sym = symbols.get(cont_part, sympy.Symbol(cont_part))
+            return indicator * cont_sym
+
+        # Handle indicator: I(color=2)
+        if name.startswith("I(") and name.endswith(")") and "=" in name:
+            inner = name[2:-1]  # "color=2"
+            feat_name, cat_val_str = inner.split("=", 1)
+            x = symbols.get(feat_name, sympy.Symbol(feat_name))
+            cat_val = float(cat_val_str)
+            return sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
+
         # Handle powers: x^2, x^0.8, x^(1/3), etc.
         if "^" in name and "/" not in name:
             # Split only on first '^'
@@ -895,6 +914,22 @@ class SymbolicRegressor:
                     inner = name[5:-1]
                     idx = feature_names.index(inner)
                     term = np.sqrt(X[:, idx])
+                elif name.startswith("I(") and ")*" in name:
+                    # Categorical interaction: I(color=2)*temperature
+                    indicator_part, cont_part = name.split(")*", 1)
+                    inner = indicator_part[2:]  # "color=2"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    cat_idx = feature_names.index(feat_name)
+                    cat_val = float(cat_val_str)
+                    cont_idx = feature_names.index(cont_part)
+                    term = (X[:, cat_idx] == cat_val).astype(float) * X[:, cont_idx]
+                elif name.startswith("I(") and name.endswith(")") and "=" in name:
+                    # Indicator: I(color=2)
+                    inner = name[2:-1]  # "color=2"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    idx = feature_names.index(feat_name)
+                    cat_val = float(cat_val_str)
+                    term = (X[:, idx] == cat_val).astype(float)
                 elif name.startswith("1/"):
                     inner = name[2:]
                     idx = feature_names.index(inner)
