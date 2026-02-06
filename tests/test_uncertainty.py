@@ -19,7 +19,9 @@ import pytest
 
 from jaxsr import BasisLibrary, SymbolicRegressor
 from jaxsr.uncertainty import (
+    AnovaResult,
     BayesianModelAverage,
+    anova,
     bootstrap_coefficients,
     bootstrap_predict,
     compute_unbiased_variance,
@@ -499,3 +501,175 @@ class TestEdgeCases:
         y_pred, lo, hi = model.predict_interval(X_new)
         width = float(hi[0] - lo[0])
         assert width > 1.0, f"Interval width {width} suspiciously narrow for n=10"
+
+
+# =============================================================================
+# ANOVA Tests
+# =============================================================================
+
+
+class TestAnovaSequential:
+    """Tests for Type I (sequential) ANOVA."""
+
+    def test_basic_structure(self):
+        """ANOVA table should have per-term + 3 summary rows."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+        n_terms = len(model.selected_features_)
+        # per-term rows + Model + Residual + Total
+        assert len(result.rows) == n_terms + 3
+        assert result.type == "sequential"
+
+    def test_ss_decomposition(self):
+        """Per-term SS should sum to SS_model (Type I property)."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+
+        summary = {r.source: r for r in result.rows}
+        term_ss_sum = sum(
+            r.sum_sq for r in result.rows if r.source not in ("Model", "Residual", "Total")
+        )
+        np.testing.assert_allclose(term_ss_sum, summary["Model"].sum_sq, rtol=1e-4)
+
+    def test_ss_total_equals_model_plus_residual(self):
+        """SS_total = SS_model + SS_residual."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+        summary = {r.source: r for r in result.rows}
+        np.testing.assert_allclose(
+            summary["Total"].sum_sq,
+            summary["Model"].sum_sq + summary["Residual"].sum_sq,
+            rtol=1e-4,
+        )
+
+    def test_df_decomposition(self):
+        """df_total = df_model + df_residual."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+        summary = {r.source: r for r in result.rows}
+        assert summary["Total"].df == summary["Model"].df + summary["Residual"].df
+
+    def test_significant_terms_have_small_p(self):
+        """For a strong signal the quadratic term should be significant."""
+        X, y = _make_quadratic_data(n=200, noise_std=0.1)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+        # At least one term should have p < 0.05
+        term_p = [r.p_value for r in result.rows if r.p_value is not None and r.source != "Model"]
+        assert any(p < 0.05 for p in term_p), f"No significant terms found: {term_p}"
+
+    def test_model_f_significant(self):
+        """Overall model F-test should be significant."""
+        X, y = _make_quadratic_data(n=200, noise_std=0.1)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="sequential")
+        model_row = next(r for r in result.rows if r.source == "Model")
+        assert model_row.p_value < 0.01
+
+
+class TestAnovaMarginal:
+    """Tests for Type III (marginal) ANOVA."""
+
+    def test_basic_structure(self):
+        """Marginal ANOVA should have same number of rows."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="marginal")
+        n_terms = len(model.selected_features_)
+        assert len(result.rows) == n_terms + 3
+        assert result.type == "marginal"
+
+    def test_marginal_ss_nonneg(self):
+        """Each marginal SS should be non-negative."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model, anova_type="marginal")
+        for r in result.rows:
+            assert r.sum_sq >= 0, f"Negative SS for {r.source}: {r.sum_sq}"
+
+    def test_summary_rows_match_sequential(self):
+        """Model, Residual, and Total summary rows should be the same."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        seq = anova(model, anova_type="sequential")
+        marg = anova(model, anova_type="marginal")
+        for name in ("Model", "Residual", "Total"):
+            r_seq = next(r for r in seq.rows if r.source == name)
+            r_marg = next(r for r in marg.rows if r.source == name)
+            np.testing.assert_allclose(r_seq.sum_sq, r_marg.sum_sq, rtol=1e-6)
+            assert r_seq.df == r_marg.df
+
+
+class TestAnovaHelpers:
+    """Tests for AnovaResult helper methods."""
+
+    def test_to_dict(self):
+        """to_dict should return a plain dict with all fields."""
+        X, y = _make_linear_data(n=50, noise_std=0.5)
+        model = _fit_model(X, y, max_terms=2)
+        result = anova(model)
+        d = result.to_dict()
+        assert "rows" in d
+        assert "type" in d
+        assert isinstance(d["rows"], list)
+        assert all("source" in r for r in d["rows"])
+
+    def test_repr(self):
+        """__repr__ should produce a readable table string."""
+        X, y = _make_linear_data(n=50, noise_std=0.5)
+        model = _fit_model(X, y, max_terms=2)
+        result = anova(model)
+        text = repr(result)
+        assert "ANOVA Table" in text
+        assert "Residual" in text
+        assert "Total" in text
+
+    def test_term_names(self):
+        """term_names should list only per-term sources."""
+        X, y = _make_quadratic_data(n=100, noise_std=0.3)
+        model = _fit_model(X, y, max_terms=3)
+        result = anova(model)
+        assert "Model" not in result.term_names
+        assert "Residual" not in result.term_names
+        assert "Total" not in result.term_names
+        assert len(result.term_names) == len(model.selected_features_)
+
+    def test_invalid_type_raises(self):
+        """Passing an invalid anova_type should raise ValueError."""
+        X, y = _make_linear_data(n=50, noise_std=0.5)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="anova_type"):
+            anova(model, anova_type="type_ii")
+
+
+class TestAnovaWarnings:
+    """Tests that ANOVA emits warnings for parametric / constrained models."""
+
+    def test_parametric_warning(self):
+        """Parametric models should trigger a warning about approximate p-values."""
+        rng = np.random.RandomState(42)
+        X = rng.uniform(0, 5, (80, 1))
+        y = 3.0 * np.exp(-0.5 * X[:, 0]) + 1.0 + 0.2 * rng.randn(80)
+        X, y = jnp.array(X), jnp.array(y)
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.01, 5.0)},
+                feature_indices=(0,),
+            )
+        )
+        model = SymbolicRegressor(
+            basis_library=library, max_terms=3, strategy="greedy_forward"
+        )
+        model.fit(X, y)
+        result = anova(model)
+        assert any("parametric" in w.lower() for w in result.warnings)
