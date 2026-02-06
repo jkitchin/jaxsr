@@ -10,35 +10,31 @@ Tests cover:
 
 from __future__ import annotations
 
-import warnings
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from jaxsr import BasisLibrary, SymbolicRegressor
 from jaxsr.acquisition import (
+    LCB,
+    UCB,
     AcquisitionResult,
     ActiveLearner,
     AOptimal,
-    BatchStrategy,
     BMAUncertainty,
     Composite,
     ConfidenceBandWidth,
     DOptimal,
     EnsembleDisagreement,
     ExpectedImprovement,
-    LCB,
     ModelDiscrimination,
     ModelMax,
     ModelMin,
     PredictionVariance,
     ProbabilityOfImprovement,
     ThompsonSampling,
-    UCB,
     suggest_points,
 )
-
 
 # =========================================================================
 # Fixtures
@@ -65,26 +61,14 @@ def _make_2d_data(n=150, noise_std=0.2, seed=42):
     """Generate y = 3*x0 - x1^2 + 0.5*x0*x1 + noise."""
     rng = np.random.RandomState(seed)
     X = rng.uniform(0, 5, (n, 2))
-    y = (
-        3.0 * X[:, 0]
-        - X[:, 1] ** 2
-        + 0.5 * X[:, 0] * X[:, 1]
-        + noise_std * rng.randn(n)
-    )
+    y = 3.0 * X[:, 0] - X[:, 1] ** 2 + 0.5 * X[:, 0] * X[:, 1] + noise_std * rng.randn(n)
     return jnp.array(X), jnp.array(y)
 
 
 def _fit_model_1d(X, y, max_terms=3):
     """Fit a 1d model with polynomials up to degree 3."""
-    library = (
-        BasisLibrary(n_features=1)
-        .add_constant()
-        .add_linear()
-        .add_polynomials(max_degree=3)
-    )
-    model = SymbolicRegressor(
-        basis_library=library, max_terms=max_terms, strategy="greedy_forward"
-    )
+    library = BasisLibrary(n_features=1).add_constant().add_linear().add_polynomials(max_degree=3)
+    model = SymbolicRegressor(basis_library=library, max_terms=max_terms, strategy="greedy_forward")
     model.fit(X, y)
     return model
 
@@ -98,9 +82,7 @@ def _fit_model_2d(X, y, max_terms=5):
         .add_polynomials(max_degree=3)
         .add_interactions(max_order=2)
     )
-    model = SymbolicRegressor(
-        basis_library=library, max_terms=max_terms, strategy="greedy_forward"
-    )
+    model = SymbolicRegressor(basis_library=library, max_terms=max_terms, strategy="greedy_forward")
     model.fit(X, y)
     return model
 
@@ -329,12 +311,8 @@ class TestProbabilityOfImprovement:
 
     def test_minimize_vs_maximize(self, linear_model):
         X_cand = jnp.linspace(0, 5, 20).reshape(-1, 1)
-        pi_min = ProbabilityOfImprovement(minimize=True).score(
-            X_cand, linear_model
-        )
-        pi_max = ProbabilityOfImprovement(minimize=False).score(
-            X_cand, linear_model
-        )
+        pi_min = ProbabilityOfImprovement(minimize=True).score(X_cand, linear_model)
+        pi_max = ProbabilityOfImprovement(minimize=False).score(X_cand, linear_model)
         assert not jnp.allclose(pi_min, pi_max)
 
 
@@ -356,12 +334,8 @@ class TestThompsonSampling:
 
     def test_minimize_flag(self, linear_model):
         X_cand = jnp.linspace(0, 5, 10).reshape(-1, 1)
-        s_min = ThompsonSampling(minimize=True, seed=0).score(
-            X_cand, linear_model
-        )
-        s_max = ThompsonSampling(minimize=False, seed=0).score(
-            X_cand, linear_model
-        )
+        s_min = ThompsonSampling(minimize=True, seed=0).score(X_cand, linear_model)
+        s_max = ThompsonSampling(minimize=False, seed=0).score(X_cand, linear_model)
         np.testing.assert_allclose(s_min, -s_max, atol=1e-5)
 
 
@@ -446,18 +420,14 @@ class TestComposite:
 
 class TestActiveLearnerBasic:
     def test_suggest_returns_result(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=3)
         assert isinstance(result, AcquisitionResult)
         assert result.points.shape == (3, 1)
         assert result.scores.shape == (3,)
 
     def test_suggest_respects_n_points(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, UCB(kappa=2), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, UCB(kappa=2), random_state=42)
         for n in [1, 3, 10]:
             result = learner.suggest(n_points=n)
             assert result.points.shape[0] == n
@@ -473,18 +443,14 @@ class TestActiveLearnerBasic:
             ActiveLearner(model, [(0, 5)], PredictionVariance())
 
     def test_2d(self, model_2d):
-        learner = ActiveLearner(
-            model_2d, BOUNDS_2D, UCB(kappa=2), random_state=42
-        )
+        learner = ActiveLearner(model_2d, BOUNDS_2D, UCB(kappa=2), random_state=42)
         result = learner.suggest(n_points=5)
         assert result.points.shape == (5, 2)
 
 
 class TestActiveLearnerUpdate:
     def test_update_increases_data(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         n_before = learner.n_observations
         result = learner.suggest(n_points=3)
         y_new = jnp.array([1.0, 2.0, 3.0])
@@ -492,18 +458,14 @@ class TestActiveLearnerUpdate:
         assert learner.n_observations == n_before + 3
 
     def test_iteration_counter(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         assert learner.iteration == 0
         result = learner.suggest(n_points=2)
         learner.update(result.points, jnp.array([1.0, 2.0]))
         assert learner.iteration == 1
 
     def test_history_tracking(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=2)
         y_new = jnp.array([1.0, 2.0])
         learner.update(result.points, y_new)
@@ -511,9 +473,7 @@ class TestActiveLearnerUpdate:
         assert len(learner.history_y) == 1
 
     def test_update_with_refit_false(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=2)
         y_new = jnp.array([1.0, 2.0])
         learner.update(result.points, y_new, refit=False)
@@ -522,28 +482,20 @@ class TestActiveLearnerUpdate:
 
 class TestActiveLearnerBatchStrategies:
     def test_greedy(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=5, batch_strategy="greedy")
         assert result.points.shape == (5, 1)
 
     def test_penalized(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=5, batch_strategy="penalized")
         assert result.points.shape == (5, 1)
         assert result.metadata.get("batch_strategy") == "penalized"
 
     def test_penalized_diversity(self, linear_model):
         """Penalized batch should be more spread out than greedy."""
-        learner_g = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
-        learner_p = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner_g = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
+        learner_p = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result_g = learner_g.suggest(n_points=5, batch_strategy="greedy")
         result_p = learner_p.suggest(n_points=5, batch_strategy="penalized")
 
@@ -553,45 +505,33 @@ class TestActiveLearnerBatchStrategies:
         assert range_p >= range_g * 0.8  # allow some tolerance
 
     def test_kriging_believer(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
-        result = learner.suggest(
-            n_points=5, batch_strategy="kriging_believer"
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
+        result = learner.suggest(n_points=5, batch_strategy="kriging_believer")
         assert result.points.shape == (5, 1)
         assert result.metadata.get("batch_strategy") == "kriging_believer"
 
     def test_kriging_believer_restores_model(self, linear_model):
         """Kriging believer should not permanently alter the model."""
         n_before = len(linear_model._y_train)
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, UCB(kappa=2), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, UCB(kappa=2), random_state=42)
         _ = learner.suggest(n_points=5, batch_strategy="kriging_believer")
         assert len(linear_model._y_train) == n_before
 
     def test_d_optimal(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         result = learner.suggest(n_points=5, batch_strategy="d_optimal")
         assert result.points.shape == (5, 1)
         assert result.metadata.get("batch_strategy") == "d_optimal"
 
     def test_invalid_strategy(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         with pytest.raises(ValueError):
             learner.suggest(n_points=3, batch_strategy="invalid_strategy")
 
 
 class TestActiveLearnerConvergence:
     def test_not_converged_early(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         assert not learner.converged(tol=1e-3, window=3)
 
     def test_converged_low_mse(self):
@@ -602,9 +542,7 @@ class TestActiveLearnerConvergence:
         X, y = jnp.array(X), jnp.array(y)
         model = _fit_model_1d(X, y, max_terms=2)
 
-        learner = ActiveLearner(
-            model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(model, BOUNDS_1D, PredictionVariance(), random_state=42)
         # Simulate enough iterations
         for _ in range(5):
             result = learner.suggest(n_points=2)
@@ -616,23 +554,17 @@ class TestActiveLearnerConvergence:
 
 class TestActiveLearnerProperties:
     def test_best_y(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         best = learner.best_y
         assert best == float(jnp.min(linear_model._y_train))
 
     def test_best_X(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         best_x = learner.best_X
         assert best_x.shape == (1,)
 
     def test_n_observations(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         assert learner.n_observations == 100
 
 
@@ -695,13 +627,9 @@ class TestActiveLearnerCandidateMethods:
 
 class TestActiveLearnerCustomCandidates:
     def test_user_provided_candidates(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         my_candidates = jnp.array([[1.0], [2.0], [3.0], [4.0]])
-        result = learner.suggest(
-            n_points=2, candidates=my_candidates, min_distance=0.0
-        )
+        result = learner.suggest(n_points=2, candidates=my_candidates, min_distance=0.0)
         assert result.points.shape == (2, 1)
         # All returned points should be from our candidates
         for pt in result.points:
@@ -716,7 +644,10 @@ class TestActiveLearnerCustomCandidates:
 class TestSuggestPoints:
     def test_basic(self, linear_model):
         result = suggest_points(
-            linear_model, BOUNDS_1D, PredictionVariance(), n_points=3,
+            linear_model,
+            BOUNDS_1D,
+            PredictionVariance(),
+            n_points=3,
             random_state=42,
         )
         assert isinstance(result, AcquisitionResult)
@@ -724,14 +655,20 @@ class TestSuggestPoints:
 
     def test_with_ucb(self, linear_model):
         result = suggest_points(
-            linear_model, BOUNDS_1D, UCB(kappa=2), n_points=5,
+            linear_model,
+            BOUNDS_1D,
+            UCB(kappa=2),
+            n_points=5,
             random_state=42,
         )
         assert result.points.shape == (5, 1)
 
     def test_2d(self, model_2d):
         result = suggest_points(
-            model_2d, BOUNDS_2D, ExpectedImprovement(), n_points=4,
+            model_2d,
+            BOUNDS_2D,
+            ExpectedImprovement(),
+            n_points=4,
             random_state=42,
         )
         assert result.points.shape == (4, 2)
@@ -747,16 +684,17 @@ class TestFullLoop:
         """An active learning loop should reduce MSE over iterations."""
         rng = np.random.RandomState(0)
         X_init = rng.uniform(0, 5, (20, 1))
-        y_true = lambda x: 2.0 * x[:, 0] ** 2 - 3.0 * x[:, 0] + 1.0
+
+        def y_true(x):
+            return 2.0 * x[:, 0] ** 2 - 3.0 * x[:, 0] + 1.0
+
         y_init = y_true(X_init) + 0.3 * rng.randn(20)
         X_init, y_init = jnp.array(X_init), jnp.array(y_init)
 
         model = _fit_model_1d(X_init, y_init, max_terms=3)
         mse_before = model.metrics_["mse"]
 
-        learner = ActiveLearner(
-            model, [(0.0, 5.0)], PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(model, [(0.0, 5.0)], PredictionVariance(), random_state=42)
 
         for _ in range(5):
             result = learner.suggest(n_points=5)
@@ -771,7 +709,10 @@ class TestFullLoop:
         """Active loop with EI for minimisation."""
         rng = np.random.RandomState(1)
         X_init = rng.uniform(0, 5, (30, 1))
-        y_true = lambda x: (x[:, 0] - 2.5) ** 2 + 1.0
+
+        def y_true(x):
+            return (x[:, 0] - 2.5) ** 2 + 1.0
+
         y_init = y_true(X_init) + 0.1 * rng.randn(30)
         X_init, y_init = jnp.array(X_init), jnp.array(y_init)
 
@@ -814,9 +755,7 @@ class TestFullLoop:
 
 class TestEdgeCases:
     def test_single_candidate(self, linear_model):
-        learner = ActiveLearner(
-            linear_model, BOUNDS_1D, PredictionVariance(), random_state=42
-        )
+        learner = ActiveLearner(linear_model, BOUNDS_1D, PredictionVariance(), random_state=42)
         candidates = jnp.array([[2.5]])
         result = learner.suggest(n_points=1, candidates=candidates, min_distance=0.0)
         assert result.points.shape[0] >= 1
@@ -857,6 +796,4 @@ class TestEdgeCases:
         for acq in acqs:
             scores = acq.score(X_cand, model_2d)
             assert scores.shape == (3,), f"{acq.name} returned wrong shape"
-            assert jnp.all(jnp.isfinite(scores)), (
-                f"{acq.name} returned non-finite scores"
-            )
+            assert jnp.all(jnp.isfinite(scores)), f"{acq.name} returned non-finite scores"

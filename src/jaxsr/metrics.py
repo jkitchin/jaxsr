@@ -7,7 +7,7 @@ Provides information criteria, cross-validation scores, and model comparison uti
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -26,7 +26,7 @@ def compute_aic(
     n_samples: int,
     n_params: int,
     mse: float,
-    variance: Optional[float] = None,
+    variance: float | None = None,
 ) -> float:
     """
     Compute Akaike Information Criterion.
@@ -66,7 +66,7 @@ def compute_bic(
     n_samples: int,
     n_params: int,
     mse: float,
-    variance: Optional[float] = None,
+    variance: float | None = None,
 ) -> float:
     """
     Compute Bayesian Information Criterion.
@@ -103,7 +103,7 @@ def compute_aicc(
     n_samples: int,
     n_params: int,
     mse: float,
-    variance: Optional[float] = None,
+    variance: float | None = None,
 ) -> float:
     """
     Compute corrected Akaike Information Criterion (AICc).
@@ -248,9 +248,7 @@ def compute_information_criterion(
     }
 
     if criterion not in criteria:
-        raise ValueError(
-            f"Unknown criterion: {criterion}. Available: {list(criteria.keys())}"
-        )
+        raise ValueError(f"Unknown criterion: {criterion}. Available: {list(criteria.keys())}")
 
     return criteria[criterion](n_samples, n_params, mse)
 
@@ -266,8 +264,8 @@ def cross_validate(
     y: jnp.ndarray,
     cv: int = 5,
     scoring: str = "neg_mse",
-    random_state: Optional[int] = None,
-) -> Dict[str, Any]:
+    random_state: int | None = None,
+) -> dict[str, Any]:
     """
     Perform k-fold cross-validation.
 
@@ -362,7 +360,7 @@ def compute_cv_score(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     cv: int = 5,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> float:
     """
     Compute cross-validation MSE for a design matrix.
@@ -447,7 +445,7 @@ def compute_loo_mse(
 
     # LOO residual: e_i / (1 - h_ii)
     loo_residuals = residuals / (1 - h_diag + 1e-10)
-    loo_mse = jnp.mean(loo_residuals ** 2)
+    loo_mse = jnp.mean(loo_residuals**2)
 
     return float(loo_mse)
 
@@ -561,7 +559,7 @@ def compute_all_metrics(
     y_true: jnp.ndarray,
     y_pred: jnp.ndarray,
     n_params: int,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Compute all standard regression metrics.
 
@@ -604,20 +602,21 @@ def compute_all_metrics(
 @dataclass
 class ModelComparison:
     """Container for model comparison results."""
-    models: List[SymbolicRegressor]
-    names: List[str]
-    train_metrics: List[Dict[str, float]]
-    test_metrics: Optional[List[Dict[str, float]]]
-    rankings: Dict[str, List[int]]
+
+    models: list[SymbolicRegressor]
+    names: list[str]
+    train_metrics: list[dict[str, float]]
+    test_metrics: list[dict[str, float]] | None
+    rankings: dict[str, list[int]]
 
 
 def compare_models(
-    models: List[SymbolicRegressor],
+    models: list[SymbolicRegressor],
     X_train: jnp.ndarray,
     y_train: jnp.ndarray,
-    X_test: Optional[jnp.ndarray] = None,
-    y_test: Optional[jnp.ndarray] = None,
-    names: Optional[List[str]] = None,
+    X_test: jnp.ndarray | None = None,
+    y_test: jnp.ndarray | None = None,
+    names: list[str] | None = None,
 ) -> ModelComparison:
     """
     Compare multiple fitted models.
@@ -729,7 +728,11 @@ def format_comparison_table(comparison: ModelComparison) -> str:
             m = comparison.test_metrics[i]
             complexity = model.complexity_ if hasattr(model, "complexity_") else "N/A"
             row = f"{name:<15} | " + " | ".join(
-                f"{m.get(metric, 'N/A'):>10.4f}" if isinstance(m.get(metric), float) else f"{'N/A':>10}"
+                (
+                    f"{m.get(metric, 'N/A'):>10.4f}"
+                    if isinstance(m.get(metric), float)
+                    else f"{'N/A':>10}"
+                )
                 for metric in metrics[:-1]
             )
             row += f" | {complexity:>10}"

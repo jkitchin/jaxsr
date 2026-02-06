@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.stats import qmc
@@ -22,6 +21,7 @@ if TYPE_CHECKING:
 
 class SamplingStrategy(Enum):
     """Available sampling strategies."""
+
     UNCERTAINTY = "uncertainty"
     ERROR = "error"
     LEVERAGE = "leverage"
@@ -44,6 +44,7 @@ class SamplingResult:
     strategy : str
         Strategy used.
     """
+
     points: jnp.ndarray
     scores: jnp.ndarray
     strategy: str
@@ -87,11 +88,11 @@ class AdaptiveSampler:
     def __init__(
         self,
         model: SymbolicRegressor,
-        bounds: List[Tuple[float, float]],
+        bounds: list[tuple[float, float]],
         strategy: str = "uncertainty",
         batch_size: int = 5,
         n_candidates: int = 1000,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ):
         self.model = model
         self.bounds = bounds
@@ -111,8 +112,8 @@ class AdaptiveSampler:
 
     def suggest(
         self,
-        n_points: Optional[int] = None,
-        exclude_points: Optional[jnp.ndarray] = None,
+        n_points: int | None = None,
+        exclude_points: jnp.ndarray | None = None,
         min_distance: float = 0.01,
     ) -> SamplingResult:
         """
@@ -139,27 +140,19 @@ class AdaptiveSampler:
 
         # Exclude points too close to existing data or excluded points
         if exclude_points is not None:
-            candidates = self._filter_by_distance(
-                candidates, exclude_points, min_distance
-            )
+            candidates = self._filter_by_distance(candidates, exclude_points, min_distance)
 
         if self.model._X_train is not None:
-            candidates = self._filter_by_distance(
-                candidates, self.model._X_train, min_distance
-            )
+            candidates = self._filter_by_distance(candidates, self.model._X_train, min_distance)
 
         if len(candidates) < n_points:
             # Generate more candidates if needed
             additional = self._generate_candidates(self.n_candidates * 2)
             candidates = jnp.vstack([candidates, additional])
             if exclude_points is not None:
-                candidates = self._filter_by_distance(
-                    candidates, exclude_points, min_distance
-                )
+                candidates = self._filter_by_distance(candidates, exclude_points, min_distance)
             if self.model._X_train is not None:
-                candidates = self._filter_by_distance(
-                    candidates, self.model._X_train, min_distance
-                )
+                candidates = self._filter_by_distance(candidates, self.model._X_train, min_distance)
 
         # Compute acquisition scores
         scores = self._compute_scores(candidates)
@@ -260,9 +253,7 @@ class AdaptiveSampler:
 
         for i, cand in enumerate(candidates):
             # Distance-weighted residual score
-            distances = jnp.linalg.norm(
-                self.model._X_train - cand, axis=1
-            )
+            distances = jnp.linalg.norm(self.model._X_train - cand, axis=1)
             weights = jnp.exp(-distances)
             scores = scores.at[i].set(jnp.sum(weights * residuals) / (jnp.sum(weights) + 1e-10))
 
@@ -327,7 +318,7 @@ class AdaptiveSampler:
                 y_minus = self.model.predict(cand_minus.reshape(1, -1))[0]
 
                 grad_j = (y_plus - y_minus) / (2 * eps)
-                grad_norm += grad_j ** 2
+                grad_norm += grad_j**2
 
             scores = scores.at[i].set(jnp.sqrt(grad_norm))
 
@@ -368,8 +359,8 @@ class AdaptiveSampler:
 
 def latin_hypercube_sample(
     n_samples: int,
-    bounds: List[Tuple[float, float]],
-    random_state: Optional[int] = None,
+    bounds: list[tuple[float, float]],
+    random_state: int | None = None,
 ) -> jnp.ndarray:
     """
     Generate Latin Hypercube samples.
@@ -401,8 +392,8 @@ def latin_hypercube_sample(
 
 def sobol_sample(
     n_samples: int,
-    bounds: List[Tuple[float, float]],
-    random_state: Optional[int] = None,
+    bounds: list[tuple[float, float]],
+    random_state: int | None = None,
 ) -> jnp.ndarray:
     """
     Generate Sobol sequence samples.
@@ -434,8 +425,8 @@ def sobol_sample(
 
 def halton_sample(
     n_samples: int,
-    bounds: List[Tuple[float, float]],
-    random_state: Optional[int] = None,
+    bounds: list[tuple[float, float]],
+    random_state: int | None = None,
 ) -> jnp.ndarray:
     """
     Generate Halton sequence samples.
@@ -467,7 +458,7 @@ def halton_sample(
 
 def grid_sample(
     n_per_dim: int,
-    bounds: List[Tuple[float, float]],
+    bounds: list[tuple[float, float]],
 ) -> jnp.ndarray:
     """
     Generate grid samples.
@@ -484,11 +475,8 @@ def grid_sample(
     samples : jnp.ndarray
         Sample points.
     """
-    grids = [
-        np.linspace(lower, upper, n_per_dim)
-        for lower, upper in bounds
-    ]
-    mesh = np.meshgrid(*grids, indexing='ij')
+    grids = [np.linspace(lower, upper, n_per_dim) for lower, upper in bounds]
+    mesh = np.meshgrid(*grids, indexing="ij")
     samples = np.stack([m.ravel() for m in mesh], axis=1)
     return jnp.array(samples)
 
@@ -503,7 +491,7 @@ def d_optimal_select(
     n_select: int,
     basis_library,
     selected_indices: jnp.ndarray,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> jnp.ndarray:
     """
     Select D-optimal points from candidates.

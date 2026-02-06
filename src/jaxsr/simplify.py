@@ -7,10 +7,9 @@ Post-processes discovered expressions to simplify and clean up the output.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import jax.numpy as jnp
-import numpy as np
 
 
 @dataclass
@@ -33,8 +32,9 @@ class SimplificationResult:
     n_terms_simplified : int
         Number of terms after simplification.
     """
+
     coefficients: jnp.ndarray
-    names: List[str]
+    names: list[str]
     expression: str
     sympy_expr: Any = None
     n_terms_original: int = 0
@@ -43,10 +43,10 @@ class SimplificationResult:
 
 def simplify_expression(
     coefficients: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     tolerance: float = 1e-6,
     use_sympy: bool = True,
-    feature_names: Optional[List[str]] = None,
+    feature_names: list[str] | None = None,
 ) -> SimplificationResult:
     """
     Simplify a discovered expression.
@@ -84,9 +84,7 @@ def simplify_expression(
     n_original = len(coefficients)
 
     # Step 1: Remove near-zero coefficients
-    coefficients, basis_names = _remove_small_coefficients(
-        coefficients, basis_names, tolerance
-    )
+    coefficients, basis_names = _remove_small_coefficients(coefficients, basis_names, tolerance)
 
     # Step 2: Try SymPy simplification if requested
     sympy_expr = None
@@ -94,9 +92,7 @@ def simplify_expression(
         try:
             sympy_expr = _sympy_simplify(coefficients, basis_names, feature_names)
             # Extract simplified form back
-            simplified_coeffs, simplified_names = _extract_from_sympy(
-                sympy_expr, feature_names
-            )
+            simplified_coeffs, simplified_names = _extract_from_sympy(sympy_expr, feature_names)
             if simplified_coeffs is not None:
                 coefficients = simplified_coeffs
                 basis_names = simplified_names
@@ -119,14 +115,14 @@ def simplify_expression(
 
 def _remove_small_coefficients(
     coefficients: jnp.ndarray,
-    names: List[str],
+    names: list[str],
     tolerance: float,
-) -> Tuple[List[float], List[str]]:
+) -> tuple[list[float], list[str]]:
     """Remove coefficients below tolerance."""
     filtered_coeffs = []
     filtered_names = []
 
-    for coef, name in zip(coefficients, names):
+    for coef, name in zip(coefficients, names, strict=False):
         if abs(float(coef)) >= tolerance:
             filtered_coeffs.append(float(coef))
             filtered_names.append(name)
@@ -135,9 +131,9 @@ def _remove_small_coefficients(
 
 
 def _sympy_simplify(
-    coefficients: List[float],
-    names: List[str],
-    feature_names: Optional[List[str]] = None,
+    coefficients: list[float],
+    names: list[str],
+    feature_names: list[str] | None = None,
 ):
     """Use SymPy for algebraic simplification."""
     import sympy
@@ -151,7 +147,7 @@ def _sympy_simplify(
 
     # Build expression
     expr = sympy.Integer(0)
-    for coef, name in zip(coefficients, names):
+    for coef, name in zip(coefficients, names, strict=False):
         term = _parse_term_to_sympy(name, symbols)
         expr = expr + coef * term
 
@@ -160,7 +156,7 @@ def _sympy_simplify(
     return simplified
 
 
-def _extract_feature_names(basis_names: List[str]) -> List[str]:
+def _extract_feature_names(basis_names: list[str]) -> list[str]:
     """Extract feature names from basis function names."""
     features = set()
 
@@ -195,7 +191,7 @@ def _extract_feature_names(basis_names: List[str]) -> List[str]:
         # Handle transcendental: log(x), exp(x)
         for func in ["log(", "exp(", "sqrt(", "sin(", "cos("]:
             if name.startswith(func) and name.endswith(")"):
-                inner = name[len(func):-1]
+                inner = name[len(func) : -1]
                 if inner.isidentifier():
                     features.add(inner)
                 break
@@ -214,7 +210,7 @@ def _extract_feature_names(basis_names: List[str]) -> List[str]:
                 if part.isidentifier():
                     features.add(part)
 
-    return list(sorted(features))
+    return sorted(features)
 
 
 def _parse_term_to_sympy(name: str, symbols: dict):
@@ -262,7 +258,7 @@ def _parse_term_to_sympy(name: str, symbols: dict):
     for func_name, sympy_func in transcendental_map.items():
         prefix = f"{func_name}("
         if name.startswith(prefix) and name.endswith(")"):
-            inner = name[len(prefix):-1]
+            inner = name[len(prefix) : -1]
             if inner in symbols:
                 return sympy_func(symbols[inner])
 
@@ -284,8 +280,8 @@ def _parse_term_to_sympy(name: str, symbols: dict):
 
 def _extract_from_sympy(
     expr,
-    feature_names: Optional[List[str]] = None,
-) -> Tuple[Optional[List[float]], Optional[List[str]]]:
+    feature_names: list[str] | None = None,
+) -> tuple[list[float] | None, list[str] | None]:
     """Extract coefficients and basis names from SymPy expression."""
     import sympy
 
@@ -318,8 +314,8 @@ def _extract_from_sympy(
 
 
 def _build_expression(
-    coefficients: List[float],
-    names: List[str],
+    coefficients: list[float],
+    names: list[str],
     precision: int = 4,
 ) -> str:
     """Build human-readable expression string."""
@@ -327,7 +323,7 @@ def _build_expression(
         return "y = 0"
 
     terms = []
-    for coef, name in zip(coefficients, names):
+    for coef, name in zip(coefficients, names, strict=False):
         if abs(coef) < 1e-10:
             continue
 
@@ -383,15 +379,15 @@ def threshold_coefficients(
 
 def normalize_expression(
     coefficients: jnp.ndarray,
-    names: List[str],
-) -> Tuple[jnp.ndarray, List[str]]:
+    names: list[str],
+) -> tuple[jnp.ndarray, list[str]]:
     """
     Normalize expression for comparison.
 
     Sorts terms by name and handles sign conventions.
     """
     # Sort by name
-    pairs = list(zip(coefficients, names))
+    pairs = list(zip(coefficients, names, strict=False))
     pairs.sort(key=lambda x: x[1])
 
     coefficients = jnp.array([p[0] for p in pairs])
@@ -401,8 +397,8 @@ def normalize_expression(
 
 
 def expressions_equivalent(
-    expr1: Tuple[jnp.ndarray, List[str]],
-    expr2: Tuple[jnp.ndarray, List[str]],
+    expr1: tuple[jnp.ndarray, list[str]],
+    expr2: tuple[jnp.ndarray, list[str]],
     tolerance: float = 1e-6,
 ) -> bool:
     """
@@ -431,10 +427,10 @@ def expressions_equivalent(
     mask2 = jnp.abs(coeffs2) >= tolerance
 
     coeffs1 = coeffs1[mask1]
-    names1 = [n for n, m in zip(names1, mask1) if m]
+    names1 = [n for n, m in zip(names1, mask1, strict=False) if m]
 
     coeffs2 = coeffs2[mask2]
-    names2 = [n for n, m in zip(names2, mask2) if m]
+    names2 = [n for n, m in zip(names2, mask2, strict=False) if m]
 
     # Compare
     if len(coeffs1) != len(coeffs2):
@@ -452,8 +448,8 @@ def expressions_equivalent(
 
 
 def compute_expression_complexity(
-    names: List[str],
-    complexity_weights: Optional[Dict[str, int]] = None,
+    names: list[str],
+    complexity_weights: dict[str, int] | None = None,
 ) -> int:
     """
     Compute total complexity of an expression.
@@ -516,10 +512,10 @@ def _classify_term(name: str) -> str:
 
 def suggest_simpler_forms(
     coefficients: jnp.ndarray,
-    names: List[str],
-    feature_names: List[str],
+    names: list[str],
+    feature_names: list[str],
     max_suggestions: int = 3,
-) -> List[str]:
+) -> list[str]:
     """
     Suggest potentially simpler equivalent forms.
 
@@ -548,7 +544,7 @@ def suggest_simpler_forms(
         symbols = {name: sympy.Symbol(name) for name in feature_names}
 
         expr = sympy.Integer(0)
-        for coef, name in zip(coefficients, names):
+        for coef, name in zip(coefficients, names, strict=False):
             term = _parse_term_to_sympy(name, symbols)
             expr = expr + float(coef) * term
 
@@ -563,7 +559,7 @@ def suggest_simpler_forms(
 
         original_str = str(sympy.simplify(expr))
 
-        for name, strategy in strategies:
+        for _name, strategy in strategies:
             try:
                 result = strategy(expr)
                 result_str = str(result)

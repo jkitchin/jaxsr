@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jaxsr import BasisLibrary, SymbolicRegressor, fit_symbolic, Constraints
+from jaxsr import BasisLibrary, Constraints, SymbolicRegressor, fit_symbolic
 
 
 class TestSymbolicRegressor:
@@ -158,7 +158,7 @@ class TestSymbolicRegressor:
         # Fit on first half
         model = SymbolicRegressor(basis_library=library, max_terms=5)
         model.fit(X[:50], y[:50])
-        r2_initial = model.score(X[:50], y[:50])
+        model.score(X[:50], y[:50])
 
         # Update with second half
         model.update(X[50:], y[50:], refit=False)
@@ -238,6 +238,7 @@ class TestFitSymbolic:
             jnp.array(y),
             feature_names=["a", "b"],
             max_terms=5,
+            include_transcendental=False,
         )
 
         assert model._is_fitted
@@ -269,10 +270,7 @@ class TestConstrainedFitting:
         X = np.random.randn(100, 2)
         y = 2.0 * X[:, 0] + 1.0 * X[:, 1]
 
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x", "y"])
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_linear()
 
         # Constraint: x coefficient must be positive
         constraints = Constraints().add_sign_constraint("x", sign="positive")
@@ -295,11 +293,7 @@ class TestConstrainedFitting:
         X = np.random.randn(100, 1)
         y = 3.0 * X[:, 0]  # No intercept
 
-        library = (
-            BasisLibrary(n_features=1, feature_names=["x"])
-            .add_constant()
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
 
         # Fix intercept to 0
         constraints = Constraints().add_known_coefficient("1", value=0.0)
@@ -328,11 +322,7 @@ class TestSymPyExport:
         X = np.random.randn(100, 2)
         y = 2.0 * X[:, 0] + 1.0
 
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x", "y"])
-            .add_constant()
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_constant().add_linear()
 
         model = SymbolicRegressor(basis_library=library, max_terms=3)
         model.fit(jnp.array(X), jnp.array(y))
@@ -393,9 +383,7 @@ class TestConstrainedRegressor:
         X_test = np.linspace(0, 4, 100).reshape(-1, 1)
         y_pred = np.array(model.predict(jnp.array(X_test)))
         diffs = np.diff(y_pred)
-        assert np.all(diffs >= -1e-2), (
-            f"Regressor not monotonic: min diff = {diffs.min()}"
-        )
+        assert np.all(diffs >= -1e-2), f"Regressor not monotonic: min diff = {diffs.min()}"
 
     def test_convex_regressor(self):
         """End-to-end convexity constraint through SymbolicRegressor."""
@@ -424,6 +412,6 @@ class TestConstrainedRegressor:
         X_test = np.linspace(-2, 2, 100).reshape(-1, 1)
         y_pred = np.array(model.predict(jnp.array(X_test)))
         second_diffs = np.diff(y_pred, n=2)
-        assert np.all(second_diffs >= -1e-2), (
-            f"Regressor not convex: min second diff = {second_diffs.min()}"
-        )
+        assert np.all(
+            second_diffs >= -1e-2
+        ), f"Regressor not convex: min second diff = {second_diffs.min()}"

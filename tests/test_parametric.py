@@ -6,7 +6,6 @@ import pytest
 
 from jaxsr import BasisLibrary, SymbolicRegressor
 
-
 # ──────────────────────────────────────────────────────────────────
 # 1. exp(-a*x) parameter recovery
 # ──────────────────────────────────────────────────────────────────
@@ -45,9 +44,9 @@ class TestParametricExpDecay:
 
         p_info = library._parametric_info[0]
         assert p_info.resolved_params is not None
-        assert abs(p_info.resolved_params["a"] - 0.3) < 0.05, (
-            f"Expected a ≈ 0.3, got {p_info.resolved_params['a']:.4f}"
-        )
+        assert (
+            abs(p_info.resolved_params["a"] - 0.3) < 0.05
+        ), f"Expected a ≈ 0.3, got {p_info.resolved_params['a']:.4f}"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -88,9 +87,9 @@ class TestParametricPowerLaw:
 
         p_info = library._parametric_info[0]
         assert p_info.resolved_params is not None
-        assert abs(p_info.resolved_params["a"] - 0.8) < 0.05, (
-            f"Expected a ≈ 0.8, got {p_info.resolved_params['a']:.4f}"
-        )
+        assert (
+            abs(p_info.resolved_params["a"] - 0.8) < 0.05
+        ), f"Expected a ≈ 0.8, got {p_info.resolved_params['a']:.4f}"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -204,7 +203,7 @@ class TestParametricSymPyLatex:
 
         x_sym = sympy.Symbol("x")
         val = float(expr.subs(x_sym, 2.0))
-        expected = 1.2 * 2.0 ** 0.8
+        expected = 1.2 * 2.0**0.8
         assert abs(val - expected) < 0.5, f"Expected ≈{expected:.4f}, got {val:.4f}"
 
         latex = model.to_latex()

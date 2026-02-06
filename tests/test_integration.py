@@ -2,13 +2,12 @@
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from jaxsr import (
-    BasisLibrary,
-    SymbolicRegressor,
-    Constraints,
     AdaptiveSampler,
+    BasisLibrary,
+    Constraints,
+    SymbolicRegressor,
     fit_symbolic,
 )
 
@@ -143,10 +142,7 @@ class TestConstrainedRegression:
         X = np.random.randn(100, 1)
         y = 2.0 * X[:, 0] + np.random.randn(100) * 0.1
 
-        library = (
-            BasisLibrary(n_features=1, feature_names=["x"])
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_linear()
 
         constraints = Constraints().add_sign_constraint("x", sign="positive", hard=True)
 
@@ -308,6 +304,7 @@ class TestEndToEnd:
             jnp.array(y),
             feature_names=["a", "b"],
             max_terms=5,
+            include_transcendental=False,
         )
 
         # Evaluate

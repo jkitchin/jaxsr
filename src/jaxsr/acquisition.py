@@ -59,13 +59,6 @@ from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    Union,
 )
 
 import jax
@@ -102,7 +95,7 @@ class AcquisitionResult:
     points: jnp.ndarray
     scores: jnp.ndarray
     acquisition: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class BatchStrategy(Enum):
@@ -122,22 +115,18 @@ class BatchStrategy(Enum):
 def _get_pred_and_sigma(
     model: SymbolicRegressor,
     X: jnp.ndarray,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return (y_pred, sigma) for *X* using the OLS posterior.
 
     sigma(x) = sigma_hat * sqrt( phi(x)^T (Phi^T Phi)^{-1} phi(x) )
     """
-    from .uncertainty import compute_coeff_covariance, compute_unbiased_variance
+    from .uncertainty import compute_unbiased_variance
 
     X = jnp.atleast_2d(jnp.asarray(X))
     model._check_is_fitted()
 
-    Phi_train = model.basis_library.evaluate_subset(
-        model._X_train, model._result.selected_indices
-    )
-    sigma_sq = compute_unbiased_variance(
-        Phi_train, model._y_train, model._result.coefficients
-    )
+    Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
+    sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
 
     # (Phi^T Phi)^{-1} via SVD for stability
     U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
@@ -146,9 +135,7 @@ def _get_pred_and_sigma(
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
 
-    Phi_new = model.basis_library.evaluate_subset(
-        X, model._result.selected_indices
-    )
+    Phi_new = model.basis_library.evaluate_subset(X, model._result.selected_indices)
     y_pred = Phi_new @ model._result.coefficients
 
     # Vectorised leverage: h_ii = phi_i^T @ (Phi^T Phi)^{-1} @ phi_i
@@ -160,9 +147,7 @@ def _get_pred_and_sigma(
 
 def _get_PhiTPhiInv(model: SymbolicRegressor) -> jnp.ndarray:
     """Return (Phi^T Phi)^{-1} for the training design matrix."""
-    Phi_train = model.basis_library.evaluate_subset(
-        model._X_train, model._result.selected_indices
-    )
+    Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
     U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
     rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
     cutoff = rcond * jnp.max(s)
@@ -190,9 +175,7 @@ class AcquisitionFunction(abc.ABC):
 
     def __add__(self, other: AcquisitionFunction) -> Composite:
         if isinstance(other, Composite):
-            return Composite(
-                functions=[(1.0, self)] + other.functions
-            )
+            return Composite(functions=[(1.0, self)] + other.functions)
         return Composite(functions=[(1.0, self), (1.0, other)])
 
     def __radd__(self, other):
@@ -328,16 +311,14 @@ class BMAUncertainty(AcquisitionFunction):
     :class:`PredictionVariance` because it evaluates multiple models.
     """
 
-    def __init__(self, criterion: str = "bic", top_k: Optional[int] = None):
+    def __init__(self, criterion: str = "bic", top_k: int | None = None):
         self.criterion = criterion
         self.top_k = top_k
 
     def score(self, X_candidates, model):
         from .uncertainty import BayesianModelAverage
 
-        bma = BayesianModelAverage(
-            model, criterion=self.criterion, top_k=self.top_k
-        )
+        bma = BayesianModelAverage(model, criterion=self.criterion, top_k=self.top_k)
         _, y_std = bma.predict(X_candidates)
         return y_std
 
@@ -360,7 +341,7 @@ class ModelDiscrimination(AcquisitionFunction):
     still uncertain.
     """
 
-    def __init__(self, top_k: Optional[int] = None):
+    def __init__(self, top_k: int | None = None):
         self.top_k = top_k
 
     def score(self, X_candidates, model):
@@ -496,7 +477,7 @@ class ExpectedImprovement(AcquisitionFunction):
 
     def __init__(
         self,
-        y_best: Optional[float] = None,
+        y_best: float | None = None,
         xi: float = 0.01,
         minimize: bool = True,
     ):
@@ -558,7 +539,7 @@ class ProbabilityOfImprovement(AcquisitionFunction):
 
     def __init__(
         self,
-        y_best: Optional[float] = None,
+        y_best: float | None = None,
         xi: float = 0.01,
         minimize: bool = True,
     ):
@@ -609,7 +590,7 @@ class ThompsonSampling(AcquisitionFunction):
     one-step-ahead strategy.
     """
 
-    def __init__(self, minimize: bool = True, seed: Optional[int] = None):
+    def __init__(self, minimize: bool = True, seed: int | None = None):
         self.minimize = minimize
         self.seed = seed
         self._call_count = 0
@@ -623,9 +604,7 @@ class ThompsonSampling(AcquisitionFunction):
         Phi_train = model.basis_library.evaluate_subset(
             model._X_train, model._result.selected_indices
         )
-        sigma_sq = compute_unbiased_variance(
-            Phi_train, model._y_train, model._result.coefficients
-        )
+        sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
         cov = compute_coeff_covariance(Phi_train, sigma_sq)
 
         beta_hat = np.array(model._result.coefficients)
@@ -644,9 +623,7 @@ class ThompsonSampling(AcquisitionFunction):
         beta_sample = rng.multivariate_normal(beta_hat, cov_np)
         self._call_count += 1
 
-        Phi_new = model.basis_library.evaluate_subset(
-            X_candidates, model._result.selected_indices
-        )
+        Phi_new = model.basis_library.evaluate_subset(X_candidates, model._result.selected_indices)
         y_sample = Phi_new @ jnp.array(beta_sample)
 
         if self.minimize:
@@ -677,7 +654,7 @@ class AOptimal(AcquisitionFunction):
     """
 
     def score(self, X_candidates, model):
-        from .uncertainty import compute_coeff_covariance, compute_unbiased_variance
+        from .uncertainty import compute_unbiased_variance
 
         model._check_is_fitted()
         X_candidates = jnp.atleast_2d(jnp.asarray(X_candidates))
@@ -685,15 +662,11 @@ class AOptimal(AcquisitionFunction):
         Phi_train = model.basis_library.evaluate_subset(
             model._X_train, model._result.selected_indices
         )
-        sigma_sq = compute_unbiased_variance(
-            Phi_train, model._y_train, model._result.coefficients
-        )
+        sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
         PhiTPhiInv = _get_PhiTPhiInv(model)
         cov = sigma_sq * PhiTPhiInv
 
-        Phi_new = model.basis_library.evaluate_subset(
-            X_candidates, model._result.selected_indices
-        )
+        Phi_new = model.basis_library.evaluate_subset(X_candidates, model._result.selected_indices)
 
         # Vectorised: for each candidate phi_i
         # numerator_i = phi_i^T @ PhiTPhiInv @ Cov @ PhiTPhiInv @ phi_i
@@ -722,9 +695,7 @@ class DOptimal(AcquisitionFunction):
         X_candidates = jnp.atleast_2d(jnp.asarray(X_candidates))
 
         PhiTPhiInv = _get_PhiTPhiInv(model)
-        Phi_new = model.basis_library.evaluate_subset(
-            X_candidates, model._result.selected_indices
-        )
+        Phi_new = model.basis_library.evaluate_subset(X_candidates, model._result.selected_indices)
         # h = phi^T (Phi^T Phi)^{-1} phi
         return jnp.sum((Phi_new @ PhiTPhiInv) * Phi_new, axis=1)
 
@@ -749,7 +720,7 @@ class Composite(AcquisitionFunction):
     functions : list of (weight, AcquisitionFunction)
     """
 
-    def __init__(self, functions: List[Tuple[float, AcquisitionFunction]]):
+    def __init__(self, functions: list[tuple[float, AcquisitionFunction]]):
         self.functions = functions
 
     def __add__(self, other: AcquisitionFunction) -> Composite:
@@ -763,9 +734,7 @@ class Composite(AcquisitionFunction):
         return NotImplemented
 
     def __mul__(self, scalar: float) -> Composite:
-        return Composite(
-            functions=[(w * float(scalar), f) for w, f in self.functions]
-        )
+        return Composite(functions=[(w * float(scalar), f) for w, f in self.functions])
 
     def __rmul__(self, scalar: float) -> Composite:
         return self.__mul__(scalar)
@@ -854,11 +823,11 @@ class ActiveLearner:
     def __init__(
         self,
         model: SymbolicRegressor,
-        bounds: List[Tuple[float, float]],
+        bounds: list[tuple[float, float]],
         acquisition: AcquisitionFunction,
         n_candidates: int = 1000,
         candidate_method: str = "lhs",
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ):
         model._check_is_fitted()
 
@@ -879,8 +848,8 @@ class ActiveLearner:
             )
 
         # Tracking
-        self.history_X: List[jnp.ndarray] = []
-        self.history_y: List[jnp.ndarray] = []
+        self.history_X: list[jnp.ndarray] = []
+        self.history_y: list[jnp.ndarray] = []
         self.iteration: int = 0
 
     # -- Public API --------------------------------------------------------
@@ -890,7 +859,7 @@ class ActiveLearner:
         n_points: int = 5,
         batch_strategy: str = "greedy",
         min_distance: float = 0.01,
-        candidates: Optional[jnp.ndarray] = None,
+        candidates: jnp.ndarray | None = None,
     ) -> AcquisitionResult:
         """Suggest the next batch of points to evaluate.
 
@@ -923,23 +892,17 @@ class ActiveLearner:
 
         # Filter candidates too close to training data
         if self.model._X_train is not None:
-            candidates = self._filter_by_distance(
-                candidates, self.model._X_train, min_distance
-            )
+            candidates = self._filter_by_distance(candidates, self.model._X_train, min_distance)
 
         if len(candidates) == 0:
-            warnings.warn(
-                "All candidates filtered.  Returning random points."
-            )
+            warnings.warn("All candidates filtered.  Returning random points.", stacklevel=2)
             candidates = self._generate_candidates(n_points)
 
         if len(candidates) < n_points:
             extra = self._generate_candidates(self.n_candidates * 2)
             candidates = jnp.vstack([candidates, extra])
             if self.model._X_train is not None:
-                candidates = self._filter_by_distance(
-                    candidates, self.model._X_train, min_distance
-                )
+                candidates = self._filter_by_distance(candidates, self.model._X_train, min_distance)
 
         # Dispatch to batch strategy
         if strategy == BatchStrategy.GREEDY:
@@ -1036,9 +999,7 @@ class ActiveLearner:
 
     # -- Batch Selection Strategies ----------------------------------------
 
-    def _select_greedy(
-        self, candidates: jnp.ndarray, n_points: int
-    ) -> AcquisitionResult:
+    def _select_greedy(self, candidates: jnp.ndarray, n_points: int) -> AcquisitionResult:
         """Select top-k candidates by acquisition score."""
         scores = self.acquisition.score(candidates, self.model)
 
@@ -1053,9 +1014,7 @@ class ActiveLearner:
             acquisition=self.acquisition.name,
         )
 
-    def _select_penalized(
-        self, candidates: jnp.ndarray, n_points: int
-    ) -> AcquisitionResult:
+    def _select_penalized(self, candidates: jnp.ndarray, n_points: int) -> AcquisitionResult:
         """Greedy selection with distance-based penalisation.
 
         After selecting the best candidate, nearby candidates are penalised
@@ -1077,9 +1036,7 @@ class ActiveLearner:
             selected_idx.append(best)
 
             # Penalise nearby candidates
-            dists = np.linalg.norm(
-                candidates_norm - candidates_norm[best], axis=1
-            )
+            dists = np.linalg.norm(candidates_norm - candidates_norm[best], axis=1)
             # Gaussian penalty: penalty peaks at 1 for dist=0, decays with
             # bandwidth ~ 1/sqrt(n_points) to spread the batch out.
             bandwidth = 1.0 / max(np.sqrt(n_points), 1.0)
@@ -1094,9 +1051,7 @@ class ActiveLearner:
             metadata={"batch_strategy": "penalized"},
         )
 
-    def _select_kriging_believer(
-        self, candidates: jnp.ndarray, n_points: int
-    ) -> AcquisitionResult:
+    def _select_kriging_believer(self, candidates: jnp.ndarray, n_points: int) -> AcquisitionResult:
         """Kriging Believer batch selection.
 
         1. Score all candidates.
@@ -1139,9 +1094,7 @@ class ActiveLearner:
                 x_star = jnp.atleast_2d(jnp.array(candidates_np[best_global]))
                 y_star = self.model.predict(x_star)
                 self.model._X_train = jnp.vstack([self.model._X_train, x_star])
-                self.model._y_train = jnp.concatenate(
-                    [self.model._y_train, y_star]
-                )
+                self.model._y_train = jnp.concatenate([self.model._y_train, y_star])
 
                 # Quick coefficient refit (not full selection)
                 Phi = self.model.basis_library.evaluate_subset(
@@ -1175,9 +1128,7 @@ class ActiveLearner:
             metadata={"batch_strategy": "kriging_believer"},
         )
 
-    def _select_d_optimal(
-        self, candidates: jnp.ndarray, n_points: int
-    ) -> AcquisitionResult:
+    def _select_d_optimal(self, candidates: jnp.ndarray, n_points: int) -> AcquisitionResult:
         """D-Optimal batch selection: maximise det(Phi^T Phi) for the batch.
 
         Uses the existing ``d_optimal_select`` from ``sampling.py`` but
@@ -1227,9 +1178,7 @@ class ActiveLearner:
         elif self.candidate_method == "random":
             samples = self._rng.random((n, d))
         else:
-            raise ValueError(
-                f"Unknown candidate_method: {self.candidate_method}"
-            )
+            raise ValueError(f"Unknown candidate_method: {self.candidate_method}")
 
         samples = qmc.scale(samples, lower, upper)
         return jnp.array(samples)
@@ -1268,12 +1217,12 @@ class ActiveLearner:
 
 def suggest_points(
     model: SymbolicRegressor,
-    bounds: List[Tuple[float, float]],
+    bounds: list[tuple[float, float]],
     acquisition: AcquisitionFunction,
     n_points: int = 5,
     batch_strategy: str = "greedy",
     n_candidates: int = 1000,
-    random_state: Optional[int] = None,
+    random_state: int | None = None,
 ) -> AcquisitionResult:
     """One-shot convenience: suggest points without creating an ActiveLearner.
 

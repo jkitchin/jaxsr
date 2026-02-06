@@ -13,88 +13,91 @@ __version__ = "0.1.0"
 __author__ = "John Kitchin"
 
 # Core classes
-from .basis import BasisFunction, BasisLibrary
-from .regressor import SymbolicRegressor, fit_symbolic
-from .constraints import Constraints, Constraint, ConstraintType
-from .sampling import AdaptiveSampler, SamplingStrategy
-
 # Active Learning & Acquisition Functions
 from .acquisition import (
+    LCB,
+    UCB,
     AcquisitionFunction,
     AcquisitionResult,
     ActiveLearner,
     AOptimal,
     BMAUncertainty,
-    ConfidenceBandWidth,
     Composite,
+    ConfidenceBandWidth,
     DOptimal,
     EnsembleDisagreement,
     ExpectedImprovement,
-    LCB,
     ModelDiscrimination,
     ModelMax,
     ModelMin,
     PredictionVariance,
     ProbabilityOfImprovement,
     ThompsonSampling,
-    UCB,
     suggest_points,
 )
-
-# Selection
-from .selection import (
-    SelectionResult,
-    SelectionPath,
-    greedy_forward_selection,
-    greedy_backward_elimination,
-    exhaustive_search,
-    lasso_path_selection,
-    compute_pareto_front,
-)
+from .basis import BasisFunction, BasisLibrary
+from .constraints import Constraint, Constraints, ConstraintType
 
 # Metrics
 from .metrics import (
     compute_aic,
-    compute_bic,
     compute_aicc,
-    compute_mse,
-    compute_rmse,
-    compute_mae,
-    compute_r2,
     compute_all_metrics,
+    compute_bic,
+    compute_mae,
+    compute_mse,
+    compute_r2,
+    compute_rmse,
     cross_validate,
 )
-
-# Uncertainty Quantification
-from .uncertainty import (
-    compute_unbiased_variance,
-    compute_coeff_covariance,
-    coefficient_intervals,
-    prediction_interval,
-    ensemble_predict,
-    BayesianModelAverage,
-    conformal_predict_split,
-    conformal_predict_jackknife_plus,
-    bootstrap_coefficients,
-    bootstrap_predict,
-    bootstrap_model_selection,
-)
-
-# Simplification
-from .simplify import simplify_expression, SimplificationResult
+from .regressor import SymbolicRegressor, fit_symbolic
 
 # Sampling utilities
 from .sampling import (
+    AdaptiveSampler,
+    SamplingStrategy,
+    grid_sample,
+    halton_sample,
     latin_hypercube_sample,
     sobol_sample,
-    halton_sample,
-    grid_sample,
 )
+
+# Selection
+from .selection import (
+    SelectionPath,
+    SelectionResult,
+    compute_pareto_front,
+    exhaustive_search,
+    greedy_backward_elimination,
+    greedy_forward_selection,
+    lasso_path_selection,
+)
+
+# Simplification
+from .simplify import SimplificationResult, simplify_expression
+
+# Uncertainty Quantification
+from .uncertainty import (
+    BayesianModelAverage,
+    bootstrap_coefficients,
+    bootstrap_model_selection,
+    bootstrap_predict,
+    coefficient_intervals,
+    compute_coeff_covariance,
+    compute_unbiased_variance,
+    conformal_predict_jackknife_plus,
+    conformal_predict_split,
+    ensemble_predict,
+    prediction_interval,
+)
+
 
 # Plotting (optional import to avoid matplotlib dependency issues)
 def _get_plotting():
     from . import plotting
+
     return plotting
+
 
 __all__ = [
     # Version

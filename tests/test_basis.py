@@ -69,10 +69,7 @@ class TestBasisLibrary:
 
     def test_add_polynomials(self):
         """Test adding polynomial terms."""
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x", "y"])
-            .add_polynomials(max_degree=3)
-        )
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_polynomials(max_degree=3)
         # Should have x^2, x^3, y^2, y^3 = 4 terms
         assert len(library) == 4
 
@@ -83,9 +80,8 @@ class TestBasisLibrary:
 
     def test_add_interactions(self):
         """Test adding interaction terms."""
-        library = (
-            BasisLibrary(n_features=3, feature_names=["x", "y", "z"])
-            .add_interactions(max_order=2)
+        library = BasisLibrary(n_features=3, feature_names=["x", "y", "z"]).add_interactions(
+            max_order=2
         )
         # Should have x*y, x*z, y*z = 3 terms
         assert len(library) == 3
@@ -100,9 +96,8 @@ class TestBasisLibrary:
 
     def test_add_transcendental(self):
         """Test adding transcendental terms."""
-        library = (
-            BasisLibrary(n_features=1, feature_names=["x"])
-            .add_transcendental(["exp", "sqrt"])
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_transcendental(
+            ["exp", "sqrt"]
         )
         assert len(library) == 2
         assert "exp(x)" in library.names
@@ -110,18 +105,17 @@ class TestBasisLibrary:
 
         X = jnp.array([[1.0], [4.0]])
         Phi = library.evaluate(X)
-        expected = jnp.array([
-            [jnp.exp(1.0), 1.0],
-            [jnp.exp(4.0), 2.0],
-        ])
+        expected = jnp.array(
+            [
+                [jnp.exp(1.0), 1.0],
+                [jnp.exp(4.0), 2.0],
+            ]
+        )
         np.testing.assert_array_almost_equal(Phi, expected)
 
     def test_add_ratios(self):
         """Test adding ratio terms."""
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x", "y"])
-            .add_ratios()
-        )
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_ratios()
         # Should have x/y, y/x = 2 terms
         assert len(library) == 2
 
@@ -132,13 +126,10 @@ class TestBasisLibrary:
 
     def test_add_custom(self):
         """Test adding custom basis function."""
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x", "y"])
-            .add_custom(
-                name="x^2*y",
-                func=lambda X: X[:, 0] ** 2 * X[:, 1],
-                complexity=3,
-            )
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_custom(
+            name="x^2*y",
+            func=lambda X: X[:, 0] ** 2 * X[:, 1],
+            complexity=3,
         )
         assert len(library) == 1
         assert library.names[0] == "x^2*y"
@@ -157,10 +148,7 @@ class TestBasisLibrary:
     def test_method_chaining(self):
         """Test method chaining."""
         library = (
-            BasisLibrary(n_features=2)
-            .add_constant()
-            .add_linear()
-            .add_polynomials(max_degree=2)
+            BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(max_degree=2)
         )
         # 1 + 2 + 2 = 5 terms
         assert len(library) == 5
@@ -170,7 +158,7 @@ class TestBasisLibrary:
         library = (
             BasisLibrary(n_features=2)
             .add_constant()  # complexity 0
-            .add_linear()   # complexity 1 each
+            .add_linear()  # complexity 1 each
             .add_polynomials(max_degree=2)  # complexity 2 each
         )
         complexities = library.complexities
@@ -205,10 +193,7 @@ class TestBasisLibrary:
     def test_evaluate_subset(self):
         """Test evaluating subset of basis functions."""
         library = (
-            BasisLibrary(n_features=2)
-            .add_constant()
-            .add_linear()
-            .add_polynomials(max_degree=2)
+            BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(max_degree=2)
         )
         X = jnp.array([[2.0, 3.0]])
 
@@ -219,10 +204,7 @@ class TestBasisLibrary:
     def test_filter_by_complexity(self):
         """Test filtering by complexity."""
         library = (
-            BasisLibrary(n_features=2)
-            .add_constant()
-            .add_linear()
-            .add_polynomials(max_degree=3)
+            BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(max_degree=3)
         )
 
         # Get indices of low complexity terms
@@ -250,23 +232,17 @@ class TestBasisLibrary:
 
     def test_safe_log(self):
         """Test safe log handles non-positive values."""
-        library = (
-            BasisLibrary(n_features=1)
-            .add_transcendental(["log"])
-        )
+        library = BasisLibrary(n_features=1).add_transcendental(["log"])
         X = jnp.array([[1.0], [-1.0], [0.0]])
         Phi = library.evaluate(X)
 
         assert jnp.isfinite(Phi[0, 0])  # log(1) = 0
-        assert jnp.isnan(Phi[1, 0])     # log(-1) = NaN
-        assert jnp.isnan(Phi[2, 0])     # log(0) = NaN
+        assert jnp.isnan(Phi[1, 0])  # log(-1) = NaN
+        assert jnp.isnan(Phi[2, 0])  # log(0) = NaN
 
     def test_safe_sqrt(self):
         """Test safe sqrt handles negative values."""
-        library = (
-            BasisLibrary(n_features=1)
-            .add_transcendental(["sqrt"])
-        )
+        library = BasisLibrary(n_features=1).add_transcendental(["sqrt"])
         X = jnp.array([[4.0], [-1.0]])
         Phi = library.evaluate(X)
 

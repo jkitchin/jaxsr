@@ -8,37 +8,34 @@ from __future__ import annotations
 
 import json
 import warnings
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import Any
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
 from .basis import BasisLibrary
-from .constraints import Constraints, ConstraintEvaluator, fit_constrained_ols
-from .metrics import compute_all_metrics, compute_cv_score
+from .constraints import Constraints, fit_constrained_ols
 from .selection import (
     SelectionPath,
     SelectionResult,
     compute_pareto_front,
-    fit_subset,
     select_features,
 )
 from .uncertainty import (
     BayesianModelAverage,
-    bootstrap_coefficients,
-    bootstrap_predict,
-    coefficient_intervals as _coefficient_intervals,
     compute_coeff_covariance,
     compute_unbiased_variance,
     conformal_predict_jackknife_plus,
     conformal_predict_split,
     ensemble_predict,
+)
+from .uncertainty import (
+    coefficient_intervals as _coefficient_intervals,
+)
+from .uncertainty import (
     prediction_interval as _prediction_interval,
 )
-from .utils import build_expression_string
-
 
 # =============================================================================
 # Main Regressor Class
@@ -104,14 +101,14 @@ class SymbolicRegressor:
 
     def __init__(
         self,
-        basis_library: Optional[BasisLibrary] = None,
+        basis_library: BasisLibrary | None = None,
         max_terms: int = 5,
         strategy: str = "greedy_forward",
         information_criterion: str = "bic",
         cv_folds: int = 5,
-        regularization: Optional[float] = None,
-        constraints: Optional[Constraints] = None,
-        random_state: Optional[int] = None,
+        regularization: float | None = None,
+        constraints: Constraints | None = None,
+        random_state: int | None = None,
         param_optimizer: str = "scipy",
         param_optimization_budget: int = 50,
     ):
@@ -127,10 +124,10 @@ class SymbolicRegressor:
         self.param_optimization_budget = param_optimization_budget
 
         # Fitted attributes
-        self._result: Optional[SelectionResult] = None
-        self._selection_path: Optional[SelectionPath] = None
-        self._X_train: Optional[jnp.ndarray] = None
-        self._y_train: Optional[jnp.ndarray] = None
+        self._result: SelectionResult | None = None
+        self._selection_path: SelectionPath | None = None
+        self._X_train: jnp.ndarray | None = None
+        self._y_train: jnp.ndarray | None = None
         self._is_fitted = False
 
     @property
@@ -146,7 +143,7 @@ class SymbolicRegressor:
         return self._result.coefficients
 
     @property
-    def selected_features_(self) -> List[str]:
+    def selected_features_(self) -> list[str]:
         """Names of selected basis functions."""
         self._check_is_fitted()
         return self._result.selected_names
@@ -164,7 +161,7 @@ class SymbolicRegressor:
         return self._result.complexity
 
     @property
-    def metrics_(self) -> Dict[str, float]:
+    def metrics_(self) -> dict[str, float]:
         """Evaluation metrics."""
         self._check_is_fitted()
         return {
@@ -176,7 +173,7 @@ class SymbolicRegressor:
         }
 
     @property
-    def pareto_front_(self) -> List[SelectionResult]:
+    def pareto_front_(self) -> list[SelectionResult]:
         """Pareto-optimal models."""
         self._check_is_fitted()
         return compute_pareto_front(self._selection_path.results)
@@ -197,7 +194,7 @@ class SymbolicRegressor:
         self,
         X: jnp.ndarray,
         y: jnp.ndarray,
-        sample_weight: Optional[jnp.ndarray] = None,
+        sample_weight: jnp.ndarray | None = None,
     ) -> SymbolicRegressor:
         """
         Fit symbolic regression model.
@@ -222,8 +219,7 @@ class SymbolicRegressor:
 
         if X.shape[0] != len(y):
             raise ValueError(
-                f"X and y must have same number of samples. "
-                f"Got X: {X.shape[0]}, y: {len(y)}"
+                f"X and y must have same number of samples. " f"Got X: {X.shape[0]}, y: {len(y)}"
             )
 
         if self.basis_library is None:
@@ -246,13 +242,13 @@ class SymbolicRegressor:
         if jnp.any(invalid_mask):
             n_invalid = int(jnp.sum(invalid_mask))
             warnings.warn(
-                f"Removing {n_invalid} basis functions with non-finite values"
+                f"Removing {n_invalid} basis functions with non-finite values", stacklevel=2
             )
             # Replace invalid columns with zeros (they won't be selected)
             Phi = jnp.where(jnp.isfinite(Phi), Phi, 0)
 
         # Run selection
-        extra_kw: Dict[str, Any] = {}
+        extra_kw: dict[str, Any] = {}
         if self.basis_library.has_parametric:
             extra_kw.update(
                 X=X,
@@ -404,9 +400,7 @@ class SymbolicRegressor:
     def _get_Phi_train(self) -> jnp.ndarray:
         """Get the training design matrix for the selected features."""
         self._check_is_fitted()
-        return self.basis_library.evaluate_subset(
-            self._X_train, self._result.selected_indices
-        )
+        return self.basis_library.evaluate_subset(self._X_train, self._result.selected_indices)
 
     def _warn_if_constrained_or_regularized(self):
         """Emit a warning if constraints or regularization are active."""
@@ -455,7 +449,7 @@ class SymbolicRegressor:
         sigma_sq = compute_unbiased_variance(Phi, self._y_train, self._result.coefficients)
         return compute_coeff_covariance(Phi, sigma_sq)
 
-    def coefficient_intervals(self, alpha: float = 0.05) -> Dict[str, tuple]:
+    def coefficient_intervals(self, alpha: float = 0.05) -> dict[str, tuple]:
         """
         Confidence intervals for all coefficients.
 
@@ -473,13 +467,16 @@ class SymbolicRegressor:
         self._warn_if_constrained_or_regularized()
         Phi = self._get_Phi_train()
         return _coefficient_intervals(
-            Phi, self._y_train, self._result.coefficients,
-            self._result.selected_names, alpha,
+            Phi,
+            self._y_train,
+            self._result.coefficients,
+            self._result.selected_names,
+            alpha,
         )
 
     def predict_interval(
         self, X: jnp.ndarray, alpha: float = 0.05
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Prediction intervals for new observations.
 
@@ -505,14 +502,17 @@ class SymbolicRegressor:
         Phi_train = self._get_Phi_train()
         Phi_new = self.basis_library.evaluate_subset(X, self._result.selected_indices)
         result = _prediction_interval(
-            Phi_train, self._y_train, self._result.coefficients,
-            Phi_new, alpha,
+            Phi_train,
+            self._y_train,
+            self._result.coefficients,
+            Phi_new,
+            alpha,
         )
         return result["y_pred"], result["pred_lower"], result["pred_upper"]
 
     def confidence_band(
         self, X: jnp.ndarray, alpha: float = 0.05
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Confidence band on mean response E[y|x].
 
@@ -538,12 +538,15 @@ class SymbolicRegressor:
         Phi_train = self._get_Phi_train()
         Phi_new = self.basis_library.evaluate_subset(X, self._result.selected_indices)
         result = _prediction_interval(
-            Phi_train, self._y_train, self._result.coefficients,
-            Phi_new, alpha,
+            Phi_train,
+            self._y_train,
+            self._result.coefficients,
+            Phi_new,
+            alpha,
         )
         return result["y_pred"], result["conf_lower"], result["conf_upper"]
 
-    def predict_ensemble(self, X: jnp.ndarray) -> Dict[str, Any]:
+    def predict_ensemble(self, X: jnp.ndarray) -> dict[str, Any]:
         """
         Predictions from Pareto-front models.
 
@@ -564,7 +567,7 @@ class SymbolicRegressor:
         X: jnp.ndarray,
         criterion: str = "bic",
         alpha: float = 0.05,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Bayesian Model Averaging prediction with intervals.
 
@@ -594,9 +597,9 @@ class SymbolicRegressor:
         X: jnp.ndarray,
         alpha: float = 0.05,
         method: str = "jackknife+",
-        X_cal: Optional[jnp.ndarray] = None,
-        y_cal: Optional[jnp.ndarray] = None,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        X_cal: jnp.ndarray | None = None,
+        y_cal: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         Conformal prediction intervals.
 
@@ -629,9 +632,7 @@ class SymbolicRegressor:
             result = conformal_predict_jackknife_plus(self, X, alpha)
         elif method == "split":
             if X_cal is None or y_cal is None:
-                raise ValueError(
-                    "X_cal and y_cal are required for split conformal prediction."
-                )
+                raise ValueError("X_cal and y_cal are required for split conformal prediction.")
             result = conformal_predict_split(self, X_cal, y_cal, X, alpha)
         else:
             raise ValueError(f"Unknown method: {method}. Use 'jackknife+' or 'split'.")
@@ -675,21 +676,28 @@ class SymbolicRegressor:
             return self.fit(X_combined, y_combined)
         else:
             # Only refit coefficients with existing selection
-            Phi = self.basis_library.evaluate_subset(
-                X_combined, self._result.selected_indices
-            )
-            coeffs, mse = fit_constrained_ols(
-                Phi=Phi,
-                y=y_combined,
-                constraints=self.constraints or Constraints(),
-                basis_names=self._result.selected_names,
-                feature_names=self.basis_library.feature_names,
-                X=X_combined,
-                basis_library=self.basis_library,
-                selected_indices=self._result.selected_indices,
-            ) if self.constraints else (
-                jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0],
-                float(jnp.mean((y_combined - Phi @ jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0]) ** 2))
+            Phi = self.basis_library.evaluate_subset(X_combined, self._result.selected_indices)
+            coeffs, mse = (
+                fit_constrained_ols(
+                    Phi=Phi,
+                    y=y_combined,
+                    constraints=self.constraints or Constraints(),
+                    basis_names=self._result.selected_names,
+                    feature_names=self.basis_library.feature_names,
+                    X=X_combined,
+                    basis_library=self.basis_library,
+                    selected_indices=self._result.selected_indices,
+                )
+                if self.constraints
+                else (
+                    jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0],
+                    float(
+                        jnp.mean(
+                            (y_combined - Phi @ jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0])
+                            ** 2
+                        )
+                    ),
+                )
             )
 
             self._result = SelectionResult(
@@ -727,7 +735,7 @@ class SymbolicRegressor:
 
         # Build expression
         expr = sympy.Integer(0)
-        for coef, name in zip(self._result.coefficients, self._result.selected_names):
+        for coef, name in zip(self._result.coefficients, self._result.selected_names, strict=False):
             coef = float(coef)
             if abs(coef) < 1e-10:
                 continue
@@ -755,7 +763,7 @@ class SymbolicRegressor:
             # Split only on first '^'
             idx = name.index("^")
             base = name[:idx]
-            power_str = name[idx + 1:].strip("()")
+            power_str = name[idx + 1 :].strip("()")
             if base in symbols:
                 try:
                     return symbols[base] ** float(power_str)
@@ -772,7 +780,7 @@ class SymbolicRegressor:
             ("cos", sympy.cos),
         ]:
             if name.startswith(f"{func_name}(") and name.endswith(")"):
-                inner = name[len(func_name) + 1:-1]
+                inner = name[len(func_name) + 1 : -1]
                 if inner in symbols:
                     return sympy_func(symbols[inner])
                 # Try to parse a complex inner expression via sympify
@@ -841,7 +849,7 @@ class SymbolicRegressor:
 
         # Extract coefficients and indices
         coefficients = np.array(self._result.coefficients)
-        indices = list(self._result.selected_indices)
+        list(self._result.selected_indices)
         names = self._result.selected_names
         feature_names = self.basis_library.feature_names
 
@@ -851,7 +859,7 @@ class SymbolicRegressor:
             n_samples = X.shape[0]
             result = np.zeros(n_samples)
 
-            for coef, name in zip(coefficients, names):
+            for coef, name in zip(coefficients, names, strict=False):
                 if name == "1":
                     term = np.ones(n_samples)
                 elif name in feature_names:
@@ -894,9 +902,7 @@ class SymbolicRegressor:
                     import jax.numpy as _jnp
 
                     _bf = None
-                    for _i, _n in enumerate(
-                        self.basis_library.names  # type: ignore[union-attr]
-                    ):
+                    for _i, _n in enumerate(self.basis_library.names):  # type: ignore[union-attr]
                         if _n == name:
                             _bf = self.basis_library.basis_functions[_i]
                             break
@@ -956,7 +962,7 @@ class SymbolicRegressor:
         model : SymbolicRegressor
             Loaded model.
         """
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             data = json.load(f)
 
         # Reconstruct basis library
@@ -1016,22 +1022,24 @@ class SymbolicRegressor:
             f"Selected terms ({len(self._result.selected_names)}):",
         ]
 
-        for name, coef in zip(self._result.selected_names, self._result.coefficients):
+        for name, coef in zip(self._result.selected_names, self._result.coefficients, strict=False):
             lines.append(f"  {name}: {float(coef):.6g}")
 
-        lines.extend([
-            "",
-            "Metrics:",
-            f"  MSE: {self._result.mse:.6g}",
-            f"  R²: {self._compute_r2():.6f}",
-            f"  BIC: {self._result.bic:.2f}",
-            f"  AIC: {self._result.aic:.2f}",
-            f"  Complexity: {self._result.complexity}",
-            "",
-            f"Training samples: {self._result.n_samples}",
-            f"Strategy: {self.strategy}",
-            "=" * 60,
-        ])
+        lines.extend(
+            [
+                "",
+                "Metrics:",
+                f"  MSE: {self._result.mse:.6g}",
+                f"  R²: {self._compute_r2():.6f}",
+                f"  BIC: {self._result.bic:.2f}",
+                f"  AIC: {self._result.aic:.2f}",
+                f"  Complexity: {self._result.complexity}",
+                "",
+                f"Training samples: {self._result.n_samples}",
+                f"Strategy: {self.strategy}",
+                "=" * 60,
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -1051,7 +1059,7 @@ class SymbolicRegressor:
 def fit_symbolic(
     X: jnp.ndarray,
     y: jnp.ndarray,
-    feature_names: Optional[List[str]] = None,
+    feature_names: list[str] | None = None,
     max_terms: int = 5,
     max_poly_degree: int = 3,
     include_transcendental: bool = True,

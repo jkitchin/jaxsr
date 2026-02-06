@@ -11,10 +11,8 @@ OLS inference applies directly.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy import stats
@@ -52,11 +50,11 @@ def compute_unbiased_variance(
     """
     n, p = Phi.shape
     residuals = y - Phi @ coefficients
-    ssr = float(jnp.sum(residuals ** 2))
+    ssr = float(jnp.sum(residuals**2))
     dof = n - p
     if dof <= 0:
         warnings.warn(
-            f"Degrees of freedom ({dof}) <= 0. Cannot compute unbiased variance."
+            f"Degrees of freedom ({dof}) <= 0. Cannot compute unbiased variance.", stacklevel=2
         )
         return float("inf")
     return ssr / dof
@@ -87,7 +85,7 @@ def compute_coeff_covariance(
     # (Phi^T Phi)^{-1} = V @ diag(1/s^2) @ V^T
     rcond = jnp.finfo(Phi.dtype).eps * max(Phi.shape)
     cutoff = rcond * jnp.max(s)
-    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s ** 2), 0.0)
+    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
     return sigma_sq * PhiTPhiInv
 
@@ -96,9 +94,9 @@ def coefficient_intervals(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
-    names: List[str],
+    names: list[str],
     alpha: float = 0.05,
-) -> Dict[str, Tuple[float, float, float, float]]:
+) -> dict[str, tuple[float, float, float, float]]:
     """
     Compute t-based confidence intervals for each coefficient.
 
@@ -123,10 +121,10 @@ def coefficient_intervals(
     n, p = Phi.shape
     dof = n - p
     if dof <= 0:
-        warnings.warn("Not enough degrees of freedom for coefficient intervals.")
+        warnings.warn("Not enough degrees of freedom for coefficient intervals.", stacklevel=2)
         return {
             name: (float(coef), float("nan"), float("nan"), float("nan"))
-            for name, coef in zip(names, coefficients)
+            for name, coef in zip(names, coefficients, strict=False)
         }
 
     sigma_sq = compute_unbiased_variance(Phi, y, coefficients)
@@ -152,7 +150,7 @@ def prediction_interval(
     coefficients: jnp.ndarray,
     Phi_new: jnp.ndarray,
     alpha: float = 0.05,
-) -> Dict[str, jnp.ndarray]:
+) -> dict[str, jnp.ndarray]:
     """
     Compute prediction and confidence intervals for new observations.
 
@@ -204,7 +202,7 @@ def prediction_interval(
     U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
     rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
     cutoff = rcond * jnp.max(s)
-    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s ** 2), 0.0)
+    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
 
     y_pred = Phi_new @ coefficients
@@ -244,7 +242,7 @@ def prediction_interval(
 def ensemble_predict(
     model: SymbolicRegressor,
     X_new: jnp.ndarray,
-) -> Dict[str, jnp.ndarray]:
+) -> dict[str, jnp.ndarray]:
     """
     Predictions from all Pareto-front models.
 
@@ -335,7 +333,7 @@ class BayesianModelAverage:
         model: SymbolicRegressor,
         criterion: str = "bic",
         use_pareto: bool = True,
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
     ):
         model._check_is_fitted()
         self._model = model
@@ -367,19 +365,18 @@ class BayesianModelAverage:
         self._weights = raw_weights / raw_weights.sum()
 
     @property
-    def weights(self) -> Dict[str, float]:
+    def weights(self) -> dict[str, float]:
         """Model weights keyed by expression string."""
         return {
-            r.expression(): float(w)
-            for r, w in zip(self._results, self._weights)
+            r.expression(): float(w) for r, w in zip(self._results, self._weights, strict=False)
         }
 
     @property
-    def expressions(self) -> List[str]:
+    def expressions(self) -> list[str]:
         """Expressions of models in the average."""
         return [r.expression() for r in self._results]
 
-    def predict(self, X: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def predict(self, X: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         BMA prediction with uncertainty.
 
@@ -428,7 +425,7 @@ class BayesianModelAverage:
 
     def predict_interval(
         self, X: jnp.ndarray, alpha: float = 0.05
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """
         BMA prediction interval using Gaussian approximation.
 
@@ -466,7 +463,7 @@ def conformal_predict_split(
     y_cal: jnp.ndarray,
     X_new: jnp.ndarray,
     alpha: float = 0.05,
-) -> Dict[str, jnp.ndarray]:
+) -> dict[str, jnp.ndarray]:
     """
     Split conformal prediction intervals.
 
@@ -526,7 +523,7 @@ def conformal_predict_jackknife_plus(
     model: SymbolicRegressor,
     X_new: jnp.ndarray,
     alpha: float = 0.05,
-) -> Dict[str, jnp.ndarray]:
+) -> dict[str, jnp.ndarray]:
     """
     Jackknife+ conformal prediction intervals.
 
@@ -554,18 +551,14 @@ def conformal_predict_jackknife_plus(
     X_new = jnp.atleast_2d(jnp.asarray(X_new))
 
     if model._X_train is None or model._y_train is None:
-        raise ValueError(
-            "Training data not available. Model must be fitted with fit()."
-        )
+        raise ValueError("Training data not available. Model must be fitted with fit().")
 
     X_train = model._X_train
     y_train = model._y_train
     n = len(y_train)
 
     # Compute design matrix for training data
-    Phi_train = model.basis_library.evaluate_subset(
-        X_train, model._result.selected_indices
-    )
+    Phi_train = model.basis_library.evaluate_subset(X_train, model._result.selected_indices)
     coefficients = model._result.coefficients
 
     # Compute leverage (hat matrix diagonal)
@@ -615,8 +608,8 @@ def bootstrap_coefficients(
     model: SymbolicRegressor,
     n_bootstrap: int = 1000,
     alpha: float = 0.05,
-    seed: Optional[int] = None,
-) -> Dict[str, Any]:
+    seed: int | None = None,
+) -> dict[str, Any]:
     """
     Residual bootstrap for coefficient uncertainty.
 
@@ -650,9 +643,7 @@ def bootstrap_coefficients(
     if model._X_train is None or model._y_train is None:
         raise ValueError("Training data not available.")
 
-    Phi_train = model.basis_library.evaluate_subset(
-        model._X_train, model._result.selected_indices
-    )
+    Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
     y_train = model._y_train
     coefficients = model._result.coefficients
     y_hat = Phi_train @ coefficients
@@ -669,7 +660,6 @@ def bootstrap_coefficients(
     # Vectorized OLS: beta* = (Phi^T Phi)^{-1} Phi^T y*
     # Pre-compute pseudo-inverse
     Phi_np = np.array(Phi_train)
-    PhiT = Phi_np.T
     PhiTPhiInv_PhiT = np.linalg.pinv(Phi_np)  # (p, n)
 
     # All bootstrap coefficients at once
@@ -694,8 +684,8 @@ def bootstrap_predict(
     X_new: jnp.ndarray,
     n_bootstrap: int = 1000,
     alpha: float = 0.05,
-    seed: Optional[int] = None,
-) -> Dict[str, jnp.ndarray]:
+    seed: int | None = None,
+) -> dict[str, jnp.ndarray]:
     """
     Bootstrap prediction intervals.
 
@@ -728,9 +718,7 @@ def bootstrap_predict(
     boot_result = bootstrap_coefficients(model, n_bootstrap, alpha, seed)
     boot_coeffs = boot_result["coefficients"]  # (n_bootstrap, p)
 
-    Phi_new = model.basis_library.evaluate_subset(
-        X_new, model._result.selected_indices
-    )
+    Phi_new = model.basis_library.evaluate_subset(X_new, model._result.selected_indices)
 
     # All bootstrap predictions: (n_bootstrap, n_new)
     boot_preds = boot_coeffs @ Phi_new.T
@@ -753,8 +741,8 @@ def bootstrap_model_selection(
     X: jnp.ndarray,
     y: jnp.ndarray,
     n_bootstrap: int = 100,
-    seed: Optional[int] = None,
-) -> Dict[str, Any]:
+    seed: int | None = None,
+) -> dict[str, Any]:
     """
     Pairs bootstrap for model selection stability.
 
@@ -788,12 +776,12 @@ def bootstrap_model_selection(
 
     rng = np.random.RandomState(seed)
 
-    feature_counts: Dict[str, int] = {}
+    feature_counts: dict[str, int] = {}
     original_features = set(model.selected_features_)
     same_count = 0
     expressions = []
 
-    for b in range(n_bootstrap):
+    for _b in range(n_bootstrap):
         boot_idx = rng.randint(0, n, size=n)
         X_boot = X[boot_idx]
         y_boot = y[boot_idx]

@@ -4,14 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jaxsr.basis import BasisLibrary
 from jaxsr.constraints import (
     Constraint,
-    ConstraintType,
-    Constraints,
     ConstraintEvaluator,
+    Constraints,
+    ConstraintType,
     fit_constrained_ols,
 )
-from jaxsr.basis import BasisLibrary
 
 
 class TestConstraint:
@@ -139,9 +139,7 @@ class TestConstraints:
     def test_serialization(self):
         """Test Constraints serialization."""
         constraints = (
-            Constraints()
-            .add_bounds("y", lower=0)
-            .add_monotonic("x", direction="increasing")
+            Constraints().add_bounds("y", lower=0).add_monotonic("x", direction="increasing")
         )
 
         data = constraints.to_dict()
@@ -367,9 +365,9 @@ class TestConstraintEnforcement:
         # Verify convexity: second differences should be >= 0
         y_pred = np.array(Phi @ coeffs)
         second_diffs = np.diff(y_pred, n=2)
-        assert np.all(second_diffs >= -1e-2), (
-            f"Model is not convex: min second diff = {second_diffs.min()}"
-        )
+        assert np.all(
+            second_diffs >= -1e-2
+        ), f"Model is not convex: min second diff = {second_diffs.min()}"
 
     def test_soft_bounds_affect_fitting(self):
         """Test that soft bound penalties actually change the fit."""
@@ -377,11 +375,7 @@ class TestConstraintEnforcement:
         X = np.linspace(0, 5, 50).reshape(-1, 1)
         y = 2 * X[:, 0] + 1  # y ranges from 1 to 11
 
-        library = (
-            BasisLibrary(n_features=1, feature_names=["x"])
-            .add_constant()
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
 
         Phi = library.evaluate(jnp.array(X))
         basis_names = library.names
@@ -399,9 +393,7 @@ class TestConstraintEnforcement:
         )
 
         # Fit with soft upper bound at y=5 (tight, will force change)
-        constraints_bounded = Constraints().add_bounds(
-            "y", upper=5.0, weight=10.0, hard=False
-        )
+        constraints_bounded = Constraints().add_bounds("y", upper=5.0, weight=10.0, hard=False)
         coeffs_bounded, _ = fit_constrained_ols(
             Phi=Phi,
             y=jnp.array(y),
@@ -415,9 +407,9 @@ class TestConstraintEnforcement:
         )
 
         # Bounded fit should produce different coefficients
-        assert not np.allclose(np.array(coeffs_plain), np.array(coeffs_bounded), atol=0.1), (
-            "Soft bounds did not affect fitting"
-        )
+        assert not np.allclose(
+            np.array(coeffs_plain), np.array(coeffs_bounded), atol=0.1
+        ), "Soft bounds did not affect fitting"
 
     def test_combined_hard_soft_constraints(self):
         """Test fixed coefficient + monotonic constraint together."""
@@ -469,11 +461,7 @@ class TestConstraintEnforcement:
         X = np.random.randn(50, 1)
         y = 2 * X[:, 0] + 1
 
-        library = (
-            BasisLibrary(n_features=1, feature_names=["x"])
-            .add_constant()
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
 
         Phi = library.evaluate(jnp.array(X))
         basis_names = library.names

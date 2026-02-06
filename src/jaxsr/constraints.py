@@ -11,15 +11,14 @@ Provides functionality to incorporate domain knowledge through:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import grad, jit, vmap
-
 
 # =============================================================================
 # Constraint Types
@@ -28,6 +27,7 @@ from jax import grad, jit, vmap
 
 class ConstraintType(Enum):
     """Types of constraints supported."""
+
     BOUND = "bound"
     MONOTONIC = "monotonic"
     CONVEX = "convex"
@@ -56,13 +56,14 @@ class Constraint:
     hard : bool
         If True, enforce as hard constraint.
     """
+
     constraint_type: ConstraintType
     target: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     weight: float = 1.0
     hard: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
         return {
             "constraint_type": self.constraint_type.value,
@@ -73,7 +74,7 @@ class Constraint:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Constraint:
+    def from_dict(cls, data: dict[str, Any]) -> Constraint:
         """Deserialize from dictionary."""
         return cls(
             constraint_type=ConstraintType(data["constraint_type"]),
@@ -105,14 +106,14 @@ class Constraints:
     """
 
     def __init__(self):
-        self.constraints: List[Constraint] = []
-        self._feature_names: Optional[List[str]] = None
+        self.constraints: list[Constraint] = []
+        self._feature_names: list[str] | None = None
 
     def add_bounds(
         self,
         target: str = "y",
-        lower: Optional[float] = None,
-        upper: Optional[float] = None,
+        lower: float | None = None,
+        upper: float | None = None,
         weight: float = 1.0,
         hard: bool = False,
     ) -> Constraints:
@@ -137,13 +138,15 @@ class Constraints:
         self : Constraints
             For method chaining.
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.BOUND,
-            target=target,
-            params={"lower": lower, "upper": upper},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.BOUND,
+                target=target,
+                params={"lower": lower, "upper": upper},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_monotonic(
@@ -174,13 +177,15 @@ class Constraints:
         if direction not in ["increasing", "decreasing"]:
             raise ValueError(f"direction must be 'increasing' or 'decreasing', got {direction}")
 
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.MONOTONIC,
-            target=feature,
-            params={"direction": direction},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.MONOTONIC,
+                target=feature,
+                params={"direction": direction},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_convex(
@@ -205,13 +210,15 @@ class Constraints:
         -------
         self : Constraints
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.CONVEX,
-            target=feature,
-            params={},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.CONVEX,
+                target=feature,
+                params={},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_concave(
@@ -236,13 +243,15 @@ class Constraints:
         -------
         self : Constraints
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.CONCAVE,
-            target=feature,
-            params={},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.CONCAVE,
+                target=feature,
+                params={},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_sign_constraint(
@@ -273,13 +282,15 @@ class Constraints:
         if sign not in ["positive", "negative"]:
             raise ValueError(f"sign must be 'positive' or 'negative', got {sign}")
 
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.SIGN,
-            target=basis_name,
-            params={"sign": sign},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.SIGN,
+                target=basis_name,
+                params={"sign": sign},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_linear_constraint(
@@ -307,13 +318,15 @@ class Constraints:
         -------
         self : Constraints
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.LINEAR,
-            target="coefficients",
-            params={"A": np.array(A).tolist(), "b": np.array(b).tolist()},
-            weight=weight,
-            hard=hard,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.LINEAR,
+                target="coefficients",
+                params={"A": np.array(A).tolist(), "b": np.array(b).tolist()},
+                weight=weight,
+                hard=hard,
+            )
+        )
         return self
 
     def add_known_coefficient(
@@ -338,13 +351,15 @@ class Constraints:
         -------
         self : Constraints
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.FIXED,
-            target=basis_name,
-            params={"value": value},
-            weight=0.0,
-            hard=fixed,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.FIXED,
+                target=basis_name,
+                params={"value": value},
+                weight=0.0,
+                hard=fixed,
+            )
+        )
         return self
 
     def add_custom(
@@ -396,20 +411,22 @@ class Constraints:
         ...     return (ratio - 2.0) ** 2
         """
         # Store the function in params (note: can't serialize to JSON)
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.CUSTOM,
-            target=name,
-            params={"fn": constraint_fn},
-            weight=weight,
-            hard=False,  # Custom constraints are always soft
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.CUSTOM,
+                target=name,
+                params={"fn": constraint_fn},
+                weight=weight,
+                hard=False,  # Custom constraints are always soft
+            )
+        )
         return self
 
     def add_physics_constraint(
         self,
         name: str,
         constraint_type: str,
-        params: Dict[str, Any],
+        params: dict[str, Any],
         weight: float = 1.0,
     ) -> Constraints:
         """
@@ -449,13 +466,15 @@ class Constraints:
         ...     {"point": [0.0], "value": 1.0}
         ... )
         """
-        self.constraints.append(Constraint(
-            constraint_type=ConstraintType.CUSTOM,
-            target=name,
-            params={"physics_type": constraint_type, **params},
-            weight=weight,
-            hard=False,
-        ))
+        self.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.CUSTOM,
+                target=name,
+                params={"physics_type": constraint_type, **params},
+                weight=weight,
+                hard=False,
+            )
+        )
         return self
 
     def __len__(self) -> int:
@@ -464,14 +483,14 @@ class Constraints:
     def __iter__(self):
         return iter(self.constraints)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
         return {
             "constraints": [c.to_dict() for c in self.constraints],
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Constraints:
+    def from_dict(cls, data: dict[str, Any]) -> Constraints:
         """Deserialize from dictionary."""
         obj = cls()
         obj.constraints = [Constraint.from_dict(c) for c in data["constraints"]]
@@ -500,8 +519,8 @@ class ConstraintEvaluator:
     def __init__(
         self,
         constraints: Constraints,
-        basis_names: List[str],
-        feature_names: List[str],
+        basis_names: list[str],
+        feature_names: list[str],
     ):
         self.constraints = constraints
         self.basis_names = basis_names
@@ -514,7 +533,7 @@ class ConstraintEvaluator:
         coefficients: jnp.ndarray,
         predict_fn: Callable[[jnp.ndarray], jnp.ndarray],
         X: jnp.ndarray,
-        y: Optional[jnp.ndarray] = None,
+        y: jnp.ndarray | None = None,
     ) -> float:
         """
         Compute total penalty for constraint violations.
@@ -539,9 +558,7 @@ class ConstraintEvaluator:
 
         for constraint in self.constraints:
             if not constraint.hard:
-                penalty = self._evaluate_constraint(
-                    constraint, coefficients, predict_fn, X
-                )
+                penalty = self._evaluate_constraint(constraint, coefficients, predict_fn, X)
                 total_penalty += constraint.weight * penalty
 
         return total_penalty
@@ -585,10 +602,10 @@ class ConstraintEvaluator:
         penalty = 0.0
         if lower is not None:
             violations = jnp.maximum(lower - y_pred, 0)
-            penalty += jnp.sum(violations ** 2)
+            penalty += jnp.sum(violations**2)
         if upper is not None:
             violations = jnp.maximum(y_pred - upper, 0)
-            penalty += jnp.sum(violations ** 2)
+            penalty += jnp.sum(violations**2)
 
         return float(penalty)
 
@@ -625,7 +642,7 @@ class ConstraintEvaluator:
             # Penalize positive gradients
             violations = jnp.maximum(gradient, 0)
 
-        return float(jnp.sum(violations ** 2))
+        return float(jnp.sum(violations**2))
 
     def _eval_convex(
         self,
@@ -651,12 +668,12 @@ class ConstraintEvaluator:
         y_plus = predict_fn(X_plus)
         y_minus = predict_fn(X_minus)
 
-        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps ** 2)
+        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps**2)
 
         # Convex means second derivative >= 0
         violations = jnp.maximum(-second_deriv, 0)
 
-        return float(jnp.sum(violations ** 2))
+        return float(jnp.sum(violations**2))
 
     def _eval_concave(
         self,
@@ -681,12 +698,12 @@ class ConstraintEvaluator:
         y_plus = predict_fn(X_plus)
         y_minus = predict_fn(X_minus)
 
-        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps ** 2)
+        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps**2)
 
         # Concave means second derivative <= 0
         violations = jnp.maximum(second_deriv, 0)
 
-        return float(jnp.sum(violations ** 2))
+        return float(jnp.sum(violations**2))
 
     def _eval_sign(
         self,
@@ -719,7 +736,7 @@ class ConstraintEvaluator:
 
         # Penalty for violations
         violations = jnp.maximum(A @ coefficients - b, 0)
-        return float(jnp.sum(violations ** 2))
+        return float(jnp.sum(violations**2))
 
     def _eval_custom(
         self,
@@ -815,7 +832,7 @@ class ConstraintEvaluator:
             # y(x) = -y(-x)
             violations = y_pos + y_neg
 
-        return float(jnp.mean(violations ** 2))
+        return float(jnp.mean(violations**2))
 
     def apply_hard_constraints(
         self,
@@ -885,7 +902,7 @@ class ConstraintEvaluator:
 
         return coefficients
 
-    def get_fixed_indices(self) -> List[Tuple[int, float]]:
+    def get_fixed_indices(self) -> list[tuple[int, float]]:
         """
         Get indices and values of fixed coefficients.
 
@@ -942,9 +959,7 @@ class ConstraintEvaluator:
 
         for constraint in self.constraints:
             if constraint.hard and constraint.constraint_type in hard_shape_types:
-                penalty = self._evaluate_constraint(
-                    constraint, coefficients, predict_fn, X
-                )
+                penalty = self._evaluate_constraint(constraint, coefficients, predict_fn, X)
                 total_penalty += constraint.weight * penalty
 
         return total_penalty
@@ -955,7 +970,7 @@ class ConstraintEvaluator:
         predict_fn: Callable[[jnp.ndarray], jnp.ndarray],
         X: jnp.ndarray,
         tolerance: float = 1e-6,
-    ) -> Dict[str, bool]:
+    ) -> dict[str, bool]:
         """
         Check which constraints are satisfied.
 
@@ -977,7 +992,7 @@ class ConstraintEvaluator:
         """
         results = {}
 
-        for i, constraint in enumerate(self.constraints):
+        for _i, constraint in enumerate(self.constraints):
             penalty = self._evaluate_constraint(constraint, coefficients, predict_fn, X)
             name = f"{constraint.constraint_type.value}_{constraint.target}"
             results[name] = penalty < tolerance
@@ -992,8 +1007,8 @@ class ConstraintEvaluator:
 
 def _reconstruct_full(
     coeffs_free: np.ndarray,
-    free_indices: List[int],
-    fixed: List[Tuple[int, float]],
+    free_indices: list[int],
+    fixed: list[tuple[int, float]],
     n_total: int,
 ) -> np.ndarray:
     """
@@ -1025,9 +1040,9 @@ def _reconstruct_full(
 
 def _build_scipy_bounds(
     evaluator: ConstraintEvaluator,
-    free_indices: List[int],
-    basis_names: List[str],
-) -> List[Tuple[Optional[float], Optional[float]]]:
+    free_indices: list[int],
+    basis_names: list[str],
+) -> list[tuple[float | None, float | None]]:
     """
     Build scipy-compatible bounds from hard SIGN constraints.
 
@@ -1187,7 +1202,7 @@ def _compute_jax_penalty(
                 violations = jnp.maximum(-gradient, 0)
             else:
                 violations = jnp.maximum(gradient, 0)
-            total = total + weight * jnp.sum(violations ** 2)
+            total = total + weight * jnp.sum(violations**2)
 
         elif ctype == "convex":
             y_center = entry["Phi_center"] @ coeffs
@@ -1195,7 +1210,7 @@ def _compute_jax_penalty(
             y_minus = entry["Phi_minus"] @ coeffs
             second_deriv = (y_plus - 2 * y_center + y_minus) / (entry["eps"] ** 2)
             violations = jnp.maximum(-second_deriv, 0)
-            total = total + weight * jnp.sum(violations ** 2)
+            total = total + weight * jnp.sum(violations**2)
 
         elif ctype == "concave":
             y_center = entry["Phi_center"] @ coeffs
@@ -1203,16 +1218,16 @@ def _compute_jax_penalty(
             y_minus = entry["Phi_minus"] @ coeffs
             second_deriv = (y_plus - 2 * y_center + y_minus) / (entry["eps"] ** 2)
             violations = jnp.maximum(second_deriv, 0)
-            total = total + weight * jnp.sum(violations ** 2)
+            total = total + weight * jnp.sum(violations**2)
 
         elif ctype == "bound":
             y_pred = entry["Phi"] @ coeffs
             if entry["lower"] is not None:
                 violations = jnp.maximum(entry["lower"] - y_pred, 0)
-                total = total + weight * jnp.sum(violations ** 2)
+                total = total + weight * jnp.sum(violations**2)
             if entry["upper"] is not None:
                 violations = jnp.maximum(y_pred - entry["upper"], 0)
-                total = total + weight * jnp.sum(violations ** 2)
+                total = total + weight * jnp.sum(violations**2)
 
         elif ctype == "sign":
             coef = coeffs[entry["coeff_idx"]]
@@ -1223,7 +1238,7 @@ def _compute_jax_penalty(
 
         elif ctype == "linear":
             violations = jnp.maximum(entry["A"] @ coeffs - entry["b"], 0)
-            total = total + weight * jnp.sum(violations ** 2)
+            total = total + weight * jnp.sum(violations**2)
 
     return total
 
@@ -1248,15 +1263,15 @@ def fit_constrained_ols(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     constraints: Constraints,
-    basis_names: List[str],
-    feature_names: List[str],
+    basis_names: list[str],
+    feature_names: list[str],
     X: jnp.ndarray,
     max_iter: int = 100,
     tol: float = 1e-6,
     penalty_weight: float = 1.0,
-    basis_library: Optional[Any] = None,
-    selected_indices: Optional[Any] = None,
-) -> Tuple[jnp.ndarray, float]:
+    basis_library: Any | None = None,
+    selected_indices: Any | None = None,
+) -> tuple[jnp.ndarray, float]:
     """
     Fit least squares with constraints.
 
@@ -1307,7 +1322,7 @@ def fit_constrained_ols(
     n_total = len(basis_names)
     Phi_np = np.array(Phi)
     y_np = np.array(y)
-    n_samples = len(y_np)
+    len(y_np)
 
     # Initial OLS solution
     coeffs_jax, _, _, _ = jnp.linalg.lstsq(Phi, y, rcond=None)
@@ -1409,10 +1424,10 @@ def fit_constrained_ols(
     result = minimize(
         objective_and_grad,
         x0,
-        method='L-BFGS-B',
+        method="L-BFGS-B",
         jac=True,
         bounds=scipy_bounds,
-        options={'maxiter': max_iter, 'ftol': tol},
+        options={"maxiter": max_iter, "ftol": tol},
     )
 
     # Reconstruct full coefficients from optimized free values

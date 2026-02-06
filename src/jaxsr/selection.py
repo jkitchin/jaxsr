@@ -12,16 +12,14 @@ Implements multiple strategies for selecting sparse subsets of basis functions:
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+import math
+from dataclasses import dataclass
+from typing import Any
 
-import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, lax, vmap
 
 from .metrics import compute_information_criterion
-
 
 # =============================================================================
 # Data Structures
@@ -54,20 +52,22 @@ class SelectionResult:
     n_samples : int
         Number of training samples.
     """
+
     coefficients: jnp.ndarray
     selected_indices: jnp.ndarray
-    selected_names: List[str]
+    selected_names: list[str]
     mse: float
     complexity: int
     aic: float
     bic: float
     aicc: float
     n_samples: int
-    parametric_params: Optional[Dict[int, Dict[str, float]]] = None
+    parametric_params: dict[int, dict[str, float]] | None = None
 
     def expression(self) -> str:
         """Return human-readable expression."""
         from .utils import build_expression_string
+
         return build_expression_string(self.coefficients, self.selected_names)
 
     @property
@@ -75,7 +75,7 @@ class SelectionResult:
         """Number of terms in the model."""
         return len(self.selected_indices)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary."""
         d = {
             "coefficients": np.array(self.coefficients).tolist(),
@@ -89,9 +89,7 @@ class SelectionResult:
             "n_samples": self.n_samples,
         }
         if self.parametric_params is not None:
-            d["parametric_params"] = {
-                str(k): v for k, v in self.parametric_params.items()
-            }
+            d["parametric_params"] = {str(k): v for k, v in self.parametric_params.items()}
         return d
 
 
@@ -109,7 +107,8 @@ class SelectionPath:
     best_index : int
         Index of best model according to information criterion.
     """
-    results: List[SelectionResult]
+
+    results: list[SelectionResult]
     strategy: str
     best_index: int
 
@@ -127,7 +126,7 @@ class SelectionPath:
 def fit_ols(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-) -> Tuple[jnp.ndarray, float]:
+) -> tuple[jnp.ndarray, float]:
     """
     Fit ordinary least squares.
 
@@ -155,7 +154,7 @@ def fit_ridge(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     alpha: float,
-) -> Tuple[jnp.ndarray, float]:
+) -> tuple[jnp.ndarray, float]:
     """
     Fit ridge regression (L2 regularized OLS).
 
@@ -193,18 +192,19 @@ def _fit_subset_parametric(
     X: jnp.ndarray,
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    indices_list: List[int],
-    basis_names: List[str],
+    indices_list: list[int],
+    basis_names: list[str],
     complexities: jnp.ndarray,
-    regularization: Optional[float],
+    regularization: float | None,
     basis_library,
     parametric_in_subset: list,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
-    _param_cache: Optional[dict] = None,
-) -> "SelectionResult":
+    _param_cache: dict | None = None,
+) -> SelectionResult:
     """Profile-likelihood fit: optimise nonlinear params, solve OLS inside."""
     import re
+
     from scipy.optimize import minimize as sp_minimize
     from scipy.optimize import minimize_scalar
 
@@ -245,14 +245,16 @@ def _fit_subset_parametric(
             pi, pname, bnds, log_scale = all_params[0]
             if log_scale and bnds[0] > 0 and bnds[1] > 0:
                 import math
+
                 log_bnds = (math.log10(bnds[0]), math.log10(bnds[1]))
 
                 def _obj(log_a):
-                    return _profile_mse({pi.basis_index: {pname: 10 ** log_a}})
+                    return _profile_mse({pi.basis_index: {pname: 10**log_a}})
 
                 res = minimize_scalar(_obj, bounds=log_bnds, method="bounded")
-                best_val = 10 ** res.x
+                best_val = 10**res.x
             else:
+
                 def _obj(a):
                     return _profile_mse({pi.basis_index: {pname: a}})
 
@@ -266,21 +268,25 @@ def _fit_subset_parametric(
             if param_optimizer == "optuna":
                 try:
                     import optuna  # noqa: F811
+
                     _use_optuna = True
                 except ImportError:
                     pass
 
             if _use_optuna:
                 import optuna
+
                 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
                 def _optuna_obj(trial):
-                    pv: Dict[int, Dict[str, float]] = {}
+                    pv: dict[int, dict[str, float]] = {}
                     for pi, pname, bnds, log_scale in all_params:
                         pv.setdefault(pi.basis_index, {})
                         pv[pi.basis_index][pname] = trial.suggest_float(
                             f"{pi.basis_index}_{pname}",
-                            bnds[0], bnds[1], log=log_scale,
+                            bnds[0],
+                            bnds[1],
+                            log=log_scale,
                         )
                     return _profile_mse(pv)
 
@@ -290,27 +296,26 @@ def _fit_subset_parametric(
                     n_trials=param_optimization_budget,
                     show_progress_bar=False,
                 )
-                best_params: Dict[int, Dict[str, float]] = {}
-                for pi, pname, bnds, log_scale in all_params:
+                best_params: dict[int, dict[str, float]] = {}
+                for pi, pname, _bnds, _log_scale in all_params:
                     best_params.setdefault(pi.basis_index, {})
                     best_params[pi.basis_index][pname] = study.best_params[
                         f"{pi.basis_index}_{pname}"
                     ]
             else:
                 import math
+
                 x0, sp_bounds = [], []
                 for pi, pname, bnds, log_scale in all_params:
                     if log_scale and bnds[0] > 0 and bnds[1] > 0:
                         x0.append(math.log10(pi.initial_params[pname]))
-                        sp_bounds.append(
-                            (math.log10(bnds[0]), math.log10(bnds[1]))
-                        )
+                        sp_bounds.append((math.log10(bnds[0]), math.log10(bnds[1])))
                     else:
                         x0.append(pi.initial_params[pname])
                         sp_bounds.append(bnds)
 
                 def _scipy_obj(x):
-                    pv: Dict[int, Dict[str, float]] = {}
+                    pv: dict[int, dict[str, float]] = {}
                     for i, (pi, pname, bnds, log_scale) in enumerate(all_params):
                         pv.setdefault(pi.basis_index, {})
                         val = 10 ** x[i] if (log_scale and bnds[0] > 0) else x[i]
@@ -318,7 +323,10 @@ def _fit_subset_parametric(
                     return _profile_mse(pv)
 
                 res = sp_minimize(
-                    _scipy_obj, x0, bounds=sp_bounds, method="L-BFGS-B",
+                    _scipy_obj,
+                    x0,
+                    bounds=sp_bounds,
+                    method="L-BFGS-B",
                 )
                 best_params = {}
                 for i, (pi, pname, bnds, log_scale) in enumerate(all_params):
@@ -379,15 +387,15 @@ def _fit_subset_parametric(
 def fit_subset(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    indices: Union[List[int], jnp.ndarray],
-    basis_names: List[str],
+    indices: list[int] | jnp.ndarray,
+    basis_names: list[str],
     complexities: jnp.ndarray,
-    regularization: Optional[float] = None,
-    X: Optional[jnp.ndarray] = None,
+    regularization: float | None = None,
+    X: jnp.ndarray | None = None,
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
-    _param_cache: Optional[dict] = None,
+    _param_cache: dict | None = None,
 ) -> SelectionResult:
     """
     Fit model using only selected basis functions.
@@ -426,17 +434,23 @@ def fit_subset(
 
     # Delegate to parametric path when needed
     if X is not None and basis_library is not None and basis_library.has_parametric:
-        indices_set = set(int(i) for i in indices)
+        indices_set = {int(i) for i in indices}
         parametric_in_subset = [
-            p for p in basis_library._parametric_info
-            if p.basis_index in indices_set
+            p for p in basis_library._parametric_info if p.basis_index in indices_set
         ]
         if parametric_in_subset:
             return _fit_subset_parametric(
-                X, Phi, y, [int(i) for i in indices],
-                basis_names, complexities, regularization,
-                basis_library, parametric_in_subset,
-                param_optimizer, param_optimization_budget,
+                X,
+                Phi,
+                y,
+                [int(i) for i in indices],
+                basis_names,
+                complexities,
+                regularization,
+                basis_library,
+                parametric_in_subset,
+                param_optimizer,
+                param_optimization_budget,
                 _param_cache,
             )
 
@@ -472,14 +486,14 @@ def fit_subset(
 def greedy_forward_selection(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     complexities: jnp.ndarray,
     max_terms: int = 5,
     information_criterion: str = "bic",
     early_stop: bool = True,
-    candidate_indices: Optional[List[int]] = None,
-    regularization: Optional[float] = None,
-    X: Optional[jnp.ndarray] = None,
+    candidate_indices: list[int] | None = None,
+    regularization: float | None = None,
+    X: jnp.ndarray | None = None,
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
@@ -523,24 +537,23 @@ def greedy_forward_selection(
     else:
         available = set(candidate_indices)
 
-    selected: List[int] = []
-    results: List[SelectionResult] = []
+    selected: list[int] = []
+    results: list[SelectionResult] = []
 
     current_ic = float("inf")
     best_ic = float("inf")
     best_index = -1
 
-    _param_cache = (
-        {} if (basis_library is not None and basis_library.has_parametric) else None
-    )
-    _fs_kw = dict(
-        X=X, basis_library=basis_library,
-        param_optimizer=param_optimizer,
-        param_optimization_budget=param_optimization_budget,
-        _param_cache=_param_cache,
-    )
+    _param_cache = {} if (basis_library is not None and basis_library.has_parametric) else None
+    _fs_kw = {
+        "X": X,
+        "basis_library": basis_library,
+        "param_optimizer": param_optimizer,
+        "param_optimization_budget": param_optimization_budget,
+        "_param_cache": _param_cache,
+    }
 
-    for step in range(min(max_terms, len(available))):
+    for _step in range(min(max_terms, len(available))):
         best_step_ic = float("inf")
         best_idx = None
         best_result = None
@@ -548,8 +561,13 @@ def greedy_forward_selection(
         for idx in available:
             candidate = selected + [idx]
             result = fit_subset(
-                Phi, y, candidate, basis_names, complexities,
-                regularization, **_fs_kw,
+                Phi,
+                y,
+                candidate,
+                basis_names,
+                complexities,
+                regularization,
+                **_fs_kw,
             )
 
             ic_value = getattr(result, information_criterion)
@@ -579,8 +597,13 @@ def greedy_forward_selection(
         const_idx = [i for i, name in enumerate(basis_names) if name == "1"]
         if const_idx:
             result = fit_subset(
-                Phi, y, const_idx, basis_names, complexities,
-                regularization, **_fs_kw,
+                Phi,
+                y,
+                const_idx,
+                basis_names,
+                complexities,
+                regularization,
+                **_fs_kw,
             )
             results = [result]
             best_index = 0
@@ -588,8 +611,13 @@ def greedy_forward_selection(
             # Fit with first available feature
             idx = list(available)[0] if available else 0
             result = fit_subset(
-                Phi, y, [idx], basis_names, complexities,
-                regularization, **_fs_kw,
+                Phi,
+                y,
+                [idx],
+                basis_names,
+                complexities,
+                regularization,
+                **_fs_kw,
             )
             results = [result]
             best_index = 0
@@ -609,14 +637,14 @@ def greedy_forward_selection(
 def greedy_backward_elimination(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     complexities: jnp.ndarray,
     min_terms: int = 1,
     information_criterion: str = "bic",
-    start_indices: Optional[List[int]] = None,
+    start_indices: list[int] | None = None,
     max_terms: int = 5,  # For API compatibility
-    regularization: Optional[float] = None,
-    X: Optional[jnp.ndarray] = None,
+    regularization: float | None = None,
+    X: jnp.ndarray | None = None,
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
@@ -656,19 +684,18 @@ def greedy_backward_elimination(
     else:
         selected = list(start_indices)
 
-    results: List[SelectionResult] = []
+    results: list[SelectionResult] = []
     best_ic = float("inf")
     best_index = -1
 
-    _param_cache = (
-        {} if (basis_library is not None and basis_library.has_parametric) else None
-    )
-    _fs_kw = dict(
-        X=X, basis_library=basis_library,
-        param_optimizer=param_optimizer,
-        param_optimization_budget=param_optimization_budget,
-        _param_cache=_param_cache,
-    )
+    _param_cache = {} if (basis_library is not None and basis_library.has_parametric) else None
+    _fs_kw = {
+        "X": X,
+        "basis_library": basis_library,
+        "param_optimizer": param_optimizer,
+        "param_optimization_budget": param_optimization_budget,
+        "_param_cache": _param_cache,
+    }
 
     # Initial full model
     result = fit_subset(Phi, y, selected, basis_names, complexities, regularization, **_fs_kw)
@@ -683,13 +710,15 @@ def greedy_backward_elimination(
         worst_idx = None
         best_result = None
 
-        for i, idx in enumerate(selected):
+        for i, _idx in enumerate(selected):
             # Try removing each term
             candidate = selected[:i] + selected[i + 1 :]
             if not candidate:
                 continue
 
-            result = fit_subset(Phi, y, candidate, basis_names, complexities, regularization, **_fs_kw)
+            result = fit_subset(
+                Phi, y, candidate, basis_names, complexities, regularization, **_fs_kw
+            )
             ic_value = getattr(result, information_criterion)
 
             if ic_value < best_step_ic:
@@ -724,14 +753,14 @@ def greedy_backward_elimination(
 def exhaustive_search(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     complexities: jnp.ndarray,
     max_terms: int = 5,
     information_criterion: str = "bic",
-    candidate_indices: Optional[List[int]] = None,
+    candidate_indices: list[int] | None = None,
     max_combinations: int = 100000,
-    regularization: Optional[float] = None,
-    X: Optional[jnp.ndarray] = None,
+    regularization: float | None = None,
+    X: jnp.ndarray | None = None,
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
@@ -778,10 +807,7 @@ def exhaustive_search(
     n_candidates = len(candidate_indices)
 
     # Count total combinations
-    total = sum(
-        len(list(itertools.combinations(candidate_indices, k)))
-        for k in range(1, min(max_terms, n_candidates) + 1)
-    )
+    total = sum(math.comb(n_candidates, k) for k in range(1, min(max_terms, n_candidates) + 1))
 
     if total > max_combinations:
         raise ValueError(
@@ -789,25 +815,29 @@ def exhaustive_search(
             f"exceeding limit of {max_combinations}. Use greedy or LASSO instead."
         )
 
-    _param_cache = (
-        {} if (basis_library is not None and basis_library.has_parametric) else None
-    )
-    _fs_kw = dict(
-        X=X, basis_library=basis_library,
-        param_optimizer=param_optimizer,
-        param_optimization_budget=param_optimization_budget,
-        _param_cache=_param_cache,
-    )
+    _param_cache = {} if (basis_library is not None and basis_library.has_parametric) else None
+    _fs_kw = {
+        "X": X,
+        "basis_library": basis_library,
+        "param_optimizer": param_optimizer,
+        "param_optimization_budget": param_optimization_budget,
+        "_param_cache": _param_cache,
+    }
 
-    results: List[SelectionResult] = []
+    results: list[SelectionResult] = []
     best_ic = float("inf")
     best_index = -1
 
     for k in range(1, min(max_terms, n_candidates) + 1):
         for combo in itertools.combinations(candidate_indices, k):
             result = fit_subset(
-                Phi, y, list(combo), basis_names, complexities,
-                regularization, **_fs_kw,
+                Phi,
+                y,
+                list(combo),
+                basis_names,
+                complexities,
+                regularization,
+                **_fs_kw,
             )
             results.append(result)
 
@@ -834,7 +864,7 @@ def coordinate_descent_lasso(
     alpha: float,
     max_iter: int = 1000,
     tol: float = 1e-6,
-    warm_start: Optional[jnp.ndarray] = None,
+    warm_start: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Solve LASSO using coordinate descent.
@@ -869,9 +899,9 @@ def coordinate_descent_lasso(
         w = jnp.zeros(n_features)
 
     # Precompute for efficiency
-    Phi_sq_sum = jnp.sum(Phi ** 2, axis=0)
+    Phi_sq_sum = jnp.sum(Phi**2, axis=0)
 
-    for iteration in range(max_iter):
+    for _iteration in range(max_iter):
         w_old = w.copy()
 
         for j in range(n_features):
@@ -899,14 +929,14 @@ def coordinate_descent_lasso(
 def lasso_path_selection(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     complexities: jnp.ndarray,
     max_terms: int = 5,
     information_criterion: str = "bic",
     n_alphas: int = 100,
     alpha_min_ratio: float = 1e-4,
-    regularization: Optional[float] = None,
-    X: Optional[jnp.ndarray] = None,
+    regularization: float | None = None,
+    X: jnp.ndarray | None = None,
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
@@ -965,27 +995,24 @@ def lasso_path_selection(
 
     # Track unique subsets
     seen_subsets: set = set()
-    results: List[SelectionResult] = []
+    results: list[SelectionResult] = []
     best_ic = float("inf")
     best_index = -1
 
-    _param_cache = (
-        {} if (basis_library is not None and basis_library.has_parametric) else None
-    )
-    _fs_kw = dict(
-        X=X, basis_library=basis_library,
-        param_optimizer=param_optimizer,
-        param_optimization_budget=param_optimization_budget,
-        _param_cache=_param_cache,
-    )
+    _param_cache = {} if (basis_library is not None and basis_library.has_parametric) else None
+    _fs_kw = {
+        "X": X,
+        "basis_library": basis_library,
+        "param_optimizer": param_optimizer,
+        "param_optimization_budget": param_optimization_budget,
+        "_param_cache": _param_cache,
+    }
 
     w = jnp.zeros(n_features)
 
     for alpha in alphas:
         # Warm start from previous solution
-        w = coordinate_descent_lasso(
-            Phi_standardized, y_centered, float(alpha), warm_start=w
-        )
+        w = coordinate_descent_lasso(Phi_standardized, y_centered, float(alpha), warm_start=w)
 
         # Get active set (non-zero coefficients)
         active = jnp.where(jnp.abs(w) > 1e-8)[0]
@@ -1001,8 +1028,13 @@ def lasso_path_selection(
 
         # Refit with OLS on original (unstandardized) data
         result = fit_subset(
-            Phi, y, list(active), basis_names, complexities,
-            regularization, **_fs_kw,
+            Phi,
+            y,
+            list(active),
+            basis_names,
+            complexities,
+            regularization,
+            **_fs_kw,
         )
         results.append(result)
 
@@ -1014,9 +1046,15 @@ def lasso_path_selection(
     if not results:
         # Fallback to greedy forward if LASSO finds nothing
         return greedy_forward_selection(
-            Phi, y, basis_names, complexities, max_terms, information_criterion,
+            Phi,
+            y,
+            basis_names,
+            complexities,
+            max_terms,
+            information_criterion,
             regularization=regularization,
-            X=X, basis_library=basis_library,
+            X=X,
+            basis_library=basis_library,
             param_optimizer=param_optimizer,
             param_optimization_budget=param_optimization_budget,
         )
@@ -1040,7 +1078,7 @@ def coordinate_descent_elastic_net(
     l1_ratio: float = 0.5,
     max_iter: int = 1000,
     tol: float = 1e-6,
-    warm_start: Optional[jnp.ndarray] = None,
+    warm_start: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Solve Elastic Net using coordinate descent.
@@ -1079,9 +1117,9 @@ def coordinate_descent_elastic_net(
     l1_penalty = alpha * l1_ratio
     l2_penalty = alpha * (1 - l1_ratio)
 
-    Phi_sq_sum = jnp.sum(Phi ** 2, axis=0)
+    Phi_sq_sum = jnp.sum(Phi**2, axis=0)
 
-    for iteration in range(max_iter):
+    for _iteration in range(max_iter):
         w_old = w.copy()
 
         for j in range(n_features):
@@ -1107,7 +1145,7 @@ def coordinate_descent_elastic_net(
 # =============================================================================
 
 
-def compute_pareto_front(results: List[SelectionResult]) -> List[SelectionResult]:
+def compute_pareto_front(results: list[SelectionResult]) -> list[SelectionResult]:
     """
     Extract Pareto-optimal models (complexity vs MSE).
 
@@ -1139,9 +1177,9 @@ def compute_pareto_front(results: List[SelectionResult]) -> List[SelectionResult
 
 
 def compute_pareto_front_multi(
-    results: List[SelectionResult],
-    objectives: List[str] = ["complexity", "mse"],
-) -> List[SelectionResult]:
+    results: list[SelectionResult],
+    objectives: list[str] = None,
+) -> list[SelectionResult]:
     """
     Compute Pareto front for multiple objectives.
 
@@ -1157,6 +1195,8 @@ def compute_pareto_front_multi(
     pareto : list of SelectionResult
         Pareto-optimal models.
     """
+    if objectives is None:
+        objectives = ["complexity", "mse"]
     if not results:
         return []
 
@@ -1198,7 +1238,7 @@ def compute_pareto_front_multi(
 def select_features(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
-    basis_names: List[str],
+    basis_names: list[str],
     complexities: jnp.ndarray,
     strategy: str = "greedy_forward",
     max_terms: int = 5,
@@ -1240,9 +1280,7 @@ def select_features(
     }
 
     if strategy not in strategies:
-        raise ValueError(
-            f"Unknown strategy: {strategy}. Available: {list(strategies.keys())}"
-        )
+        raise ValueError(f"Unknown strategy: {strategy}. Available: {list(strategies.keys())}")
 
     return strategies[strategy](
         Phi=Phi,

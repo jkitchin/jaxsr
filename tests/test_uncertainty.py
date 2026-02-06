@@ -22,15 +22,8 @@ from jaxsr.uncertainty import (
     BayesianModelAverage,
     bootstrap_coefficients,
     bootstrap_predict,
-    coefficient_intervals,
-    compute_coeff_covariance,
     compute_unbiased_variance,
-    conformal_predict_jackknife_plus,
-    conformal_predict_split,
-    ensemble_predict,
-    prediction_interval,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -61,9 +54,7 @@ def _fit_model(X, y, max_terms=3):
         .add_linear()
         .add_polynomials(max_degree=3)
     )
-    model = SymbolicRegressor(
-        basis_library=library, max_terms=max_terms, strategy="greedy_forward"
-    )
+    model = SymbolicRegressor(basis_library=library, max_terms=max_terms, strategy="greedy_forward")
     model.fit(X, y)
     return model
 
@@ -140,7 +131,7 @@ class TestCoefficientIntervals:
             intervals = model.coefficient_intervals(alpha)
 
             # Find intercept and slope in the intervals
-            for name, (est, lo, hi, se) in intervals.items():
+            for name, (_est, lo, hi, _se) in intervals.items():
                 if name == "1":
                     if lo <= true_intercept <= hi:
                         covers_intercept += 1
@@ -149,12 +140,10 @@ class TestCoefficientIntervals:
                         covers_slope += 1
 
         # Coverage should be approximately 95%, allow range [80%, 100%]
-        assert covers_intercept / n_seeds >= 0.80, (
-            f"Intercept coverage {covers_intercept}/{n_seeds} too low"
-        )
-        assert covers_slope / n_seeds >= 0.80, (
-            f"Slope coverage {covers_slope}/{n_seeds} too low"
-        )
+        assert (
+            covers_intercept / n_seeds >= 0.80
+        ), f"Intercept coverage {covers_intercept}/{n_seeds} too low"
+        assert covers_slope / n_seeds >= 0.80, f"Slope coverage {covers_slope}/{n_seeds} too low"
 
     def test_returns_correct_keys(self):
         X, y = _make_linear_data()
@@ -177,17 +166,9 @@ class TestPredictionInterval:
         for seed in range(50):
             rng = np.random.RandomState(seed)
             X_train = jnp.array(rng.uniform(0, 5, (80, 1)))
-            y_train = jnp.array(
-                2.0 * np.array(X_train[:, 0])
-                + 1.0
-                + 0.5 * rng.randn(80)
-            )
+            y_train = jnp.array(2.0 * np.array(X_train[:, 0]) + 1.0 + 0.5 * rng.randn(80))
             X_test = jnp.array(rng.uniform(0, 5, (20, 1)))
-            y_test = jnp.array(
-                2.0 * np.array(X_test[:, 0])
-                + 1.0
-                + 0.5 * rng.randn(20)
-            )
+            y_test = jnp.array(2.0 * np.array(X_test[:, 0]) + 1.0 + 0.5 * rng.randn(20))
 
             model = _fit_model(X_train, y_train, max_terms=2)
             y_pred, lower, upper = model.predict_interval(X_test, alpha)
@@ -215,9 +196,7 @@ class TestPredictionInterval:
         np.testing.assert_array_less(np.array(conf_hi), np.array(pred_hi))
 
         # Predictions should be the same
-        np.testing.assert_allclose(
-            np.array(y_pred_p), np.array(y_pred_c), atol=1e-5
-        )
+        np.testing.assert_allclose(np.array(y_pred_p), np.array(y_pred_c), atol=1e-5)
 
 
 class TestSigmaProperty:
@@ -229,7 +208,7 @@ class TestSigmaProperty:
         Phi = model._get_Phi_train()
         residuals = y - Phi @ model.coefficients_
         n, p = Phi.shape
-        expected_sigma = float(jnp.sqrt(jnp.sum(residuals ** 2) / (n - p)))
+        expected_sigma = float(jnp.sqrt(jnp.sum(residuals**2) / (n - p)))
 
         assert abs(model.sigma_ - expected_sigma) < 1e-6
 
@@ -266,9 +245,7 @@ class TestEnsemblePredict:
         X, y = _make_linear_data(n=50)
         # Very simple model likely produces just 1 Pareto model with 1 term
         library = BasisLibrary(n_features=1).add_constant().add_linear()
-        model = SymbolicRegressor(
-            basis_library=library, max_terms=1, strategy="greedy_forward"
-        )
+        model = SymbolicRegressor(basis_library=library, max_terms=1, strategy="greedy_forward")
         model.fit(X, y)
         result = model.predict_ensemble(X)
         # With max_terms=1 and greedy forward, there's only 1 model on the path
@@ -321,9 +298,7 @@ class TestConformalSplit:
         """Split conformal should achieve approximate coverage."""
         rng = np.random.RandomState(42)
         X_all = jnp.array(rng.uniform(0, 5, (300, 1)))
-        y_all = jnp.array(
-            2.0 * np.array(X_all[:, 0]) + 1.0 + 0.5 * rng.randn(300)
-        )
+        y_all = jnp.array(2.0 * np.array(X_all[:, 0]) + 1.0 + 0.5 * rng.randn(300))
 
         X_train, y_train = X_all[:150], y_all[:150]
         X_cal, y_cal = X_all[150:250], y_all[150:250]
@@ -352,13 +327,9 @@ class TestConformalJackknifePlus:
         """Jackknife+ should achieve approximate coverage."""
         rng = np.random.RandomState(42)
         X_train = jnp.array(rng.uniform(0, 5, (100, 1)))
-        y_train = jnp.array(
-            2.0 * np.array(X_train[:, 0]) + 1.0 + 0.5 * rng.randn(100)
-        )
+        y_train = jnp.array(2.0 * np.array(X_train[:, 0]) + 1.0 + 0.5 * rng.randn(100))
         X_test = jnp.array(rng.uniform(0, 5, (50, 1)))
-        y_test = jnp.array(
-            2.0 * np.array(X_test[:, 0]) + 1.0 + 0.5 * rng.randn(50)
-        )
+        y_test = jnp.array(2.0 * np.array(X_test[:, 0]) + 1.0 + 0.5 * rng.randn(50))
 
         model = _fit_model(X_train, y_train, max_terms=2)
         y_pred, lower, upper = model.predict_conformal(X_test, alpha=0.1)
@@ -404,9 +375,7 @@ class TestBootstrapCoefficients:
         for seed in range(n_seeds):
             X, y = _make_linear_data(n=80, noise_std=0.5, seed=seed)
             model = _fit_model(X, y, max_terms=2)
-            result = bootstrap_coefficients(
-                model, n_bootstrap=500, alpha=0.05, seed=seed
-            )
+            result = bootstrap_coefficients(model, n_bootstrap=500, alpha=0.05, seed=seed)
             names = result["names"]
             for i, name in enumerate(names):
                 lo = float(result["lower"][i])
@@ -469,7 +438,7 @@ class TestRegressorUQMethods:
         library = BasisLibrary(n_features=1).add_constant().add_linear()
         model = SymbolicRegressor(basis_library=library)
         with pytest.raises(RuntimeError, match="not fitted"):
-            model.sigma_
+            _ = model.sigma_
 
     def test_constrained_warns(self):
         """Should warn if constraints are active."""

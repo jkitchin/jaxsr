@@ -7,13 +7,12 @@ and helper functions used throughout the library.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax import jit, vmap
-
+from jax import jit
 
 # =============================================================================
 # Numerical Stability
@@ -24,8 +23,8 @@ from jax import jit, vmap
 def safe_solve_lstsq(
     A: jnp.ndarray,
     b: jnp.ndarray,
-    rcond: Optional[float] = None,
-) -> Tuple[jnp.ndarray, float, int]:
+    rcond: float | None = None,
+) -> tuple[jnp.ndarray, float, int]:
     """
     Solve least squares with numerical stability checks.
 
@@ -69,7 +68,7 @@ def solve_lstsq_svd(
     A: jnp.ndarray,
     b: jnp.ndarray,
     rcond: float = 1e-10,
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Solve least squares using explicit SVD decomposition.
 
@@ -125,7 +124,7 @@ def condition_number(A: jnp.ndarray) -> float:
 def check_collinearity(
     Phi: jnp.ndarray,
     threshold: float = 1e-6,
-) -> Tuple[bool, List[Tuple[int, int]]]:
+) -> tuple[bool, list[tuple[int, int]]]:
     """
     Check for collinear columns in design matrix.
 
@@ -169,9 +168,9 @@ def check_collinearity(
 
 def standardize(
     X: jnp.ndarray,
-    mean: Optional[jnp.ndarray] = None,
-    std: Optional[jnp.ndarray] = None,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    mean: jnp.ndarray | None = None,
+    std: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Standardize array to zero mean and unit variance.
 
@@ -230,9 +229,9 @@ def unstandardize(
 
 def normalize(
     X: jnp.ndarray,
-    min_val: Optional[jnp.ndarray] = None,
-    max_val: Optional[jnp.ndarray] = None,
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    min_val: jnp.ndarray | None = None,
+    max_val: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
     Normalize array to [0, 1] range.
 
@@ -316,7 +315,7 @@ def compute_residuals(
     y: jnp.ndarray,
     y_pred: jnp.ndarray,
     Phi: jnp.ndarray,
-) -> Dict[str, jnp.ndarray]:
+) -> dict[str, jnp.ndarray]:
     """
     Compute various types of residuals.
 
@@ -341,7 +340,7 @@ def compute_residuals(
     leverage = compute_leverage(Phi)
 
     n, p = Phi.shape
-    sigma = jnp.sqrt(jnp.sum(raw ** 2) / (n - p))
+    sigma = jnp.sqrt(jnp.sum(raw**2) / (n - p))
 
     standardized = raw / (jnp.std(raw) + 1e-10)
     studentized = raw / (sigma * jnp.sqrt(1 - leverage + 1e-10))
@@ -361,8 +360,8 @@ def compute_residuals(
 def validate_array(
     X: Any,
     name: str = "X",
-    ndim: Optional[int] = None,
-    dtype: Optional[jnp.dtype] = None,
+    ndim: int | None = None,
+    dtype: jnp.dtype | None = None,
 ) -> jnp.ndarray:
     """
     Validate and convert input to JAX array.
@@ -436,7 +435,7 @@ def check_consistent_length(*arrays) -> int:
 # =============================================================================
 
 
-def get_random_key(seed: Optional[int] = None) -> jax.random.PRNGKey:
+def get_random_key(seed: int | None = None) -> jax.random.PRNGKey:
     """
     Get a JAX random key.
 
@@ -455,7 +454,7 @@ def get_random_key(seed: Optional[int] = None) -> jax.random.PRNGKey:
     return jax.random.PRNGKey(seed)
 
 
-def split_key(key: jax.random.PRNGKey, n: int = 2) -> List[jax.random.PRNGKey]:
+def split_key(key: jax.random.PRNGKey, n: int = 2) -> list[jax.random.PRNGKey]:
     """
     Split a random key into multiple keys.
 
@@ -507,7 +506,7 @@ def format_coefficient(value: float, precision: int = 4) -> str:
 
 def build_expression_string(
     coefficients: jnp.ndarray,
-    names: List[str],
+    names: list[str],
     precision: int = 4,
 ) -> str:
     """
@@ -529,7 +528,7 @@ def build_expression_string(
     """
     terms = []
 
-    for coef, name in zip(coefficients, names):
+    for coef, name in zip(coefficients, names, strict=False):
         coef = float(coef)
         if abs(coef) < 1e-10:
             continue
@@ -561,11 +560,11 @@ def build_expression_string(
 # =============================================================================
 
 
-def array_to_list(arr: jnp.ndarray) -> List:
+def array_to_list(arr: jnp.ndarray) -> list:
     """Convert JAX array to nested Python list for JSON serialization."""
     return np.array(arr).tolist()
 
 
-def list_to_array(lst: List) -> jnp.ndarray:
+def list_to_array(lst: list) -> jnp.ndarray:
     """Convert nested Python list back to JAX array."""
     return jnp.array(lst)
