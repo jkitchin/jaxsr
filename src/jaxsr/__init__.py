@@ -78,7 +78,10 @@ from .simplify import SimplificationResult, simplify_expression
 
 # Uncertainty Quantification
 from .uncertainty import (
+    AnovaResult,
+    AnovaRow,
     BayesianModelAverage,
+    anova,
     bootstrap_coefficients,
     bootstrap_model_selection,
     bootstrap_predict,
@@ -131,6 +134,9 @@ __all__ = [
     "compute_all_metrics",
     "cross_validate",
     # Uncertainty Quantification
+    "anova",
+    "AnovaResult",
+    "AnovaRow",
     "compute_unbiased_variance",
     "compute_coeff_covariance",
     "coefficient_intervals",

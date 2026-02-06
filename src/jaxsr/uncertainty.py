@@ -11,6 +11,7 @@ OLS inference applies directly.
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
@@ -817,3 +818,258 @@ def bootstrap_model_selection(
         "stability_score": stability_score,
         "expressions": expressions,
     }
+
+
+# =============================================================================
+# ANOVA (Analysis of Variance)
+# =============================================================================
+
+
+@dataclass
+class AnovaRow:
+    """A single row of the ANOVA table.
+
+    Parameters
+    ----------
+    source : str
+        Name of the source of variation (term name, "Model", "Residual",
+        or "Total").
+    df : int
+        Degrees of freedom.
+    sum_sq : float
+        Sum of squares.
+    mean_sq : float
+        Mean sum of squares (``sum_sq / df``).
+    f_value : float or None
+        F-statistic (``None`` for Residual and Total rows).
+    p_value : float or None
+        p-value from the F-distribution (``None`` for Residual and Total rows).
+    """
+
+    source: str
+    df: int
+    sum_sq: float
+    mean_sq: float
+    f_value: float | None = None
+    p_value: float | None = None
+
+
+@dataclass
+class AnovaResult:
+    """Result of an ANOVA decomposition.
+
+    Parameters
+    ----------
+    rows : list of AnovaRow
+        Per-term rows followed by Model, Residual, and Total summary rows.
+    type : str
+        ANOVA type: ``"sequential"`` (Type I) or ``"marginal"`` (Type III).
+    warnings : list of str
+        Diagnostic messages (e.g. when p-values are approximate).
+    """
+
+    rows: list[AnovaRow] = field(default_factory=list)
+    type: str = "sequential"
+    warnings: list[str] = field(default_factory=list)
+
+    # -- helpers for convenient access ------------------------------------
+
+    @property
+    def term_names(self) -> list[str]:
+        """Names of the individual term rows (excludes summary rows)."""
+        summary = {"Model", "Residual", "Total"}
+        return [r.source for r in self.rows if r.source not in summary]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise the table to a plain dictionary."""
+        return {
+            "type": self.type,
+            "warnings": list(self.warnings),
+            "rows": [
+                {
+                    "source": r.source,
+                    "df": r.df,
+                    "sum_sq": r.sum_sq,
+                    "mean_sq": r.mean_sq,
+                    "f_value": r.f_value,
+                    "p_value": r.p_value,
+                }
+                for r in self.rows
+            ],
+        }
+
+    def __repr__(self) -> str:  # noqa: D105
+        hdr = f"ANOVA Table (Type: {self.type})\n"
+        line = f"{'Source':<25s} {'df':>4s} {'SS':>12s} {'MS':>12s} {'F':>10s} {'p':>10s}\n"
+        sep = "-" * 77 + "\n"
+        body = ""
+        for r in self.rows:
+            f_str = f"{r.f_value:10.4f}" if r.f_value is not None else " " * 10
+            p_str = f"{r.p_value:10.4g}" if r.p_value is not None else " " * 10
+            body += f"{r.source:<25s} {r.df:4d} {r.sum_sq:12.4f} {r.mean_sq:12.4f} {f_str} {p_str}\n"
+        warn = ""
+        if self.warnings:
+            warn = "\nWarnings:\n" + "\n".join(f"  - {w}" for w in self.warnings) + "\n"
+        return hdr + sep + line + sep + body + sep + warn
+
+
+def anova(
+    model: SymbolicRegressor,
+    anova_type: str = "sequential",
+) -> AnovaResult:
+    """Perform ANOVA on a fitted :class:`SymbolicRegressor`.
+
+    Decomposes the total sum of squares into contributions from each
+    selected basis-function term plus a residual, and tests each term's
+    significance with an F-test.
+
+    Two decomposition types are supported:
+
+    * **``"sequential"``** (Type I): terms are added in the order they
+      appear in ``model.selected_features_`` and each term's contribution
+      is the *extra* sum of squares beyond the previous terms.
+    * **``"marginal"``** (Type III): each term's contribution is the
+      extra sum of squares from adding it *last*, after all other terms.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        A fitted model.
+    anova_type : str
+        ``"sequential"`` (Type I) or ``"marginal"`` (Type III).
+
+    Returns
+    -------
+    AnovaResult
+        ANOVA table with per-term rows plus Model, Residual, and Total
+        summary rows.
+
+    Notes
+    -----
+    The F-test p-values assume independent, normally distributed residuals
+    and an unconstrained OLS fit.  They are **approximate** when:
+
+    * The model contains **parametric (nonlinear) basis functions** whose
+      parameters were optimised during fitting, because the effective
+      degrees of freedom are larger than reported.
+    * **Constraints** were applied, since the coefficient estimates are
+      no longer ordinary least-squares.
+
+    In these cases the sums-of-squares decomposition is still meaningful,
+    but the p-values should be treated as indicative rather than exact.
+    The returned :pyclass:`AnovaResult` includes diagnostic warnings when
+    these conditions are detected.
+
+    Examples
+    --------
+    >>> from jaxsr.uncertainty import anova
+    >>> table = anova(model)
+    >>> print(table)
+    >>> for row in table.rows:
+    ...     print(row.source, row.f_value, row.p_value)
+    """
+    model._check_is_fitted()
+    anova_type = anova_type.lower()
+    if anova_type not in ("sequential", "marginal"):
+        raise ValueError(
+            f"anova_type must be 'sequential' or 'marginal', got '{anova_type}'"
+        )
+
+    X = model._X_train
+    y = model._y_train
+    n = len(y)
+    selected = list(np.array(model._result.selected_indices))
+    names = list(model._result.selected_names)
+    p = len(selected)
+
+    # Full model design matrix and residuals
+    Phi_full = model.basis_library.evaluate_subset(X, selected)
+    y_hat_full = Phi_full @ model._result.coefficients
+    ss_res_full = float(jnp.sum((y - y_hat_full) ** 2))
+    ss_tot = float(jnp.sum((y - jnp.mean(y)) ** 2))
+    ss_model = ss_tot - ss_res_full
+    df_res = n - p
+    ms_res = ss_res_full / df_res if df_res > 0 else float("inf")
+
+    # -- Diagnostics / warnings -------------------------------------------
+    warn: list[str] = []
+    if model.basis_library.has_parametric:
+        warn.append(
+            "Model contains parametric (nonlinear) basis functions. "
+            "F-test p-values are approximate because the effective "
+            "degrees of freedom do not account for nonlinear parameter "
+            "optimisation."
+        )
+    if model.constraints is not None:
+        warn.append(
+            "Constrained coefficients were used. F-test p-values are "
+            "approximate because the fit is not unconstrained OLS."
+        )
+
+    # -- Per-term SS computation ------------------------------------------
+    rows: list[AnovaRow] = []
+
+    if anova_type == "sequential":
+        # Type I: add terms one at a time in order
+        ss_prev = ss_tot  # residual SS of the "null" (intercept-free) model
+        for k in range(p):
+            subset = selected[: k + 1]
+            Phi_k = model.basis_library.evaluate_subset(X, subset)
+            beta_k = jnp.linalg.lstsq(Phi_k, y, rcond=None)[0]
+            ss_res_k = float(jnp.sum((y - Phi_k @ beta_k) ** 2))
+            ss_term = ss_prev - ss_res_k  # extra SS explained by this term
+            ss_term = max(ss_term, 0.0)
+            ms_term = ss_term  # df = 1 per term
+            f_val = ms_term / ms_res if ms_res > 0 else float("inf")
+            p_val = float(1.0 - stats.f.cdf(f_val, 1, df_res)) if df_res > 0 else float("nan")
+            rows.append(AnovaRow(
+                source=names[k], df=1, sum_sq=ss_term,
+                mean_sq=ms_term, f_value=f_val, p_value=p_val,
+            ))
+            ss_prev = ss_res_k
+    else:
+        # Type III: each term's contribution is the extra SS when adding
+        # it last (i.e. removing it from the full model).
+        for k in range(p):
+            subset_minus_k = [s for j, s in enumerate(selected) if j != k]
+            if len(subset_minus_k) == 0:
+                # Only one term — its marginal SS is the whole model SS
+                ss_term = ss_model
+            else:
+                Phi_mk = model.basis_library.evaluate_subset(X, subset_minus_k)
+                beta_mk = jnp.linalg.lstsq(Phi_mk, y, rcond=None)[0]
+                ss_res_mk = float(jnp.sum((y - Phi_mk @ beta_mk) ** 2))
+                ss_term = ss_res_mk - ss_res_full
+            ss_term = max(ss_term, 0.0)
+            ms_term = ss_term
+            f_val = ms_term / ms_res if ms_res > 0 else float("inf")
+            p_val = float(1.0 - stats.f.cdf(f_val, 1, df_res)) if df_res > 0 else float("nan")
+            rows.append(AnovaRow(
+                source=names[k], df=1, sum_sq=ss_term,
+                mean_sq=ms_term, f_value=f_val, p_value=p_val,
+            ))
+
+    # -- Summary rows -----------------------------------------------------
+    # SS_total is about the mean (df = n-1), so df_model = n - 1 - df_res
+    # which equals p - 1 when the model includes an intercept.
+    df_model = n - 1 - df_res
+    df_model = max(df_model, 1)
+    ms_model = ss_model / df_model if df_model > 0 else 0.0
+    f_model = ms_model / ms_res if ms_res > 0 else float("inf")
+    p_model = float(1.0 - stats.f.cdf(f_model, df_model, df_res)) if df_res > 0 else float("nan")
+
+    rows.append(AnovaRow(
+        source="Model", df=df_model, sum_sq=ss_model,
+        mean_sq=ms_model,
+        f_value=f_model, p_value=p_model,
+    ))
+    rows.append(AnovaRow(
+        source="Residual", df=df_res, sum_sq=ss_res_full,
+        mean_sq=ms_res,
+    ))
+    rows.append(AnovaRow(
+        source="Total", df=n - 1, sum_sq=ss_tot,
+        mean_sq=ss_tot / (n - 1) if n > 1 else 0.0,
+    ))
+
+    return AnovaResult(rows=rows, type=anova_type, warnings=warn)
