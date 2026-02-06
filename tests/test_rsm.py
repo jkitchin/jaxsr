@@ -27,7 +27,6 @@ from jaxsr.rsm import (
     fractional_factorial_design,
 )
 
-
 # =========================================================================
 # Helpers
 # =========================================================================
@@ -213,7 +212,9 @@ class TestCanonicalAnalysis:
             .add_interactions(max_order=2)
         )
         model = SymbolicRegressor(
-            basis_library=library, max_terms=6, strategy="greedy_forward",
+            basis_library=library,
+            max_terms=6,
+            strategy="greedy_forward",
         )
         model.fit(jnp.array(X), jnp.array(y))
         return model
@@ -258,13 +259,11 @@ class TestCanonicalAnalysis:
         X = rng.uniform(-1, 1, (30, 2))
         y = 3.0 * X[:, 0] + 2.0 * X[:, 1] + 1.0 + 0.01 * rng.randn(30)
 
-        library = (
-            BasisLibrary(n_features=2, feature_names=["x1", "x2"])
-            .add_constant()
-            .add_linear()
-        )
+        library = BasisLibrary(n_features=2, feature_names=["x1", "x2"]).add_constant().add_linear()
         model = SymbolicRegressor(
-            basis_library=library, max_terms=3, strategy="greedy_forward",
+            basis_library=library,
+            max_terms=3,
+            strategy="greedy_forward",
         )
         model.fit(jnp.array(X), jnp.array(y))
         ca = canonical_analysis(model)
@@ -283,7 +282,9 @@ class TestCanonicalAnalysis:
             .add_interactions(max_order=2)
         )
         model = SymbolicRegressor(
-            basis_library=library, max_terms=6, strategy="greedy_forward",
+            basis_library=library,
+            max_terms=6,
+            strategy="greedy_forward",
         )
         model.fit(jnp.array(X), jnp.array(y))
         ca = canonical_analysis(model)
@@ -363,7 +364,9 @@ class TestResponseSurface:
 
     def test_allow_transcendental(self):
         rs = ResponseSurface(
-            n_factors=2, bounds=BOUNDS_2, allow_transcendental=True,
+            n_factors=2,
+            bounds=BOUNDS_2,
+            allow_transcendental=True,
         )
         names = rs.model.basis_library.names
         assert any("exp" in n for n in names)
@@ -399,6 +402,7 @@ class TestResponseSurfacePlotting:
 
     def test_plot_contour(self):
         import matplotlib
+
         matplotlib.use("Agg")
         rs = self._setup_fitted_rs()
         ax = rs.plot_contour()
@@ -406,6 +410,7 @@ class TestResponseSurfacePlotting:
 
     def test_plot_contour_unfilled(self):
         import matplotlib
+
         matplotlib.use("Agg")
         rs = self._setup_fitted_rs()
         ax = rs.plot_contour(filled=False, show_design=False)
@@ -413,6 +418,7 @@ class TestResponseSurfacePlotting:
 
     def test_plot_surface_3d(self):
         import matplotlib
+
         matplotlib.use("Agg")
         rs = self._setup_fitted_rs()
         ax = rs.plot_surface()
@@ -421,6 +427,7 @@ class TestResponseSurfacePlotting:
     def test_plot_contour_three_factors(self):
         """With 3 factors, fixed values should appear in the title."""
         import matplotlib
+
         matplotlib.use("Agg")
         rs = ResponseSurface(n_factors=3, bounds=BOUNDS_3, factor_names=["T", "P", "C"])
         X = rs.ccd(alpha="face", center_points=2)

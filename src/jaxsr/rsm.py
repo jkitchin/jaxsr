@@ -15,12 +15,9 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
-from scipy import stats as sp_stats
-from scipy.stats import qmc
 
 from .basis import BasisLibrary
 from .regressor import SymbolicRegressor
@@ -67,9 +64,7 @@ def factorial_design(
     else:
         levels_per = list(levels)
         if n_factors is not None and len(levels_per) != n_factors:
-            raise ValueError(
-                f"Length of levels ({len(levels_per)}) != n_factors ({n_factors})"
-            )
+            raise ValueError(f"Length of levels ({len(levels_per)}) != n_factors ({n_factors})")
         n_factors = len(levels_per)
 
     axes = [np.linspace(-1, 1, lv) for lv in levels_per]
@@ -116,8 +111,6 @@ def fractional_factorial_design(
         p = min(p, n_factors)  # can't exceed full factorial
     else:
         p = n_factors  # full factorial
-
-    n_runs = 2**p
 
     # Build the base 2^p full factorial in {-1, +1}
     base = np.array(list(itertools.product([-1, 1], repeat=p)))
@@ -430,7 +423,7 @@ def canonical_analysis(
     intercept = 0.0
     unrecognised = []
 
-    for name, coef in zip(names, coeffs):
+    for name, coef in zip(names, coeffs, strict=False):
         coef = float(coef)
         if name == "1":
             intercept = coef
@@ -609,8 +602,7 @@ class ResponseSurface:
 
         if len(self.bounds) != n_factors:
             raise ValueError(
-                f"Length of bounds ({len(self.bounds)}) must match "
-                f"n_factors ({n_factors})"
+                f"Length of bounds ({len(self.bounds)}) must match " f"n_factors ({n_factors})"
             )
 
         # Build basis library
@@ -661,8 +653,10 @@ class ResponseSurface:
             Design matrix in natural units.
         """
         return central_composite_design(
-            self.n_factors, alpha=alpha,
-            center_points=center_points, bounds=self.bounds,
+            self.n_factors,
+            alpha=alpha,
+            center_points=center_points,
+            bounds=self.bounds,
         )
 
     def box_behnken(self, center_points: int = 1) -> np.ndarray:
@@ -678,7 +672,9 @@ class ResponseSurface:
         X : np.ndarray
         """
         return box_behnken_design(
-            self.n_factors, center_points=center_points, bounds=self.bounds,
+            self.n_factors,
+            center_points=center_points,
+            bounds=self.bounds,
         )
 
     def factorial(self, levels: int = 2) -> np.ndarray:
@@ -694,7 +690,9 @@ class ResponseSurface:
         X : np.ndarray
         """
         return factorial_design(
-            levels=levels, n_factors=self.n_factors, bounds=self.bounds,
+            levels=levels,
+            n_factors=self.n_factors,
+            bounds=self.bounds,
         )
 
     def fractional_factorial(self, resolution: int = 3) -> np.ndarray:
@@ -710,7 +708,9 @@ class ResponseSurface:
         X : np.ndarray
         """
         return fractional_factorial_design(
-            self.n_factors, resolution=resolution, bounds=self.bounds,
+            self.n_factors,
+            resolution=resolution,
+            bounds=self.bounds,
         )
 
     # -- Fitting ----------------------------------------------------------
@@ -846,8 +846,12 @@ class ResponseSurface:
         if show_design and self.model._X_train is not None:
             X_train = np.array(self.model._X_train)
             ax.scatter(
-                X_train[:, i], X_train[:, j],
-                c="red", edgecolors="white", s=50, zorder=5,
+                X_train[:, i],
+                X_train[:, j],
+                c="red",
+                edgecolors="white",
+                s=50,
+                zorder=5,
                 label="Design points",
             )
             ax.legend()
@@ -887,7 +891,6 @@ class ResponseSurface:
         self.model._check_is_fitted()
 
         i, j = factors
-        k = self.n_factors
 
         if ax is None:
             fig = plt.figure(figsize=figsize)

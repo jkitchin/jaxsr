@@ -19,7 +19,6 @@ import pytest
 
 from jaxsr import BasisLibrary, SymbolicRegressor
 from jaxsr.uncertainty import (
-    AnovaResult,
     BayesianModelAverage,
     anova,
     bootstrap_coefficients,
@@ -667,9 +666,7 @@ class TestAnovaWarnings:
                 feature_indices=(0,),
             )
         )
-        model = SymbolicRegressor(
-            basis_library=library, max_terms=3, strategy="greedy_forward"
-        )
+        model = SymbolicRegressor(basis_library=library, max_terms=3, strategy="greedy_forward")
         model.fit(X, y)
         result = anova(model)
         assert any("parametric" in w.lower() for w in result.warnings)
