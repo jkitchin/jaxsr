@@ -98,24 +98,24 @@ for i, name in enumerate(model.selected_features_):
 # =============================================================================
 print("\n--- 95% Confidence Intervals (OLS) ---")
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
+for name, (est, lo, hi, _se) in intervals.items():
     sig = " *" if lo * hi > 0 else ""
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]{sig}")
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]{sig}")
 
 # =============================================================================
 # 7. Bootstrap intervals (captures nonlinear parameter uncertainty)
 # =============================================================================
 print("\n--- Bootstrap Intervals (500 resamples) ---")
 boot_coef = bootstrap_coefficients(model, n_bootstrap=500, alpha=0.05)
-for name, (lo, hi) in boot_coef.intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, lo, hi in zip(boot_coef["names"], boot_coef["lower"], boot_coef["upper"], strict=False):
+    print(f"  {name}: [{float(lo):.4f}, {float(hi):.4f}]")
 
 # Prediction intervals via bootstrap
 P_pred = np.linspace(0.01, 10.0, 50).reshape(-1, 1)
 boot_pred = bootstrap_predict(model, P_pred, n_bootstrap=500, alpha=0.05)
 print(
     f"\nAverage bootstrap 95% PI width: "
-    f"{np.mean(np.asarray(boot_pred.upper) - np.asarray(boot_pred.lower)):.4f}"
+    f"{np.mean(np.asarray(boot_pred['upper']) - np.asarray(boot_pred['lower'])):.4f}"
 )
 
 # =============================================================================
@@ -123,9 +123,11 @@ print(
 # =============================================================================
 print("\n--- ANOVA Decomposition ---")
 result = anova(model)
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source:30s}  SS = {row.sum_sq:10.4f}  ({pct:5.1f}%)")
 
 # =============================================================================

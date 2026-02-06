@@ -72,9 +72,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/jaxsr"]
 
-[tool.hatch.build.targets.wheel.force-include]
-".claude/skills/jaxsr" = "jaxsr/skill"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"

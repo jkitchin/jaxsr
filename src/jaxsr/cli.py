@@ -427,9 +427,13 @@ def install_skill(target):
         skill_source = repo_root / ".claude" / "skills" / "jaxsr"
 
     if not skill_source.exists():
+        pkg_path = Path(__file__).parent / "skill"
+        repo_path = Path(__file__).parent.parent.parent / ".claude" / "skills" / "jaxsr"
         click.echo(
-            "Error: Could not locate JAXSR skill files. "
-            "They should be in the installed package or the repository.",
+            "Error: Could not locate JAXSR skill files.\n"
+            f"  Searched: {pkg_path}\n"
+            f"  Searched: {repo_path}\n"
+            "Reinstall with: pip install -e '.[cli]'",
             err=True,
         )
         raise SystemExit(1)
@@ -440,11 +444,24 @@ def install_skill(target):
     else:
         target_dir = Path(target)
 
+    # Safety: refuse to delete system or home directories
+    resolved = target_dir.resolve()
+    dangerous = {Path("/"), Path("/home"), Path("/usr"), Path("/etc"), Path("/var"), Path("/tmp")}
+    if resolved in dangerous or resolved == Path.home():
+        click.echo(
+            f"Error: Refusing to use '{resolved}' as target — " "it is a system or home directory.",
+            err=True,
+        )
+        raise SystemExit(1)
+
     # Ensure parent directories exist
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # Copy skill files
     if target_dir.exists():
+        if not target_dir.is_dir():
+            click.echo(f"Error: '{target_dir}' exists but is not a directory.", err=True)
+            raise SystemExit(1)
         click.echo(f"Updating existing skill at: {target_dir}")
         shutil.rmtree(target_dir)
     else:
