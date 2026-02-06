@@ -271,6 +271,12 @@ See `guides/constraints.md` for constraint types and examples.
 
 See `guides/cli.md` for full CLI reference with examples.
 
+### "I already know the model form. How do I estimate parameters?"
+
+See `guides/known-model-fitting.md` for a worked example using the Langmuir isotherm,
+including parametric basis functions, experiment design, ANOVA, and uncertainty analysis.
+Generalizes to Arrhenius, Michaelis-Menten, power laws, and other known models.
+
 ### "How do I use Response Surface Methodology?"
 
 See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
@@ -290,6 +296,7 @@ Ready-to-use scripts and notebook starters are in `templates/`:
 | `doe-study.py` | Full DOE workflow from design to report |
 | `uncertainty-analysis.py` | Compare all UQ methods |
 | `active-learning-loop.py` | Iterative experiment-model loop |
+| `langmuir-isotherm.py` | Known-model parameter estimation (Langmuir) |
 | `notebook-starter.py` | Jupyter notebook cell structure |
 
 ## Common Pitfalls
