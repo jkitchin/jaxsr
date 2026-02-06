@@ -89,6 +89,128 @@ When modifying any of these modules, add tests for the code you touch.
   operations (like `product` where `x*y == y*x`) must only skip that specific inner form,
   not the entire `(i, j)` iteration. Non-symmetric forms like `ratio` need both orderings.
 
+## Review Checklists
+
+When creating or modifying documentation, examples, guides, templates, or notebooks,
+run these reviews before merging. Each review targets a different failure mode.
+
+### 1. Red-Team Review (API Correctness)
+
+Verify every code snippet against the actual source code. This is the highest-priority
+review — incorrect examples teach users wrong patterns.
+
+**Check every occurrence of:**
+
+| API | Common mistake | Correct usage |
+|-----|---------------|---------------|
+| `coefficient_intervals()` | Unpacking as `(lo, hi)` | Returns `dict[str, (est, lo, hi, se)]` — 4-tuple |
+| `bootstrap_coefficients()` | `result.intervals`, `result.names` | Returns plain `dict` — use `result["names"]`, `result["lower"]`, etc. |
+| `bootstrap_predict()` | `result.upper`, `result.lower` | Returns plain `dict` — use `result["upper"]`, `result["lower"]`, etc. |
+| `BayesianModelAverage` | `.weights_`, `.models_` | `.weights`, `.expressions` (no trailing underscore) |
+| `CanonicalAnalysis` | `.predicted_response` | `.stationary_response` |
+| `cross_validate()` | Treating return as array | Returns `dict` with `"mean_test_score"`, `"std_test_score"` |
+| `conformal_predict_split()` | Tuple unpacking | Standalone returns `dict`; `model.predict_conformal()` returns tuple |
+| `add_transcendental()` | Listing 7 default funcs | Defaults: `["log", "exp", "sqrt", "inv"]` (4 funcs) |
+| `ActiveLearner()` | `ActiveLearner(model, acq, bounds)` | `ActiveLearner(model, bounds, acquisition)` — bounds is 2nd arg |
+| `Composite()` | `Composite([...], weights=[...])` | `Composite(functions=[(weight, acq), ...])` — no separate weights param |
+| `ResponseSurface()` | Missing `n_factors` | `ResponseSurface(n_factors=3, ...)` — required first arg |
+| `ResponseSurface` methods | `.create_design()` | `.ccd()`, `.box_behnken()` — separate methods |
+| `factorial_design()` | `factorial_design(n_factors=3)` | `factorial_design(levels=2, n_factors=3)` — levels required |
+| `fractional_factorial_design()` | `fraction=2` | `resolution=3` — parameter is resolution |
+| `canonical_analysis()` | `factor_names=...` | `bounds=...` — not factor_names |
+| `discrete_dims` | `list[int]` | `dict[int, list]` — maps dimension index to allowed values |
+| ANOVA `result.rows` | Using all rows for % calc | Filter `{"Model", "Residual", "Total"}` — they are summary rows |
+| `information_criterion` | `"cv"` | Only `"aic"`, `"aicc"`, `"bic"` are supported |
+
+**Process:**
+1. For each file, extract every JAXSR API call
+2. Check parameter names, argument order, and return types against source code
+3. Check that every import exists in `__init__.py` `__all__`
+4. Verify ANOVA loops filter summary rows before computing percentages
+
+### 2. Software Engineering Review
+
+Review architecture, safety, robustness, and packaging.
+
+**Safety & destructive operations:**
+- Any use of `shutil.rmtree()` must validate the target path against a deny-list
+  of system directories (`/`, `/home`, `/usr`, `/etc`, `/var`, `/tmp`, `$HOME`)
+- File operations that delete or overwrite must check `is_dir()` / `is_file()` first
+- CLI commands that modify the filesystem must handle `PermissionError` and `OSError`
+
+**Packaging:**
+- `pyproject.toml`: Ensure no duplicate file inclusions between `packages` and `force-include`
+- `src/jaxsr/skill/` and `.claude/skills/jaxsr/` must stay in sync — after editing any
+  skill file, run: `rm -rf src/jaxsr/skill && cp -r .claude/skills/jaxsr src/jaxsr/skill`
+- Verify `__init__.py` exports: every symbol in `__all__` must be imported; `__all__` should
+  be sorted alphabetically within each section
+
+**Notebooks & examples:**
+- Guard against negative values in physical simulations (adsorption, concentrations, etc.)
+- Use `scipy.special.erfinv` not `np.math.erfinv` (deprecated)
+- Add null-guards for ANOVA `p_value` (can be `None` for summary rows)
+- Avoid cross-cell variable dependencies that break when cells run out of order
+- Clean up temp files at the end of notebooks (`os.remove`)
+
+### 3. Pedagogical Review
+
+Read guides and notebooks as a first-time user.
+
+**Check for:**
+- Is there a logical progression from simple → advanced?
+- Are domain-specific terms explained on first use? (e.g., "profile likelihood",
+  "Pareto front", "AICc correction")
+- Can a user copy-paste any code block and have it work? Or does it silently depend
+  on earlier cells / imports not shown?
+- Are the "why" questions answered, not just the "how"? (e.g., why AICc over BIC?)
+- Do decision tables cover the user's likely scenario?
+
+### 4. Coverage Gap Review
+
+Map which JAXSR features have guide/template/notebook coverage.
+
+**Currently covered:**
+- Basis library building (`guides/basis-library.md`)
+- Model fitting & selection (`guides/model-fitting.md`)
+- Uncertainty quantification (`guides/uncertainty.md`)
+- Constraints (`guides/constraints.md`)
+- DOE workflow (`guides/doe-workflow.md`)
+- Active learning (`guides/active-learning.md`)
+- RSM (`guides/rsm.md`)
+- Known-model fitting (`guides/known-model-fitting.md`)
+- CLI reference (`guides/cli.md`)
+
+**Gaps to fill:**
+- Metrics comparison guide (when to use R² vs AIC vs cross-validation)
+- Export & reporting guide (JSON, LaTeX, callable, Excel, Word)
+- Categorical variables (indicators, interactions, encoding/decoding)
+- SISSO / power-law / rational-form basis builders
+- Model serialization round-trip (save/load/share)
+- BayesianModelAverage standalone workflow
+- Conformal prediction standalone usage
+- Multi-response / multi-objective workflows
+
+### 5. Cross-Reference & Terminology Review
+
+- Verify guide cross-references point to files that exist
+  (e.g., `"See guides/uncertainty.md"` → file must exist)
+- Check for inconsistent terminology across docs:
+  - "information criterion" vs "IC" vs "selection criterion"
+  - "basis functions" vs "candidate terms" vs "features"
+  - "selection strategy" vs "search strategy" vs "algorithm"
+- Ensure SKILL.md decision trees route to content that exists
+
+### 6. Copy-Paste Safety Review
+
+Every code block in guides must either:
+1. Be self-contained (includes all imports and data setup), or
+2. Clearly state "Continuing from above..." with a reference to the prerequisite section
+
+**Common failures:**
+- Missing `import numpy as np` or `from jaxsr import ...`
+- Using variables defined in earlier code blocks without re-defining them
+- Using `model` variable before the fitting code block
+
 ## Linting & Formatting (MUST pass before every commit)
 
 **Always run these two commands before committing:**
