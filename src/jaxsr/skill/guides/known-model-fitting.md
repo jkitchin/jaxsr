@@ -236,13 +236,14 @@ ANOVA decomposes the model's explanatory power by term:
 ```python
 from jaxsr import anova
 
-result = anova(model, X_design)
+result = anova(model)
 
 print("ANOVA Decomposition:")
 print("-" * 50)
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(f"  {row.source:30s}  SS = {row.sum_of_squares:10.4f}  "
-          f"({row.percent_contribution:5.1f}%)")
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source:30s}  SS = {row.sum_sq:10.4f}  ({pct:5.1f}%)")
 ```
 
 **For Langmuir, expect:**
@@ -375,10 +376,12 @@ for name, (lo, hi) in boot.intervals.items():
     print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
 
 # --- ANOVA ---
-result = anova(model, X)
+result = anova(model)
 print("\nANOVA:")
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(f"  {row.source}: {row.percent_contribution:.1f}%")
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source}: {pct:.1f}%")
 
 # --- Adaptive suggestions ---
 sampler = AdaptiveSampler(model, bounds=[(0.01, 10.0)], strategy="uncertainty")

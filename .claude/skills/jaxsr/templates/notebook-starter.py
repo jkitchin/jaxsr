@@ -163,10 +163,12 @@ plt.tight_layout()
 plt.show()
 
 # %% Cell 10: ANOVA — variable importance
-result = anova(model, X)
+result = anova(model)
 print("ANOVA Decomposition:")
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(f"  {row.source}: {row.percent_contribution:.1f}%")
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source}: {pct:.1f}%")
 
 # %% Cell 11: Export results
 # LaTeX equation (for papers)

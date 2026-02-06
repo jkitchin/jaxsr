@@ -170,10 +170,11 @@ Decompose the total variance into contributions from each term:
 ```python
 from jaxsr import anova
 
-result = anova(model, X)
+result = anova(model)
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(f"  {row.source}: SS={row.sum_of_squares:.4f}, "
-          f"%={row.percent_contribution:.1f}%")
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source}: SS={row.sum_sq:.4f}, %={pct:.1f}%")
 ```
 
 This tells you which basis functions contribute most to the model's explanatory power.

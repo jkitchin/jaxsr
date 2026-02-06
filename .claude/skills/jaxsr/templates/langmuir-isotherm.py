@@ -122,12 +122,11 @@ print(
 # 8. ANOVA — term importance
 # =============================================================================
 print("\n--- ANOVA Decomposition ---")
-result = anova(model, X_design)
+result = anova(model)
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(
-        f"  {row.source:30s}  SS = {row.sum_of_squares:10.4f}  "
-        f"({row.percent_contribution:5.1f}%)"
-    )
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source:30s}  SS = {row.sum_sq:10.4f}  ({pct:5.1f}%)")
 
 # =============================================================================
 # 9. Suggest next experiments (active learning)

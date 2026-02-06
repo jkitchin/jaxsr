@@ -131,9 +131,11 @@ print("\n" + "=" * 50)
 print("ANOVA Decomposition")
 print("=" * 50)
 
-result = anova(model, X)
+result = anova(model)
+total_ss = sum(row.sum_sq for row in result.rows)
 for row in result.rows:
-    print(f"  {row.source}: SS={row.sum_of_squares:.4f}, %={row.percent_contribution:.1f}%")
+    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+    print(f"  {row.source}: SS={row.sum_sq:.4f}, %={pct:.1f}%")
 
 # =============================================================================
 # 8. Compare All Methods
