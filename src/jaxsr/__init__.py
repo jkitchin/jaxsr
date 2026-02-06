@@ -88,6 +88,7 @@ from .selection import (
 
 # Simplification
 from .simplify import SimplificationResult, simplify_expression
+from .study import DOEStudy
 
 # Uncertainty Quantification
 from .uncertainty import (
@@ -123,6 +124,7 @@ __all__ = [
     "BasisLibrary",
     "SymbolicRegressor",
     "fit_symbolic",
+    "DOEStudy",
     "Constraints",
     "Constraint",
     "ConstraintType",
