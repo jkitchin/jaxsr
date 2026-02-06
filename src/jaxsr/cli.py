@@ -392,6 +392,71 @@ def status(study_file):
 
 
 # =============================================================================
+# install-skill
+# =============================================================================
+
+
+@main.command("install-skill")
+@click.option(
+    "--target",
+    "-t",
+    default=None,
+    help="Target directory (default: .claude/skills/jaxsr in current directory).",
+)
+def install_skill(target):
+    """Install the JAXSR Claude Code skill files.
+
+    Copies the JAXSR skill (SKILL.md, guides, and templates) into a
+    Claude Code skills directory so that Claude can assist with JAXSR
+    setup, analysis, and reporting.
+
+    Example:
+
+        jaxsr install-skill
+        jaxsr install-skill --target ~/.claude/skills/jaxsr
+    """
+    import shutil
+    from pathlib import Path
+
+    # Locate the bundled skill files relative to this package
+    skill_source = Path(__file__).parent / "skill"
+
+    if not skill_source.exists():
+        # Fallback: check the repo root .claude/skills/jaxsr
+        repo_root = Path(__file__).parent.parent.parent
+        skill_source = repo_root / ".claude" / "skills" / "jaxsr"
+
+    if not skill_source.exists():
+        click.echo(
+            "Error: Could not locate JAXSR skill files. "
+            "They should be in the installed package or the repository.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Determine target directory
+    if target is None:
+        target_dir = Path.cwd() / ".claude" / "skills" / "jaxsr"
+    else:
+        target_dir = Path(target)
+
+    # Copy skill files
+    if target_dir.exists():
+        click.echo(f"Updating existing skill at: {target_dir}")
+        shutil.rmtree(target_dir)
+    else:
+        click.echo(f"Installing skill to: {target_dir}")
+
+    shutil.copytree(skill_source, target_dir)
+
+    # Count installed files
+    n_files = sum(1 for _ in target_dir.rglob("*") if _.is_file())
+    click.echo(f"Installed {n_files} skill files.")
+    click.echo(f"\nSkill location: {target_dir}")
+    click.echo("Claude Code will now have access to JAXSR guidance when working in this project.")
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
