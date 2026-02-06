@@ -440,6 +440,9 @@ def install_skill(target):
     else:
         target_dir = Path(target)
 
+    # Ensure parent directories exist
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+
     # Copy skill files
     if target_dir.exists():
         click.echo(f"Updating existing skill at: {target_dir}")

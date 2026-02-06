@@ -169,8 +169,8 @@ Built-in cross-validation for model assessment:
 ```python
 from jaxsr import cross_validate
 
-scores = cross_validate(model, X, y, cv=5)
-print(f"CV R²: {scores.mean():.4f} ± {scores.std():.4f}")
+result = cross_validate(model, X, y, cv=5, scoring="r2")
+print(f"CV R²: {result['mean_test_score']:.4f} ± {result['std_test_score']:.4f}")
 ```
 
 ## Pareto Front

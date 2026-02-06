@@ -179,13 +179,13 @@ print(f"MSE: {model.metrics_['mse']:.6g}")
 ```python
 # 95% confidence intervals for the linear coefficients
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, (est, lo, hi, se) in intervals.items():
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]  SE={se:.4f}")
 
 # The coefficient of the Langmuir term IS q_max
 print(f"\nq_max estimate: {float(model.coefficients_[1]):.4f}")
-print(f"q_max 95% CI: [{intervals[model.selected_features_[1]][0]:.4f}, "
-      f"{intervals[model.selected_features_[1]][1]:.4f}]")
+est, lo, hi, se = intervals[model.selected_features_[1]]
+print(f"q_max 95% CI: [{lo:.4f}, {hi:.4f}]")
 ```
 
 ### Prediction Intervals
@@ -209,13 +209,13 @@ from jaxsr import bootstrap_coefficients, bootstrap_predict
 # Bootstrap prediction intervals
 boot = bootstrap_predict(model, P_pred, n_bootstrap=500, alpha=0.05)
 print(f"Bootstrap 95% PI width: "
-      f"{np.mean(np.asarray(boot.upper) - np.asarray(boot.lower)):.4f}")
+      f"{np.mean(np.asarray(boot['upper']) - np.asarray(boot['lower'])):.4f}")
 
 # Bootstrap coefficient intervals
 boot_coef = bootstrap_coefficients(model, n_bootstrap=500, alpha=0.05)
 print("\nBootstrap coefficient intervals:")
-for name, (lo, hi) in boot_coef.intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, lo, hi in zip(boot_coef["names"], boot_coef["lower"], boot_coef["upper"], strict=False):
+    print(f"  {name}: [{float(lo):.4f}, {float(hi):.4f}]")
 ```
 
 ### Conformal Prediction (distribution-free)
@@ -240,9 +240,11 @@ result = anova(model)
 
 print("ANOVA Decomposition:")
 print("-" * 50)
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source:30s}  SS = {row.sum_sq:10.4f}  ({pct:5.1f}%)")
 ```
 
@@ -367,20 +369,22 @@ print(model.summary())
 
 # --- Uncertainty ---
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, (est, lo, hi, se) in intervals.items():
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]  SE={se:.4f}")
 
 boot = bootstrap_coefficients(model, n_bootstrap=500, alpha=0.05)
 print("\nBootstrap intervals:")
-for name, (lo, hi) in boot.intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, lo, hi in zip(boot["names"], boot["lower"], boot["upper"], strict=False):
+    print(f"  {name}: [{float(lo):.4f}, {float(hi):.4f}]")
 
 # --- ANOVA ---
 result = anova(model)
 print("\nANOVA:")
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source}: {pct:.1f}%")
 
 # --- Adaptive suggestions ---

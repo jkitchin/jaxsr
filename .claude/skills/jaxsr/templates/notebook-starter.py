@@ -165,9 +165,11 @@ plt.show()
 # %% Cell 10: ANOVA — variable importance
 result = anova(model)
 print("ANOVA Decomposition:")
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source}: {pct:.1f}%")
 
 # %% Cell 11: Export results

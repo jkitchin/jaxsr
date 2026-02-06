@@ -59,10 +59,10 @@ X_natural = decode(X_coded, bounds)
 from jaxsr import factorial_design, fractional_factorial_design
 
 # Full factorial (2^k runs)
-X_coded = factorial_design(n_factors=3)  # 8 runs
+X_coded = factorial_design(levels=2, n_factors=3)  # 8 runs
 
-# Fractional factorial (2^(k-p) runs)
-X_coded = fractional_factorial_design(n_factors=5, fraction=2)  # 2^(5-2) = 8 runs
+# Fractional factorial (reduced runs via aliasing)
+X_coded = fractional_factorial_design(n_factors=5, resolution=3)  # Resolution III design
 ```
 
 ### Design Comparison
@@ -103,12 +103,13 @@ regardless of their natural units.
 from jaxsr import ResponseSurface
 
 rs = ResponseSurface(
+    n_factors=3,
     factor_names=["T", "P", "flow"],
     bounds=[(300, 500), (1, 10), (0.1, 2.0)]
 )
 
-# Generate design
-X_design = rs.create_design(method="ccd")  # or "box_behnken"
+# Generate design (use dedicated methods)
+X_design = rs.ccd(alpha="rotatable", center_points=3)  # or rs.box_behnken()
 
 # After collecting data
 rs.fit(X_data, y_data)
@@ -117,8 +118,10 @@ rs.fit(X_data, y_data)
 print(rs.model.expression_)
 print(rs.model.summary())
 
-# Optimization
-optimal = rs.optimize()  # Find conditions that maximize/minimize response
+# Find optimal conditions via canonical analysis
+ca = rs.canonical()
+print(f"Stationary point: {ca.stationary_point}")
+print(f"Predicted response: {ca.stationary_response:.4f}")
 ```
 
 ## Canonical Analysis
@@ -129,10 +132,10 @@ stationary point (maximum, minimum, or saddle point).
 ```python
 from jaxsr import canonical_analysis
 
-analysis = canonical_analysis(model, factor_names=["T", "P", "flow"])
+analysis = canonical_analysis(model, bounds=[(300, 500), (1, 10), (0.1, 2.0)])
 
 print(f"Stationary point: {analysis.stationary_point}")
-print(f"Predicted response at stationary point: {analysis.predicted_response}")
+print(f"Predicted response at stationary point: {analysis.stationary_response}")
 print(f"Nature: {analysis.nature}")  # "maximum", "minimum", or "saddle"
 print(f"Eigenvalues: {analysis.eigenvalues}")
 ```
@@ -185,10 +188,10 @@ model.fit(X_natural, y)
 print(model.summary())
 
 # 4. Canonical analysis
-analysis = canonical_analysis(model, factor_names=names)
+analysis = canonical_analysis(model, bounds=bounds)
 print(f"\nStationary point: {analysis.stationary_point}")
 print(f"Nature: {analysis.nature}")
-print(f"Predicted response: {analysis.predicted_response:.4f}")
+print(f"Predicted response: {analysis.stationary_response:.4f}")
 
 # 5. Validate at the optimum
 X_opt = np.array([analysis.stationary_point])

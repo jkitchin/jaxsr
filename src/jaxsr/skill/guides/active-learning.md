@@ -109,7 +109,7 @@ from jaxsr.acquisition import (
 
 ```python
 acq = PredictionVariance()
-learner = ActiveLearner(model, acq, bounds=[(0, 1), (0, 1)])
+learner = ActiveLearner(model, bounds=[(0, 1), (0, 1)], acquisition=acq)
 result = learner.suggest(n_points=5)
 ```
 
@@ -163,7 +163,7 @@ result = learner.suggest(n_points=5)
 
 You can also use the `Composite` class:
 ```python
-combined = Composite([PredictionVariance(), AOptimal()], weights=[0.7, 0.3])
+combined = Composite(functions=[(0.7, PredictionVariance()), (0.3, AOptimal())])
 ```
 
 ## Complete Active Learning Loop
@@ -235,7 +235,7 @@ If some features take only discrete values:
 sampler = AdaptiveSampler(
     model, bounds,
     strategy="uncertainty",
-    discrete_dims=[1]  # Feature index 1 is discrete (integer)
+    discrete_dims={1: [1, 2, 3, 4, 5]}  # Feature index 1: valid discrete values
 )
 ```
 

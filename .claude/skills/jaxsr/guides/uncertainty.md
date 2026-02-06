@@ -28,8 +28,8 @@ y_pred, conf_lo, conf_hi = model.confidence_band(X_new, alpha=0.05)
 
 # Coefficient intervals
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, (est, lo, hi, se) in intervals.items():
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]  SE={se:.4f}")
 ```
 
 **Assumptions:**
@@ -48,7 +48,7 @@ across models.
 
 ```python
 result = model.predict_ensemble(X_new)
-# result is a dict with: mean, std, predictions (array of all model predictions)
+# result is a dict with: y_mean, y_std, y_min, y_max, y_all, models
 ```
 
 **When to use:** You want to see how much predictions vary across plausible models.
@@ -71,8 +71,8 @@ y_pred, lower, upper = model.predict_bma(X_new, criterion="bic", alpha=0.05)
 # Access the BMA object for more detail
 from jaxsr import BayesianModelAverage
 bma = BayesianModelAverage(model, criterion="bic")
-print(bma.weights_)   # Model weights
-print(bma.models_)    # Contributing models
+print(bma.weights)       # Model weights (dict: expression → float)
+print(bma.expressions)   # Contributing model expressions
 ```
 
 **When to use:**
@@ -96,9 +96,8 @@ y_pred, lower, upper = model.predict_conformal(X_new, alpha=0.05, method="jackkn
 
 # Split conformal (faster but wastes calibration data)
 from jaxsr import conformal_predict_split
-y_pred, lower, upper = conformal_predict_split(
-    model, X_cal, y_cal, X_new, alpha=0.05
-)
+result = conformal_predict_split(model, X_cal, y_cal, X_new, alpha=0.05)
+y_pred, lower, upper = result["y_pred"], result["lower"], result["upper"]
 ```
 
 **Guarantees:** Under exchangeability (i.i.d. data), conformal intervals have
@@ -122,14 +121,14 @@ from jaxsr import bootstrap_predict, bootstrap_coefficients
 
 # Prediction intervals via bootstrap
 result = bootstrap_predict(model, X_new, n_bootstrap=1000, alpha=0.05)
-print(result.mean)      # Mean prediction
-print(result.lower)     # Lower bound
-print(result.upper)     # Upper bound
+print(result["y_mean"])   # Mean prediction
+print(result["lower"])    # Lower bound
+print(result["upper"])    # Upper bound
 
 # Coefficient stability
 coeff_result = bootstrap_coefficients(model, n_bootstrap=1000, alpha=0.05)
-print(coeff_result.means)
-print(coeff_result.intervals)  # Per-coefficient intervals
+for name, lo, hi in zip(coeff_result["names"], coeff_result["lower"], coeff_result["upper"], strict=False):
+    print(f"  {name}: [{float(lo):.4f}, {float(hi):.4f}]")
 
 # Model selection stability
 from jaxsr import bootstrap_model_selection
@@ -171,9 +170,11 @@ Decompose the total variance into contributions from each term:
 from jaxsr import anova
 
 result = anova(model)
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source}: SS={row.sum_sq:.4f}, %={pct:.1f}%")
 ```
 
@@ -220,5 +221,5 @@ import numpy as np
 print(f"OLS width:      {np.mean(ols_hi - ols_lo):.4f}")
 print(f"BMA width:      {np.mean(bma_hi - bma_lo):.4f}")
 print(f"Conformal width: {np.mean(conf_hi - conf_lo):.4f}")
-print(f"Bootstrap width: {np.mean(boot.upper - boot.lower):.4f}")
+print(f"Bootstrap width: {np.mean(boot['upper'] - boot['lower']):.4f}")
 ```

@@ -71,9 +71,9 @@ print(f"Average confidence band width:     {np.mean(np.asarray(cb_hi) - np.asarr
 # Coefficient intervals
 print("\nCoefficient significance (95% CI):")
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
+for name, (est, lo, hi, _se) in intervals.items():
     sig = " *" if lo * hi > 0 else ""
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]{sig}")
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]{sig}")
 
 # =============================================================================
 # 4. Bayesian Model Averaging
@@ -87,9 +87,9 @@ print(f"Average BMA interval width: {np.mean(np.asarray(bma_hi) - np.asarray(bma
 
 # Model weights
 bma = BayesianModelAverage(model, criterion="bic")
-print(f"Number of models averaged: {len(bma.weights_)}")
-for i, w in enumerate(bma.weights_):
-    print(f"  Model {i + 1}: weight = {w:.4f}")
+print(f"Number of models averaged: {len(bma.weights)}")
+for expr, w in bma.weights.items():
+    print(f"  {expr}: weight = {w:.4f}")
 
 # =============================================================================
 # 5. Conformal Prediction (distribution-free)
@@ -115,14 +115,14 @@ print("=" * 50)
 boot_pred = bootstrap_predict(model, X_test, n_bootstrap=500, alpha=0.05)
 print(
     f"Average bootstrap interval width: "
-    f"{np.mean(np.asarray(boot_pred.upper) - np.asarray(boot_pred.lower)):.4f}"
+    f"{np.mean(np.asarray(boot_pred['upper']) - np.asarray(boot_pred['lower'])):.4f}"
 )
 
 # Bootstrap coefficient intervals
 boot_coef = bootstrap_coefficients(model, n_bootstrap=500, alpha=0.05)
 print("\nBootstrap coefficient intervals:")
-for name, (lo, hi) in boot_coef.intervals.items():
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]")
+for name, lo, hi in zip(boot_coef["names"], boot_coef["lower"], boot_coef["upper"], strict=False):
+    print(f"  {name}: [{float(lo):.4f}, {float(hi):.4f}]")
 
 # =============================================================================
 # 7. ANOVA — Variable Importance
@@ -132,9 +132,11 @@ print("ANOVA Decomposition")
 print("=" * 50)
 
 result = anova(model)
-total_ss = sum(row.sum_sq for row in result.rows)
-for row in result.rows:
-    pct = 100 * row.sum_sq / total_ss if total_ss > 0 else 0.0
+summary_sources = {"Model", "Residual", "Total"}
+term_rows = [r for r in result.rows if r.source not in summary_sources]
+model_ss = sum(r.sum_sq for r in term_rows)
+for row in term_rows:
+    pct = 100 * row.sum_sq / model_ss if model_ss > 0 else 0.0
     print(f"  {row.source}: SS={row.sum_sq:.4f}, %={pct:.1f}%")
 
 # =============================================================================
@@ -149,7 +151,7 @@ widths = {
     "OLS confidence": np.mean(np.asarray(cb_hi) - np.asarray(cb_lo)),
     "BMA": np.mean(np.asarray(bma_hi) - np.asarray(bma_lo)),
     "Conformal": np.mean(np.asarray(conf_hi) - np.asarray(conf_lo)),
-    "Bootstrap": np.mean(np.asarray(boot_pred.upper) - np.asarray(boot_pred.lower)),
+    "Bootstrap": np.mean(np.asarray(boot_pred["upper"]) - np.asarray(boot_pred["lower"])),
 }
 
 for method, width in sorted(widths.items(), key=lambda x: x[1]):

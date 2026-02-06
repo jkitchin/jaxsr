@@ -67,9 +67,9 @@ print(f"Complexity: {model.complexity_}")
 # Coefficient significance
 print("\nCoefficient intervals (95%):")
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
+for name, (est, lo, hi, _se) in intervals.items():
     sig = " *" if lo * hi > 0 else ""
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}]{sig}")
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}]{sig}")
 
 # Pareto front
 print("\nPareto front:")

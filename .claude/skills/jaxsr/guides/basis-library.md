@@ -75,7 +75,7 @@ Adds nonlinear transformations of each feature.
 **Available functions:** `log`, `exp`, `sqrt`, `inv` (1/x), `sin`, `cos`, `tan`,
 `sinh`, `cosh`, `tanh`, `abs`, `square`
 
-**Default (funcs=None):** Adds all of: `log`, `exp`, `sqrt`, `inv`, `sin`, `cos`, `abs`
+**Default (funcs=None):** Adds all of: `log`, `exp`, `sqrt`, `inv`
 
 ```python
 # All defaults
@@ -142,7 +142,7 @@ library.add_custom(
 )
 ```
 
-### `add_parametric(name, func, param_bounds, complexity=3, log_scale=False)`
+### `add_parametric(name, func, param_bounds, complexity=3, feature_indices=None, log_scale=False)`
 
 Add basis functions with optimizable nonlinear parameters.
 

@@ -205,7 +205,10 @@ library = (BasisLibrary(n_features=study.n_factors, feature_names=study.factor_n
     .add_transcendental(funcs=["log", "exp"])
 )
 
-model = study.fit(max_terms=5, basis_library=library)
+# Use a custom library by fitting a SymbolicRegressor directly
+from jaxsr import SymbolicRegressor
+model = SymbolicRegressor(basis_library=library, max_terms=5, information_criterion="aicc")
+model.fit(study.X_train, study.y_train)
 ```
 
 ## Step 6: Evaluate & Iterate
@@ -220,9 +223,9 @@ print(f"BIC: {model.metrics_['bic']:.2f}")
 
 # Coefficient significance
 intervals = model.coefficient_intervals(alpha=0.05)
-for name, (lo, hi) in intervals.items():
+for name, (est, lo, hi, se) in intervals.items():
     sig = "*" if lo * hi > 0 else ""  # Significant if interval excludes 0
-    print(f"  {name}: [{lo:.4f}, {hi:.4f}] {sig}")
+    print(f"  {name}: {est:.4f}  [{lo:.4f}, {hi:.4f}] {sig}")
 ```
 
 ### Suggest Next Experiments

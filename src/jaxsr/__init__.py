@@ -40,15 +40,20 @@ from .constraints import Constraint, Constraints, ConstraintType
 
 # Metrics
 from .metrics import (
+    ModelComparison,
+    compare_models,
+    compute_adjusted_r2,
     compute_aic,
     compute_aicc,
     compute_all_metrics,
     compute_bic,
+    compute_information_criterion,
     compute_mae,
     compute_mse,
     compute_r2,
     compute_rmse,
     cross_validate,
+    format_comparison_table,
 )
 from .regressor import SymbolicRegressor, fit_symbolic
 
@@ -147,7 +152,12 @@ __all__ = [
     "compute_mae",
     "compute_r2",
     "compute_all_metrics",
+    "compute_adjusted_r2",
+    "compute_information_criterion",
     "cross_validate",
+    "compare_models",
+    "ModelComparison",
+    "format_comparison_table",
     # Uncertainty Quantification
     "anova",
     "AnovaResult",
