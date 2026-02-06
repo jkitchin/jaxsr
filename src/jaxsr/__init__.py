@@ -76,6 +76,19 @@ from .selection import (
 # Simplification
 from .simplify import SimplificationResult, simplify_expression
 
+# Response Surface Methodology
+from .rsm import (
+    CanonicalAnalysis,
+    ResponseSurface,
+    box_behnken_design,
+    canonical_analysis,
+    central_composite_design,
+    decode,
+    encode,
+    factorial_design,
+    fractional_factorial_design,
+)
+
 # Uncertainty Quantification
 from .uncertainty import (
     AnovaResult,
@@ -151,6 +164,16 @@ __all__ = [
     # Simplification
     "simplify_expression",
     "SimplificationResult",
+    # Response Surface Methodology
+    "ResponseSurface",
+    "CanonicalAnalysis",
+    "central_composite_design",
+    "box_behnken_design",
+    "factorial_design",
+    "fractional_factorial_design",
+    "canonical_analysis",
+    "encode",
+    "decode",
     # Sampling
     "latin_hypercube_sample",
     "sobol_sample",
