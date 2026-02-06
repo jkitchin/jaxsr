@@ -85,10 +85,52 @@ When modifying any of these modules, add tests for the code you touch.
   operations (like `product` where `x*y == y*x`) must only skip that specific inner form,
   not the entire `(i, j)` iteration. Non-symmetric forms like `ratio` need both orderings.
 
+## Linting & Formatting (MUST pass before every commit)
+
+**Always run these two commands before committing:**
+
+```bash
+black src/ tests/ examples/
+ruff check --fix src/ tests/ examples/
+```
+
+Then verify they pass in check mode (what CI runs):
+
+```bash
+black --check src/ tests/
+ruff check src/ tests/
+```
+
+### Common ruff errors and how to avoid them
+
+| Rule | What it catches | Prevention |
+|------|----------------|------------|
+| **I001** | Unsorted imports | Let `ruff check --fix` auto-sort, or use isort-compatible ordering |
+| **F401** | Unused imports | Only import what you use; re-exports in `__init__.py` must be in `__all__` |
+| **F841** | Unused local variables | Delete variables you don't read; use `_` for intentionally unused values |
+| **B905** | `zip()` without `strict=` | Add `strict=False` (or `strict=True` if lengths must match) |
+| **B007** | Unused loop variable | Use `_` for loop variables you don't reference |
+| **E402** | Module-level import not at top | Move imports above non-import code |
+| **UP** rules | Outdated Python syntax | Use `X | None` instead of `Optional[X]`, `list[str]` instead of `List[str]` |
+| **C4** rules | Unnecessary list/dict comprehension | Use direct constructors when possible |
+| **F541** | f-string without placeholders | Remove the `f` prefix if there are no `{...}` expressions |
+
+### Key principles
+
+- **Fix lint before committing** — CI will reject PRs with lint failures. Never rely on CI to catch
+  what you can catch locally.
+- **Use auto-fixers first** — `black` and `ruff check --fix` handle most issues automatically.
+  Only manually fix what auto-fix cannot.
+- **Don't suppress warnings without justification** — Avoid `# noqa` comments unless the rule is
+  genuinely a false positive. If you must suppress, add a comment explaining why.
+- **Keep imports sorted** — ruff I001 enforces isort-compatible import ordering. Three groups:
+  stdlib, third-party, local. Alphabetical within each group.
+- **Format docstrings and strings consistently** — Use `"double quotes"` (black default).
+
 ## Style
 
 - **Formatter:** black (line-length 100)
-- **Linter:** ruff (see pyproject.toml for rule selection)
+- **Linter:** ruff (see pyproject.toml for rule selection: E, F, W, I, UP, B, C4; E501 ignored)
 - **Docstrings:** numpy-style
 - **Naming:** scikit-learn convention for fitted attributes (trailing underscore: `coefficients_`,
   `expression_`); leading underscore for private attributes (`_X_train`, `_is_fitted`)
