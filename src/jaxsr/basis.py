@@ -657,8 +657,6 @@ class BasisLibrary:
 
         for i in range(self.n_features):
             for j in range(self.n_features):
-                if i >= j and "product" in inner_forms:
-                    continue  # Avoid duplicates for symmetric operations
                 if i == j:
                     continue
 
@@ -669,6 +667,10 @@ class BasisLibrary:
 
                     for inner_form in inner_forms:
                         fi, fj = self.feature_names[i], self.feature_names[j]
+
+                        # Skip duplicate pairs for symmetric operations
+                        if inner_form == "product" and i > j:
+                            continue
 
                         if inner_form == "product":
                             name = f"{outer_str}({fi}*{fj})"

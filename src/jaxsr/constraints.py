@@ -1322,7 +1322,6 @@ def fit_constrained_ols(
     n_total = len(basis_names)
     Phi_np = np.array(Phi)
     y_np = np.array(y)
-    len(y_np)
 
     # Initial OLS solution
     coeffs_jax, _, _, _ = jnp.linalg.lstsq(Phi, y, rcond=None)

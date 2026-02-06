@@ -229,7 +229,7 @@ def _parse_term_to_sympy(name: str, symbols: dict):
     if "^" in name and "*" not in name and "/" not in name:
         parts = name.split("^")
         if len(parts) == 2 and parts[0] in symbols:
-            return symbols[parts[0]] ** int(parts[1])
+            return symbols[parts[0]] ** sympy.Rational(parts[1]).limit_denominator(1000)
 
     # Interaction: x*y
     if "*" in name and "/" not in name:

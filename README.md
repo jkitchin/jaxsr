@@ -111,7 +111,7 @@ model = SymbolicRegressor(
     basis_library=library,
     max_terms=5,
     strategy="greedy_forward",      # Selection strategy
-    information_criterion="bic",    # or "aic", "aicc", "cv"
+    information_criterion="bic",    # or "aic", "aicc"
 )
 ```
 

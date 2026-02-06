@@ -16,6 +16,7 @@ import numpy as np
 
 from .basis import BasisLibrary
 from .constraints import Constraints, fit_constrained_ols
+from .metrics import compute_information_criterion
 from .selection import (
     SelectionPath,
     SelectionResult,
@@ -306,17 +307,19 @@ class SymbolicRegressor:
             selected_indices=indices,
         )
 
-        # Update result
+        # Update result with recalculated information criteria
+        n = len(y)
+        k = len(coeffs)
         self._result = SelectionResult(
             coefficients=coeffs,
             selected_indices=indices,
             selected_names=basis_names_subset,
             mse=mse,
             complexity=self._result.complexity,
-            aic=self._result.aic,  # Recalculate if needed
-            bic=self._result.bic,
-            aicc=self._result.aicc,
-            n_samples=len(y),
+            aic=compute_information_criterion(n, k, mse, "aic"),
+            bic=compute_information_criterion(n, k, mse, "bic"),
+            aicc=compute_information_criterion(n, k, mse, "aicc"),
+            n_samples=n,
             parametric_params=self._result.parametric_params,
         )
 
@@ -849,7 +852,6 @@ class SymbolicRegressor:
 
         # Extract coefficients and indices
         coefficients = np.array(self._result.coefficients)
-        list(self._result.selected_indices)
         names = self._result.selected_names
         feature_names = self.basis_library.feature_names
 
@@ -873,8 +875,14 @@ class SymbolicRegressor:
                     parts = name.split("*")
                     term = np.ones(n_samples)
                     for part in parts:
-                        idx = feature_names.index(part)
-                        term = term * X[:, idx]
+                        part = part.strip()
+                        if "^" in part:
+                            base, power = part.split("^")
+                            idx = feature_names.index(base)
+                            term = term * X[:, idx] ** float(power)
+                        else:
+                            idx = feature_names.index(part)
+                            term = term * X[:, idx]
                 elif name.startswith("log("):
                     inner = name[4:-1]
                     idx = feature_names.index(inner)

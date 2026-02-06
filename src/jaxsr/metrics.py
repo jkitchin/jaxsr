@@ -174,11 +174,15 @@ def compute_hqc(
     n = n_samples
     k = n_params
 
-    if mse <= 0 or n <= 1:
+    if mse <= 0 or n <= 2:
+        return float("inf")
+
+    log_log_n = jnp.log(jnp.log(n))
+    if log_log_n <= 0:
         return float("inf")
 
     log_lik = -n / 2 * jnp.log(2 * jnp.pi * mse) - n / 2
-    return float(-2 * log_lik + 2 * k * jnp.log(jnp.log(n)))
+    return float(-2 * log_lik + 2 * k * log_log_n)
 
 
 def compute_mdl(
