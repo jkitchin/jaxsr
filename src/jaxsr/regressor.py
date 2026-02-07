@@ -993,16 +993,16 @@ class SymbolicRegressor:
                     term = X[:, idx_num] / safe_denom
                 else:
                     # Fallback for parametric / complex basis functions:
-                    # evaluate via the stored callable and convert to numpy
-                    import jax.numpy as _jnp
-
+                    # evaluate via the stored callable and convert to numpy.
+                    # Note: this path requires JAX at runtime since the basis
+                    # function callables are JAX functions.
                     _bf = None
                     for _i, _n in enumerate(self.basis_library.names):  # type: ignore[union-attr]
                         if _n == name:
                             _bf = self.basis_library.basis_functions[_i]
                             break
                     if _bf is not None:
-                        term = np.asarray(_bf.func(_jnp.array(X)))
+                        term = np.asarray(_bf.func(np.atleast_2d(X)))
                     else:
                         raise ValueError(f"Cannot convert basis function: {name}")
 

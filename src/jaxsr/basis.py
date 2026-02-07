@@ -1121,7 +1121,7 @@ class BasisLibrary:
                     new_features.append(
                         {
                             "name": f"exp({feat['name']})",
-                            "func": partial(lambda X, f: jnp.exp(f(X)), f=feat["func"]),
+                            "func": partial(lambda X, f: _safe_exp(f(X)), f=feat["func"]),
                             "complexity": feat["complexity"] + 2,
                             "indices": feat["indices"],
                         }
