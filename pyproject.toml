@@ -50,7 +50,7 @@ reports = [
     "python-docx>=1.0",
 ]
 docs = [
-    "jupyter-book<2.0",
+    "jupyter-book>=0.15,<2",
     "sphinx-copybutton",
 ]
 all = ["jaxsr[dev,docs,cli,excel,reports]"]

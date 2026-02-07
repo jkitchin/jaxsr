@@ -1,10 +1,11 @@
-name: Build & Deploy Docs
+name: Deploy Jupyter Book
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,8 +13,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -23,13 +24,13 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -e ".[docs]"
+        run: pip install jupyter-book sphinx-copybutton
 
-      - name: Build docs
-        run: JAX_PLATFORMS=cpu jupyter-book build docs/
+      - name: Build the book
+        run: jupyter-book build docs/
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

@@ -3,19 +3,17 @@ author: John Kitchin
 logo: ""
 
 execute:
-  execute_notebooks: force
-  timeout: 300
-  stderr_output: remove
-
-kernelspec:
-  name: python3
-
-launch_buttons:
-  repository_url: https://github.com/jkitchin/jaxsr
+  execute_notebooks: "off"
 
 repository:
   url: https://github.com/jkitchin/jaxsr
   branch: main
+
+html:
+  use_repository_button: true
+
+launch_buttons:
+  repository_url: https://github.com/jkitchin/jaxsr
 
 sphinx:
   extra_extensions:

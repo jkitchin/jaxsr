@@ -1,22 +1,32 @@
 format: jb-book
-root: index
+root: intro
 
 parts:
   - caption: Getting Started
     chapters:
       - file: quickstart
 
-  - caption: User Guides
+  - caption: Guides
     chapters:
-      - file: doe_guide
-      - file: cli_guide
-      - file: acquisition
+      - file: guides/doe_guide
+      - file: guides/acquisition
+      - file: guides/cli_guide
 
-  - caption: Tutorials
+  - caption: Examples
     chapters:
-      - file: comprehensive_tutorial
+      - file: examples/basic_usage
+      - file: examples/chemical_kinetics
+      - file: examples/heat_transfer
+      - file: examples/uncertainty_quantification
+      - file: examples/active_learning
+      - file: examples/categorical_variables
+      - file: examples/doe_study_workflow
+      - file: examples/comprehensive_tutorial
 
   - caption: Reference
     chapters:
       - file: api
-      - file: literature_review
+
+  - caption: Background
+    chapters:
+      - file: background/literature_review

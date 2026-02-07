@@ -443,5 +443,5 @@ BATCH STRATEGY
 
 - [Acquisition function API reference](acquisition.md)
 - [Active learning example script](https://github.com/jkitchin/jaxsr/blob/main/examples/active_learning.py)
-- [Comprehensive tutorial notebook](comprehensive_tutorial.ipynb)
-- [API reference](api.md)
+- [Comprehensive tutorial notebook](../examples/comprehensive_tutorial.ipynb)
+- [API reference](../api.md)

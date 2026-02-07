@@ -57,11 +57,12 @@ print(f"R² = {model.metrics_['r2']:.4f}")
 ## Documentation Contents
 
 - [Quickstart Guide](quickstart.md) - Get started quickly
-- [Design of Experiments Guide](doe_guide.md) - Adaptive DOE and active learning
-- [Acquisition Functions](acquisition.md) - Detailed acquisition function reference
+- [Design of Experiments Guide](guides/doe_guide.md) - Adaptive DOE and active learning
+- [Acquisition Functions](guides/acquisition.md) - Detailed acquisition function reference
+- [CLI Guide](guides/cli_guide.md) - Command-line interface reference
 - [API Reference](api.md) - Complete API documentation
-- [Literature Review](literature_review.md) - Background on symbolic regression
-- [Tutorial](comprehensive_tutorial.ipynb) - Worked examples for various applications
+- [Literature Review](background/literature_review.md) - Background on symbolic regression
+- [Examples](examples/basic_usage.ipynb) - Worked examples for various applications
 
 ## How It Works
 
