@@ -149,7 +149,7 @@ def plot_parity(
     # Compute R²
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    r2 = 1 - ss_res / ss_tot
+    r2 = 1 - ss_res / max(ss_tot, 1e-10)
 
     # Plot points
     ax.scatter(y_true, y_pred, alpha=alpha, c="steelblue", edgecolors="white", linewidth=0.5)

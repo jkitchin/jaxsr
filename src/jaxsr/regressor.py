@@ -703,16 +703,21 @@ class SymbolicRegressor:
                 )
             )
 
+            # Recalculate IC values from the new MSE and sample count
+            n_new = len(y_combined)
+            k = len(coeffs)
+            from .metrics import compute_information_criterion
+
             self._result = SelectionResult(
                 coefficients=coeffs,
                 selected_indices=self._result.selected_indices,
                 selected_names=self._result.selected_names,
                 mse=mse,
                 complexity=self._result.complexity,
-                aic=self._result.aic,
-                bic=self._result.bic,
-                aicc=self._result.aicc,
-                n_samples=len(y_combined),
+                aic=compute_information_criterion(n_new, k, mse, "aic"),
+                bic=compute_information_criterion(n_new, k, mse, "bic"),
+                aicc=compute_information_criterion(n_new, k, mse, "aicc"),
+                n_samples=n_new,
             )
 
             self._X_train = X_combined
@@ -887,33 +892,78 @@ class SymbolicRegressor:
                     idx = feature_names.index(name)
                     term = X[:, idx]
                 elif "^" in name and "*" not in name:
-                    base, power = name.split("^")
+                    base, power_str = name.split("^", 1)
                     idx = feature_names.index(base)
-                    term = X[:, idx] ** float(power)
+                    # Handle fractional powers like "(1/3)" or "(2/3)"
+                    power_str = power_str.strip("()")
+                    if "/" in power_str:
+                        num, den = power_str.split("/")
+                        power = float(num) / float(den)
+                    else:
+                        power = float(power_str)
+                    term = X[:, idx] ** power
                 elif "*" in name and "/" not in name:
                     parts = name.split("*")
                     term = np.ones(n_samples)
                     for part in parts:
                         part = part.strip()
                         if "^" in part:
-                            base, power = part.split("^")
+                            base, power_str = part.split("^", 1)
                             idx = feature_names.index(base)
-                            term = term * X[:, idx] ** float(power)
+                            power_str = power_str.strip("()")
+                            if "/" in power_str:
+                                num, den = power_str.split("/")
+                                pw = float(num) / float(den)
+                            else:
+                                pw = float(power_str)
+                            term = term * X[:, idx] ** pw
                         else:
                             idx = feature_names.index(part)
                             term = term * X[:, idx]
                 elif name.startswith("log("):
                     inner = name[4:-1]
                     idx = feature_names.index(inner)
-                    term = np.log(X[:, idx])
+                    term = np.log(np.maximum(np.abs(X[:, idx]), 1e-300))
                 elif name.startswith("exp("):
                     inner = name[4:-1]
                     idx = feature_names.index(inner)
-                    term = np.exp(X[:, idx])
+                    term = np.exp(np.clip(X[:, idx], -500, 500))
                 elif name.startswith("sqrt("):
                     inner = name[5:-1]
                     idx = feature_names.index(inner)
-                    term = np.sqrt(X[:, idx])
+                    term = np.sqrt(np.maximum(X[:, idx], 0.0))
+                elif name.startswith("sin("):
+                    inner = name[4:-1]
+                    idx = feature_names.index(inner)
+                    term = np.sin(X[:, idx])
+                elif name.startswith("cos("):
+                    inner = name[4:-1]
+                    idx = feature_names.index(inner)
+                    term = np.cos(X[:, idx])
+                elif name.startswith("tan("):
+                    inner = name[4:-1]
+                    idx = feature_names.index(inner)
+                    term = np.tan(X[:, idx])
+                elif name.startswith("sinh("):
+                    inner = name[5:-1]
+                    idx = feature_names.index(inner)
+                    term = np.sinh(np.clip(X[:, idx], -500, 500))
+                elif name.startswith("cosh("):
+                    inner = name[5:-1]
+                    idx = feature_names.index(inner)
+                    term = np.cosh(np.clip(X[:, idx], -500, 500))
+                elif name.startswith("tanh("):
+                    inner = name[5:-1]
+                    idx = feature_names.index(inner)
+                    term = np.tanh(X[:, idx])
+                elif name.startswith("abs("):
+                    inner = name[4:-1]
+                    idx = feature_names.index(inner)
+                    term = np.abs(X[:, idx])
+                elif name.startswith("square("):
+                    inner = name[7:-1]
+                    idx = feature_names.index(inner)
+                    term = X[:, idx] ** 2
                 elif name.startswith("I(") and ")*" in name:
                     # Categorical interaction: I(color=2)*temperature
                     indicator_part, cont_part = name.split(")*", 1)
@@ -933,12 +983,14 @@ class SymbolicRegressor:
                 elif name.startswith("1/"):
                     inner = name[2:]
                     idx = feature_names.index(inner)
-                    term = 1.0 / X[:, idx]
+                    safe_denom = np.where(np.abs(X[:, idx]) < 1e-10, 1e-10, X[:, idx])
+                    term = 1.0 / safe_denom
                 elif "/" in name:
                     num, den = name.split("/")
                     idx_num = feature_names.index(num)
                     idx_den = feature_names.index(den)
-                    term = X[:, idx_num] / X[:, idx_den]
+                    safe_denom = np.where(np.abs(X[:, idx_den]) < 1e-10, 1e-10, X[:, idx_den])
+                    term = X[:, idx_num] / safe_denom
                 else:
                     # Fallback for parametric / complex basis functions:
                     # evaluate via the stored callable and convert to numpy

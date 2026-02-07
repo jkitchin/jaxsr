@@ -19,7 +19,6 @@ from jax import jit
 # =============================================================================
 
 
-@jit
 def safe_solve_lstsq(
     A: jnp.ndarray,
     b: jnp.ndarray,
@@ -49,18 +48,18 @@ def safe_solve_lstsq(
         Effective rank of A.
     """
     if rcond is None:
-        rcond = jnp.finfo(A.dtype).eps * max(A.shape)
+        rcond = float(jnp.finfo(A.dtype).eps) * max(A.shape)
 
     # Use lstsq which handles rank-deficient cases
     x, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=rcond)
 
     # Compute residual if not returned (happens when rank < n_features)
     if residuals.size == 0:
-        residual = jnp.sum((b - A @ x) ** 2)
+        residual = float(jnp.sum((b - A @ x) ** 2))
     else:
-        residual = residuals[0] if residuals.ndim > 0 else residuals
+        residual = float(residuals[0]) if residuals.ndim > 0 else float(residuals)
 
-    return x, float(residual), int(rank)
+    return x, residual, int(rank)
 
 
 @jit
@@ -102,7 +101,6 @@ def solve_lstsq_svd(
     return x, s
 
 
-@jit
 def condition_number(A: jnp.ndarray) -> float:
     """
     Compute the condition number of a matrix.
@@ -340,7 +338,8 @@ def compute_residuals(
     leverage = compute_leverage(Phi)
 
     n, p = Phi.shape
-    sigma = jnp.sqrt(jnp.sum(raw**2) / (n - p))
+    dof = jnp.maximum(n - p, 1)
+    sigma = jnp.sqrt(jnp.sum(raw**2) / dof)
 
     standardized = raw / (jnp.std(raw) + 1e-10)
     studentized = raw / (sigma * jnp.sqrt(1 - leverage + 1e-10))
