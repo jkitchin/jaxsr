@@ -61,7 +61,7 @@ print(f"R² = {model.metrics_['r2']:.4f}")
 - [Acquisition Functions](acquisition.md) - Detailed acquisition function reference
 - [API Reference](api.md) - Complete API documentation
 - [Literature Review](literature_review.md) - Background on symbolic regression
-- [Examples](../examples/) - Worked examples for various applications
+- [Tutorial](comprehensive_tutorial.ipynb) - Worked examples for various applications
 
 ## How It Works
 

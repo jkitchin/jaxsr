@@ -1,0 +1,22 @@
+title: JAXSR Documentation
+author: John Kitchin
+logo: ""
+
+execute:
+  execute_notebooks: force
+  timeout: 300
+  stderr_output: remove
+
+kernelspec:
+  name: python3
+
+launch_buttons:
+  repository_url: https://github.com/jkitchin/jaxsr
+
+repository:
+  url: https://github.com/jkitchin/jaxsr
+  branch: main
+
+sphinx:
+  extra_extensions:
+    - sphinx_copybutton

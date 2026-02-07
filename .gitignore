@@ -10,6 +10,7 @@ build/
 coverage.xml
 htmlcov/
 .ipynb_checkpoints/
+docs/_build/
 *.json
 !pyproject.toml
 

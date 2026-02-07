@@ -1,0 +1,22 @@
+format: jb-book
+root: index
+
+parts:
+  - caption: Getting Started
+    chapters:
+      - file: quickstart
+
+  - caption: User Guides
+    chapters:
+      - file: doe_guide
+      - file: cli_guide
+      - file: acquisition
+
+  - caption: Tutorials
+    chapters:
+      - file: comprehensive_tutorial
+
+  - caption: Reference
+    chapters:
+      - file: api
+      - file: literature_review
