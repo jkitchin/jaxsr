@@ -27,7 +27,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install jupyter-book sphinx-copybutton
+        run: pip install "jupyter-book>=0.15,<2" sphinx-copybutton
 
       - name: Build the book
         run: jupyter-book build docs/
