@@ -80,9 +80,9 @@ class AdaptiveSampler:
     ...     bounds=[(300, 500), (1, 10)],
     ...     strategy="uncertainty",
     ... )
-    >>> X_new = sampler.suggest(n_points=5)
-    >>> # Query oracle/experiment for y_new
-    >>> model.update(X_new, y_new)
+    >>> result = sampler.suggest(n_points=5)
+    >>> X_next = result.points    # shape (5, n_features)
+    >>> scores = result.scores    # acquisition function values
     """
 
     def __init__(

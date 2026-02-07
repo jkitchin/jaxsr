@@ -392,6 +392,91 @@ def status(study_file):
 
 
 # =============================================================================
+# install-skill
+# =============================================================================
+
+
+@main.command("install-skill")
+@click.option(
+    "--target",
+    "-t",
+    default=None,
+    help="Target directory (default: .claude/skills/jaxsr in current directory).",
+)
+def install_skill(target):
+    """Install the JAXSR Claude Code skill files.
+
+    Copies the JAXSR skill (SKILL.md, guides, and templates) into a
+    Claude Code skills directory so that Claude can assist with JAXSR
+    setup, analysis, and reporting.
+
+    Example:
+
+        jaxsr install-skill
+        jaxsr install-skill --target ~/.claude/skills/jaxsr
+    """
+    import shutil
+    from pathlib import Path
+
+    # Locate the bundled skill files relative to this package
+    skill_source = Path(__file__).parent / "skill"
+
+    if not skill_source.exists():
+        # Fallback: check the repo root .claude/skills/jaxsr
+        repo_root = Path(__file__).parent.parent.parent
+        skill_source = repo_root / ".claude" / "skills" / "jaxsr"
+
+    if not skill_source.exists():
+        pkg_path = Path(__file__).parent / "skill"
+        repo_path = Path(__file__).parent.parent.parent / ".claude" / "skills" / "jaxsr"
+        click.echo(
+            "Error: Could not locate JAXSR skill files.\n"
+            f"  Searched: {pkg_path}\n"
+            f"  Searched: {repo_path}\n"
+            "Reinstall with: pip install -e '.[cli]'",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Determine target directory
+    if target is None:
+        target_dir = Path.cwd() / ".claude" / "skills" / "jaxsr"
+    else:
+        target_dir = Path(target)
+
+    # Safety: refuse to delete system or home directories
+    resolved = target_dir.resolve()
+    dangerous = {Path("/"), Path("/home"), Path("/usr"), Path("/etc"), Path("/var"), Path("/tmp")}
+    if resolved in dangerous or resolved == Path.home():
+        click.echo(
+            f"Error: Refusing to use '{resolved}' as target — " "it is a system or home directory.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Ensure parent directories exist
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    # Copy skill files
+    if target_dir.exists():
+        if not target_dir.is_dir():
+            click.echo(f"Error: '{target_dir}' exists but is not a directory.", err=True)
+            raise SystemExit(1)
+        click.echo(f"Updating existing skill at: {target_dir}")
+        shutil.rmtree(target_dir)
+    else:
+        click.echo(f"Installing skill to: {target_dir}")
+
+    shutil.copytree(skill_source, target_dir)
+
+    # Count installed files
+    n_files = sum(1 for _ in target_dir.rglob("*") if _.is_file())
+    click.echo(f"Installed {n_files} skill files.")
+    click.echo(f"\nSkill location: {target_dir}")
+    click.echo("Claude Code will now have access to JAXSR guidance when working in this project.")
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 

@@ -77,6 +77,7 @@ y_pred = model.predict(X_jax)
 JAXSR provides a flexible system for defining candidate basis functions:
 
 ```python
+import jax.numpy as jnp
 from jaxsr import BasisLibrary
 
 library = (BasisLibrary(n_features=3, feature_names=["T", "P", "C"])
@@ -92,9 +93,6 @@ library = (BasisLibrary(n_features=3, feature_names=["T", "P", "C"])
         complexity=3
     )
 )
-
-# Evaluate to get design matrix
-Phi = library.evaluate(X)  # Shape: (n_samples, n_basis)
 ```
 
 ## Selection Strategies
@@ -107,6 +105,8 @@ Phi = library.evaluate(X)  # Shape: (n_samples, n_basis)
 | `lasso_path` | LASSO regularization path | Fast screening |
 
 ```python
+from jaxsr import SymbolicRegressor
+
 model = SymbolicRegressor(
     basis_library=library,
     max_terms=5,
@@ -127,7 +127,6 @@ constraints = (Constraints()
     .add_monotonic("T", direction="increasing")      # y increases with T
     .add_convex("P")                                 # Convex in P
     .add_sign_constraint("T", sign="positive")       # Positive coefficient
-    .add_linear_constraint(A, b)                     # A @ coeffs <= b
 )
 
 model = SymbolicRegressor(
@@ -150,10 +149,9 @@ sampler = AdaptiveSampler(
 )
 
 # Get suggested points
-X_new = sampler.suggest(n_points=5)
-
-# After obtaining y_new from experiments:
-model.update(X_new, y_new)
+result = sampler.suggest(n_points=5)
+X_next = result.points    # shape (5, n_features)
+scores = result.scores    # acquisition function values
 ```
 
 ## Export Options

@@ -105,6 +105,11 @@ def _safe_sqrt(x: jnp.ndarray) -> jnp.ndarray:
     return jnp.where(x >= 0, jnp.sqrt(jnp.maximum(x, 0)), jnp.nan)
 
 
+def _safe_exp(x: jnp.ndarray) -> jnp.ndarray:
+    """Safe exponential that clips input to avoid overflow."""
+    return jnp.exp(jnp.clip(x, -500, 500))
+
+
 def _safe_inv(x: jnp.ndarray) -> jnp.ndarray:
     """Safe inverse that handles zero."""
     return jnp.where(jnp.abs(x) > 1e-10, 1.0 / x, jnp.nan)
@@ -308,7 +313,7 @@ class BasisLibrary:
         # Define function mappings with safe versions
         transcendental_map = {
             "log": (_safe_log if safe else jnp.log, "log({})", 2),
-            "exp": (jnp.exp, "exp({})", 2),
+            "exp": (_safe_exp if safe else jnp.exp, "exp({})", 2),
             "sqrt": (_safe_sqrt if safe else jnp.sqrt, "sqrt({})", 2),
             "inv": (_safe_inv if safe else (lambda x: 1.0 / x), "1/{}", 2),
             "sin": (jnp.sin, "sin({})", 2),
@@ -812,7 +817,7 @@ class BasisLibrary:
 
         func_map = {
             "log": (_safe_log, "log"),
-            "exp": (jnp.exp, "exp"),
+            "exp": (_safe_exp, "exp"),
             "sqrt": (_safe_sqrt, "sqrt"),
             "abs": (jnp.abs, "abs"),
             "tanh": (jnp.tanh, "tanh"),
@@ -833,6 +838,8 @@ class BasisLibrary:
 
                         # Skip duplicate pairs for symmetric operations
                         if inner_form == "product" and i > j:
+                            continue
+                        if inner_form == "sum" and i > j:
                             continue
 
                         if inner_form == "product":
@@ -1114,7 +1121,7 @@ class BasisLibrary:
                     new_features.append(
                         {
                             "name": f"exp({feat['name']})",
-                            "func": partial(lambda X, f: jnp.exp(f(X)), f=feat["func"]),
+                            "func": partial(lambda X, f: _safe_exp(f(X)), f=feat["func"]),
                             "complexity": feat["complexity"] + 2,
                             "indices": feat["indices"],
                         }
@@ -1470,7 +1477,7 @@ class BasisLibrary:
 
         transcendental_map = {
             "log": _safe_log,
-            "exp": jnp.exp,
+            "exp": _safe_exp,
             "sqrt": _safe_sqrt,
             "inv": _safe_inv,
             "sin": jnp.sin,

@@ -149,7 +149,7 @@ def plot_parity(
     # Compute R²
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-    r2 = 1 - ss_res / ss_tot
+    r2 = 1 - ss_res / max(ss_tot, 1e-10)
 
     # Plot points
     ax.scatter(y_true, y_pred, alpha=alpha, c="steelblue", edgecolors="white", linewidth=0.5)
@@ -349,7 +349,8 @@ def plot_feature_importance(
 
     # Cumulative contribution
     ax = axes[1]
-    cumulative = np.cumsum(contributions[sorted_idx]) / np.sum(contributions)
+    total = np.sum(contributions)
+    cumulative = np.cumsum(contributions[sorted_idx]) / max(total, 1e-10)
     ax.plot(y_pos + 1, cumulative, "o-", color="steelblue", linewidth=2)
     ax.axhline(y=0.95, color="r", linestyle="--", label="95%")
     ax.set_xlabel("Number of Terms")

@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
-from jax import jit
 
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
@@ -309,7 +308,9 @@ def cross_validate(
         "neg_mse": lambda y_true, y_pred: -float(jnp.mean((y_true - y_pred) ** 2)),
         "neg_mae": lambda y_true, y_pred: -float(jnp.mean(jnp.abs(y_true - y_pred))),
         "r2": lambda y_true, y_pred: float(
-            1 - jnp.sum((y_true - y_pred) ** 2) / jnp.sum((y_true - jnp.mean(y_true)) ** 2)
+            1
+            - jnp.sum((y_true - y_pred) ** 2)
+            / jnp.maximum(jnp.sum((y_true - jnp.mean(y_true)) ** 2), 1e-10)
         ),
     }
 
@@ -413,7 +414,6 @@ def compute_cv_score(
     return float(np.mean(mse_scores))
 
 
-@jit
 def compute_loo_mse(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
