@@ -17,6 +17,57 @@ import numpy as np
 
 from jaxsr import DOEStudy
 
+
+def _diagnostics(model, X, y, prefix):
+    """Print parameter significance table and save parity/residual plots."""
+    import jax.numpy as jnp
+    import matplotlib.pyplot as plt
+    from scipy import stats as sp_stats
+
+    from jaxsr.plotting import plot_parity, plot_residuals
+
+    intervals = model.coefficient_intervals(alpha=0.05)
+    n, k = len(np.asarray(y)), len(model.selected_features_)
+    df = n - k
+
+    print(f"\n  Parameter significance ({prefix}):")
+    print(
+        f"  {'Term':>20s} {'Estimate':>10s} {'Std Err':>9s}" f" {'t':>8s} {'p-value':>10s} 95% CI"
+    )
+    print("  " + "-" * 80)
+    for name, (est, lo, hi, se) in intervals.items():
+        t_val = est / se if abs(se) > 1e-15 else float("inf")
+        p_val = float(2 * (1 - sp_stats.t.cdf(abs(t_val), df))) if df > 0 else 0.0
+        if p_val < 0.001:
+            sig = "***"
+        elif p_val < 0.01:
+            sig = "**"
+        elif p_val < 0.05:
+            sig = "*"
+        else:
+            sig = ""
+        print(
+            f"  {name:>20s} {est:10.4f} {se:9.4f} {t_val:8.2f}"
+            f" {p_val:10.2e} [{lo:.4f}, {hi:.4f}] {sig}"
+        )
+    print("  --- *** p<0.001, ** p<0.01, * p<0.05")
+
+    X_arr = jnp.atleast_2d(jnp.asarray(X))
+    y_arr = jnp.asarray(y)
+    y_pred = model.predict(X_arr)
+    tag = prefix.lower().replace(" ", "_").replace("-", "_")
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    plot_parity(y_arr, y_pred, ax=ax, title=f"{prefix}: Parity")
+    plt.savefig(f"{tag}_parity.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    plot_residuals(model, X_arr, y_arr)
+    plt.savefig(f"{tag}_residuals.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {tag}_parity.png, {tag}_residuals.png")
+
+
 # ============================================================================
 # Session 1: Set up the study and create the initial design
 # ============================================================================
@@ -100,6 +151,7 @@ study.add_observations(X_batch2, y_batch2, notes="Remaining 7 experiments")
 model = study.fit(max_terms=5)
 print(f"\nRefined model: {model.expression_}")
 print(f"  MSE = {model._result.mse:.4f}")
+_diagnostics(model, study.X_observed, study.y_observed, "DOE Refined")
 
 # Suggest next experiments for a follow-up round
 next_points = study.suggest_next(n_points=3, strategy="space_filling")

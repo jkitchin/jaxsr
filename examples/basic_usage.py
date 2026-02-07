@@ -11,6 +11,56 @@ import numpy as np
 from jaxsr import BasisLibrary, SymbolicRegressor, fit_symbolic
 
 
+def _diagnostics(model, X, y, prefix):
+    """Print parameter significance table and save parity/residual plots."""
+    import jax.numpy as jnp
+    import matplotlib.pyplot as plt
+    from scipy import stats as sp_stats
+
+    from jaxsr.plotting import plot_parity, plot_residuals
+
+    intervals = model.coefficient_intervals(alpha=0.05)
+    n, k = len(np.asarray(y)), len(model.selected_features_)
+    df = n - k
+
+    print(f"\n  Parameter significance ({prefix}):")
+    print(
+        f"  {'Term':>20s} {'Estimate':>10s} {'Std Err':>9s}" f" {'t':>8s} {'p-value':>10s} 95% CI"
+    )
+    print("  " + "-" * 80)
+    for name, (est, lo, hi, se) in intervals.items():
+        t_val = est / se if abs(se) > 1e-15 else float("inf")
+        p_val = float(2 * (1 - sp_stats.t.cdf(abs(t_val), df))) if df > 0 else 0.0
+        if p_val < 0.001:
+            sig = "***"
+        elif p_val < 0.01:
+            sig = "**"
+        elif p_val < 0.05:
+            sig = "*"
+        else:
+            sig = ""
+        print(
+            f"  {name:>20s} {est:10.4f} {se:9.4f} {t_val:8.2f}"
+            f" {p_val:10.2e} [{lo:.4f}, {hi:.4f}] {sig}"
+        )
+    print("  --- *** p<0.001, ** p<0.01, * p<0.05")
+
+    X_arr = jnp.atleast_2d(jnp.asarray(X))
+    y_arr = jnp.asarray(y)
+    y_pred = model.predict(X_arr)
+    tag = prefix.lower().replace(" ", "_").replace("-", "_")
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    plot_parity(y_arr, y_pred, ax=ax, title=f"{prefix}: Parity")
+    plt.savefig(f"{tag}_parity.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    plot_residuals(model, X_arr, y_arr)
+    plt.savefig(f"{tag}_residuals.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {tag}_parity.png, {tag}_residuals.png")
+
+
 def example_polynomial():
     """Discover a polynomial expression."""
     print("=" * 60)
@@ -58,6 +108,7 @@ def example_polynomial():
     print(f"  MSE: {model.metrics_['mse']:.6f}")
     print(f"  BIC: {model.metrics_['bic']:.2f}")
     print(f"  Complexity: {model.complexity_}")
+    _diagnostics(model, X_jax, y_jax, "Polynomial")
 
     return model
 
@@ -102,6 +153,7 @@ def example_transcendental():
     print("\nDiscovered expression:")
     print(f"  {model.expression_}")
     print(f"  R² score: {model.score(X_jax, y_jax):.6f}")
+    _diagnostics(model, X_jax, y_jax, "Transcendental")
 
     return model
 
@@ -131,6 +183,7 @@ def example_convenience_function():
 
     print(f"\nDiscovered: {model.expression_}")
     print(f"R² = {model.score(jnp.array(X), jnp.array(y)):.4f}")
+    _diagnostics(model, jnp.array(X), jnp.array(y), "Convenience")
 
     return model
 
@@ -171,6 +224,8 @@ def example_pareto_front():
         print(f"  Complexity {result.complexity:2d} | MSE {result.mse:.6f}")
         print(f"    {result.expression()}")
         print()
+
+    _diagnostics(model, X_jax, y_jax, "Pareto Best")
 
     return model
 
@@ -214,6 +269,7 @@ def example_model_export():
     print("\nPure NumPy predictions:")
     print(f"  X = {X_test.tolist()}")
     print(f"  y_pred = {y_pred.tolist()}")
+    _diagnostics(model, jnp.array(X), jnp.array(y), "Export")
 
     return model
 
@@ -256,7 +312,7 @@ def example_uncertainty():
 
     # Coefficient confidence intervals
     print("\n95% coefficient intervals:")
-    for name, (est, lo, hi, se) in model.coefficient_intervals().items():
+    for name, (est, lo, hi, _se) in model.coefficient_intervals().items():
         print(f"  {name}: {est:.4f} [{lo:.4f}, {hi:.4f}]")
 
     # Prediction intervals on new data
@@ -278,6 +334,22 @@ def example_uncertainty():
     for i in range(3):
         x = float(X_new[i, 0])
         print(f"  x={x:.1f}: [{float(lo_conf[i]):.2f}, {float(hi_conf[i]):.2f}]")
+
+    # Diagnostic plots
+    import matplotlib.pyplot as plt
+
+    from jaxsr.plotting import plot_parity, plot_residuals
+
+    y_pred_all = model.predict(X_jax)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    plot_parity(y_jax, y_pred_all, ax=ax, title="Uncertainty: Parity")
+    plt.savefig("uncertainty_parity.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    plot_residuals(model, X_jax, y_jax)
+    plt.savefig("uncertainty_residuals.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("\n  Saved: uncertainty_parity.png, uncertainty_residuals.png")
 
     return model
 

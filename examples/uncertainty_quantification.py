@@ -22,6 +22,56 @@ from jaxsr import (
 )
 
 
+def _diagnostics(model, X, y, prefix):
+    """Print parameter significance table and save parity/residual plots."""
+    import jax.numpy as jnp
+    import matplotlib.pyplot as plt
+    from scipy import stats as sp_stats
+
+    from jaxsr.plotting import plot_parity, plot_residuals
+
+    intervals = model.coefficient_intervals(alpha=0.05)
+    n, k = len(np.asarray(y)), len(model.selected_features_)
+    df = n - k
+
+    print(f"\n  Parameter significance ({prefix}):")
+    print(
+        f"  {'Term':>20s} {'Estimate':>10s} {'Std Err':>9s}" f" {'t':>8s} {'p-value':>10s} 95% CI"
+    )
+    print("  " + "-" * 80)
+    for name, (est, lo, hi, se) in intervals.items():
+        t_val = est / se if abs(se) > 1e-15 else float("inf")
+        p_val = float(2 * (1 - sp_stats.t.cdf(abs(t_val), df))) if df > 0 else 0.0
+        if p_val < 0.001:
+            sig = "***"
+        elif p_val < 0.01:
+            sig = "**"
+        elif p_val < 0.05:
+            sig = "*"
+        else:
+            sig = ""
+        print(
+            f"  {name:>20s} {est:10.4f} {se:9.4f} {t_val:8.2f}"
+            f" {p_val:10.2e} [{lo:.4f}, {hi:.4f}] {sig}"
+        )
+    print("  --- *** p<0.001, ** p<0.01, * p<0.05")
+
+    X_arr = jnp.atleast_2d(jnp.asarray(X))
+    y_arr = jnp.asarray(y)
+    y_pred = model.predict(X_arr)
+    tag = prefix.lower().replace(" ", "_").replace("-", "_")
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    plot_parity(y_arr, y_pred, ax=ax, title=f"{prefix}: Parity")
+    plt.savefig(f"{tag}_parity.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    plot_residuals(model, X_arr, y_arr)
+    plt.savefig(f"{tag}_residuals.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {tag}_parity.png, {tag}_residuals.png")
+
+
 def example_classical_intervals():
     """
     Classical OLS prediction and confidence intervals.
@@ -97,6 +147,7 @@ def example_classical_intervals():
     cov = model.covariance_matrix_
     print("\nCoefficient covariance matrix:")
     print(f"  {np.array(cov)}")
+    _diagnostics(model, X_jax, y_jax, "Classical OLS")
 
     return model
 
@@ -151,6 +202,8 @@ def example_ensemble_predictions():
             f"{float(result['y_min'][i]):8.3f}  "
             f"{float(result['y_max'][i]):8.3f}"
         )
+
+    _diagnostics(model, jnp.array(X), jnp.array(y), "Ensemble")
 
     return model
 
@@ -319,6 +372,8 @@ def example_bootstrap():
             f"{float(pred_result['lower'][i]):8.3f}  "
             f"{float(pred_result['upper'][i]):8.3f}"
         )
+
+    _diagnostics(model, jnp.array(X), jnp.array(y), "Bootstrap")
 
     return model
 

@@ -17,6 +17,57 @@ import numpy as np
 from jaxsr import BasisLibrary, SymbolicRegressor
 from jaxsr.sampling import grid_sample, latin_hypercube_sample
 
+
+def _diagnostics(model, X, y, prefix):
+    """Print parameter significance table and save parity/residual plots."""
+    import jax.numpy as jnp
+    import matplotlib.pyplot as plt
+    from scipy import stats as sp_stats
+
+    from jaxsr.plotting import plot_parity, plot_residuals
+
+    intervals = model.coefficient_intervals(alpha=0.05)
+    n, k = len(np.asarray(y)), len(model.selected_features_)
+    df = n - k
+
+    print(f"\n  Parameter significance ({prefix}):")
+    print(
+        f"  {'Term':>20s} {'Estimate':>10s} {'Std Err':>9s}" f" {'t':>8s} {'p-value':>10s} 95% CI"
+    )
+    print("  " + "-" * 80)
+    for name, (est, lo, hi, se) in intervals.items():
+        t_val = est / se if abs(se) > 1e-15 else float("inf")
+        p_val = float(2 * (1 - sp_stats.t.cdf(abs(t_val), df))) if df > 0 else 0.0
+        if p_val < 0.001:
+            sig = "***"
+        elif p_val < 0.01:
+            sig = "**"
+        elif p_val < 0.05:
+            sig = "*"
+        else:
+            sig = ""
+        print(
+            f"  {name:>20s} {est:10.4f} {se:9.4f} {t_val:8.2f}"
+            f" {p_val:10.2e} [{lo:.4f}, {hi:.4f}] {sig}"
+        )
+    print("  --- *** p<0.001, ** p<0.01, * p<0.05")
+
+    X_arr = jnp.atleast_2d(jnp.asarray(X))
+    y_arr = jnp.asarray(y)
+    y_pred = model.predict(X_arr)
+    tag = prefix.lower().replace(" ", "_").replace("-", "_")
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    plot_parity(y_arr, y_pred, ax=ax, title=f"{prefix}: Parity")
+    plt.savefig(f"{tag}_parity.png", dpi=150, bbox_inches="tight")
+    plt.close()
+
+    plot_residuals(model, X_arr, y_arr)
+    plt.savefig(f"{tag}_residuals.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved: {tag}_parity.png, {tag}_residuals.png")
+
+
 # -----------------------------------------------------------------------
 # 1. Generate synthetic data
 #
@@ -81,6 +132,7 @@ print("\n=== Fitted model ===")
 print(f"  Expression: {model.expression_}")
 print(f"  R²: {model.score(X, y):.6f}")
 print(f"  Selected features: {model.selected_features_}")
+_diagnostics(model, X, y, "Categorical")
 
 # -----------------------------------------------------------------------
 # 4. Export to pure NumPy callable (no JAX needed at prediction time)
@@ -131,3 +183,4 @@ print("\n=== build_default() with categorical ===")
 print(f"  Library size: {len(auto_library)}")
 print(f"  Expression: {auto_model.expression_}")
 print(f"  R²: {auto_model.score(X, y):.6f}")
+_diagnostics(auto_model, X, y, "Categorical Auto")
