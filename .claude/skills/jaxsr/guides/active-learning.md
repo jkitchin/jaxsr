@@ -30,7 +30,7 @@ X_next = result.points    # shape (5, n_features)
 scores = result.scores    # acquisition function values
 ```
 
-## Sampling Strategies
+## Suggestion Strategies
 
 ### `uncertainty`
 

@@ -127,7 +127,6 @@ constraints = (Constraints()
     .add_monotonic("T", direction="increasing")      # y increases with T
     .add_convex("P")                                 # Convex in P
     .add_sign_constraint("T", sign="positive")       # Positive coefficient
-    .add_linear_constraint(A, b)                     # A @ coeffs <= b
 )
 
 model = SymbolicRegressor(
@@ -150,10 +149,9 @@ sampler = AdaptiveSampler(
 )
 
 # Get suggested points
-X_new = sampler.suggest(n_points=5)
-
-# After obtaining y_new from experiments:
-model.update(X_new, y_new)
+result = sampler.suggest(n_points=5)
+X_next = result.points    # shape (5, n_features)
+scores = result.scores    # acquisition function values
 ```
 
 ## Export Options
