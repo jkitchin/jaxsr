@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 
 import numpy as np
@@ -10,6 +11,10 @@ from click.testing import CliRunner
 
 from jaxsr.cli import main
 from jaxsr.study import DOEStudy
+
+_has_xlsxwriter = importlib.util.find_spec("xlsxwriter") is not None
+_has_openpyxl = importlib.util.find_spec("openpyxl") is not None
+_has_docx = importlib.util.find_spec("docx") is not None
 
 
 @pytest.fixture
@@ -152,6 +157,7 @@ class TestDesignCommand:
         assert result.exit_code == 0, result.output
         assert "x1,x2,Response" in result.output
 
+    @pytest.mark.skipif(not _has_xlsxwriter, reason="xlsxwriter not installed")
     def test_design_xlsx(self, runner, study_file, tmp_path):
         xlsx_path = str(tmp_path / "design.xlsx")
         result = runner.invoke(
@@ -197,6 +203,9 @@ class TestAddCommand:
         assert result.exit_code == 0, result.output
         assert "Added 3 observations" in result.output
 
+    @pytest.mark.skipif(
+        not (_has_xlsxwriter and _has_openpyxl), reason="xlsxwriter/openpyxl not installed"
+    )
     def test_add_xlsx(self, runner, study_with_design, tmp_path):
         from jaxsr.excel import generate_template
 
@@ -278,12 +287,14 @@ class TestStatusCommand:
 class TestReportCommand:
     """Test the 'report' subcommand."""
 
+    @pytest.mark.skipif(not _has_openpyxl, reason="openpyxl not installed")
     def test_report_xlsx(self, runner, fitted_study_file, tmp_path):
         output = str(tmp_path / "report.xlsx")
         result = runner.invoke(main, ["report", fitted_study_file, "-o", output])
         assert result.exit_code == 0, result.output
         assert os.path.exists(output)
 
+    @pytest.mark.skipif(not _has_docx, reason="python-docx not installed")
     def test_report_docx(self, runner, fitted_study_file, tmp_path):
         output = str(tmp_path / "report.docx")
         result = runner.invoke(main, ["report", fitted_study_file, "-o", output])

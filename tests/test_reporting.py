@@ -5,8 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jaxsr.reporting import generate_word_report
-from jaxsr.study import DOEStudy
+pytest.importorskip("docx", reason="python-docx required for Word report tests")
+
+from jaxsr.reporting import generate_word_report  # noqa: E402
+from jaxsr.study import DOEStudy  # noqa: E402
 
 
 @pytest.fixture

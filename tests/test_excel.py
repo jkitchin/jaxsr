@@ -7,7 +7,10 @@ import json
 import numpy as np
 import pytest
 
-from jaxsr.excel import (
+xlsxwriter = pytest.importorskip("xlsxwriter", reason="xlsxwriter required for Excel tests")
+openpyxl = pytest.importorskip("openpyxl", reason="openpyxl required for Excel tests")
+
+from jaxsr.excel import (  # noqa: E402
     TemplateValidationError,
     _compute_study_fingerprint,
     add_report_sheets,
@@ -15,7 +18,7 @@ from jaxsr.excel import (
     read_completed_template,
     validate_template,
 )
-from jaxsr.study import DOEStudy
+from jaxsr.study import DOEStudy  # noqa: E402
 
 # =============================================================================
 # Fixtures
