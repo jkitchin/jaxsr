@@ -396,6 +396,30 @@ def status(study_file):
 # =============================================================================
 
 
+@main.command()
+@click.option("--port", "-p", default=8501, type=int, help="Port for the Streamlit server.")
+@click.option("--study", "-s", default=None, type=click.Path(), help="Pre-load a .jaxsr study.")
+def app(port, study):
+    """Launch the interactive JAXSR DOE app (Streamlit).
+
+    Example:
+
+        jaxsr app
+        jaxsr app --port 8502 --study my_study.jaxsr
+    """
+    try:
+        from .app import launch_app
+    except ImportError:
+        click.echo(
+            "Error: streamlit is required for the JAXSR app. "
+            "Install it with: pip install jaxsr[app]",
+            err=True,
+        )
+        raise SystemExit(1) from None
+
+    launch_app(port=port, study_path=study)
+
+
 @main.command("install-skill")
 @click.option(
     "--target",
