@@ -243,6 +243,46 @@ plot_coefficient_intervals(model)
 plot_bma_weights(model)
 ```
 
+## Claude Code Skills
+
+JAXSR ships with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill files
+that let an AI assistant guide you through symbolic regression workflows interactively.
+The skill files live in `.claude/skills/jaxsr/` (and are mirrored in `src/jaxsr/skill/`
+for packaging).
+
+**What's included:**
+
+| Resource | Description |
+|----------|-------------|
+| `SKILL.md` | Main skill definition — activation triggers, assistant-mode decision trees, quick-reference API and CLI cheat sheets |
+| `guides/basis-library.md` | Choosing and building basis function libraries |
+| `guides/model-fitting.md` | Selection strategies and information criteria |
+| `guides/uncertainty.md` | UQ methods: OLS intervals, BMA, conformal, bootstrap |
+| `guides/constraints.md` | Adding physical constraints (monotonicity, bounds, convexity) |
+| `guides/doe-workflow.md` | End-to-end Design of Experiments lifecycle |
+| `guides/active-learning.md` | Acquisition functions and adaptive sampling |
+| `guides/rsm.md` | Response Surface Methodology designs and analysis |
+| `guides/known-model-fitting.md` | Fitting known model forms (Langmuir, Arrhenius, etc.) |
+| `guides/cli.md` | CLI reference for code-free DOE workflows |
+
+**Templates** (ready-to-run starter scripts in `templates/`):
+
+| Template | Use Case |
+|----------|----------|
+| `basic-regression.py` | Discover an equation from X, y data |
+| `constrained-model.py` | Add physical constraints to a model |
+| `doe-study.py` | Full DOE workflow from design to report |
+| `uncertainty-analysis.py` | Compare all UQ methods |
+| `active-learning-loop.py` | Iterative experiment-model loop |
+| `langmuir-isotherm.py` | Known-model parameter estimation |
+| `notebook-starter.py` | Jupyter notebook cell structure |
+
+When Claude Code is available, it uses these files to provide context-aware help —
+recommending basis libraries, selection strategies, UQ methods, and constraint setups
+based on your specific problem. See the
+[Claude Code Skills guide](https://jkitchin.github.io/jaxsr/guides/claude_code_skills.html)
+in the documentation for more details.
+
 ## Examples
 
 See the `examples/` directory for complete worked examples:

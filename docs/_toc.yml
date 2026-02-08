@@ -11,6 +11,7 @@ parts:
       - file: guides/doe_guide
       - file: guides/acquisition
       - file: guides/cli_guide
+      - file: guides/claude_code_skills
 
   - caption: Examples
     chapters:

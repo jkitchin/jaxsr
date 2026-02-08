@@ -60,6 +60,7 @@ print(f"R² = {model.metrics_['r2']:.4f}")
 - [Design of Experiments Guide](guides/doe_guide.md) - Adaptive DOE and active learning
 - [Acquisition Functions](guides/acquisition.md) - Detailed acquisition function reference
 - [CLI Guide](guides/cli_guide.md) - Command-line interface reference
+- [Claude Code Skills](guides/claude_code_skills.md) - AI-assisted workflows with Claude Code
 - [API Reference](api.md) - Complete API documentation
 - [Literature Review](background/literature_review.md) - Background on symbolic regression
 - [Examples](examples/basic_usage.ipynb) - Worked examples for various applications
