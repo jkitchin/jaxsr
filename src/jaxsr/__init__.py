@@ -36,6 +36,7 @@ from .acquisition import (
 )
 from .basis import BasisFunction, BasisLibrary
 from .constraints import Constraint, Constraints, ConstraintType
+from .dynamics import DynamicsResult, discover_dynamics, estimate_derivatives
 
 # Metrics
 from .metrics import (
@@ -152,6 +153,10 @@ __all__ = [
     "DOEStudy",
     "SymbolicRegressor",
     "fit_symbolic",
+    # Dynamics / ODE Discovery
+    "DynamicsResult",
+    "discover_dynamics",
+    "estimate_derivatives",
     # Metrics
     "ModelComparison",
     "compare_models",
