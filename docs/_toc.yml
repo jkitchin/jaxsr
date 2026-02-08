@@ -22,6 +22,7 @@ parts:
       - file: examples/active_learning
       - file: examples/categorical_variables
       - file: examples/doe_study_workflow
+      - file: examples/ode_discovery
       - file: examples/comprehensive_tutorial
 
   - caption: Reference
