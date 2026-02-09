@@ -482,3 +482,457 @@ class TestConstraintEnforcement:
         # x coefficient should be positive
         x_idx = basis_names.index("x")
         assert float(coeffs[x_idx]) >= 0
+
+
+# =============================================================================
+# Multi-Level Constraint Enforcement Tests
+# =============================================================================
+
+
+def _make_monotonic_test_problem():
+    """Helper: create a test problem where unconstrained fit violates monotonicity."""
+    np.random.seed(42)
+    # Data: y = -x^2 + 3x (increasing for x in [0,1.5], decreasing after)
+    X = np.linspace(0, 3, 50).reshape(-1, 1)
+    y = -X[:, 0] ** 2 + 3 * X[:, 0]
+
+    library = (
+        BasisLibrary(n_features=1, feature_names=["x"])
+        .add_constant()
+        .add_linear()
+        .add_polynomials(max_degree=3)
+    )
+
+    Phi = library.evaluate(jnp.array(X))
+    basis_names = library.names
+    selected_indices = jnp.arange(len(basis_names))
+    constraints = Constraints().add_monotonic("x", direction="increasing", hard=True)
+
+    return {
+        "Phi": Phi,
+        "y": jnp.array(y),
+        "X": jnp.array(X),
+        "basis_names": basis_names,
+        "library": library,
+        "selected_indices": selected_indices,
+        "constraints": constraints,
+    }
+
+
+class TestConstraintEnforcementLevels:
+    """Tests for the multi-level constraint enforcement system."""
+
+    # ---- Backward compatibility ----
+
+    def test_penalty_default_matches_old_behavior(self):
+        """enforcement='penalty' (default) produces same result as before."""
+        p = _make_monotonic_test_problem()
+        coeffs_default, mse_default = fit_constrained_ols(
+            Phi=p["Phi"],
+            y=p["y"],
+            constraints=p["constraints"],
+            basis_names=p["basis_names"],
+            feature_names=["x"],
+            X=p["X"],
+            basis_library=p["library"],
+            selected_indices=p["selected_indices"],
+        )
+        coeffs_explicit, mse_explicit = fit_constrained_ols(
+            Phi=p["Phi"],
+            y=p["y"],
+            constraints=p["constraints"],
+            basis_names=p["basis_names"],
+            feature_names=["x"],
+            X=p["X"],
+            basis_library=p["library"],
+            selected_indices=p["selected_indices"],
+            enforcement="penalty",
+        )
+        np.testing.assert_allclose(np.array(coeffs_default), np.array(coeffs_explicit), atol=1e-8)
+        assert abs(mse_default - mse_explicit) < 1e-10
+
+    # ---- Constrained (trust-constr) path ----
+
+    def test_constrained_monotonic(self):
+        """enforcement='constrained' produces a monotonic model."""
+        p = _make_monotonic_test_problem()
+        coeffs, mse = fit_constrained_ols(
+            Phi=p["Phi"],
+            y=p["y"],
+            constraints=p["constraints"],
+            basis_names=p["basis_names"],
+            feature_names=["x"],
+            X=p["X"],
+            basis_library=p["library"],
+            selected_indices=p["selected_indices"],
+            enforcement="constrained",
+        )
+        y_pred = np.array(p["Phi"] @ coeffs)
+        diffs = np.diff(y_pred)
+        assert np.all(diffs >= -1e-4), f"trust-constr not monotonic: min diff = {diffs.min()}"
+
+    def test_constrained_convex(self):
+        """enforcement='constrained' enforces convexity."""
+        np.random.seed(42)
+        X = np.linspace(-2, 2, 50).reshape(-1, 1)
+        y = -X[:, 0] ** 2  # concave data
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+        Phi = library.evaluate(jnp.array(X))
+        constraints = Constraints().add_convex("x", hard=True)
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="constrained",
+        )
+        y_pred = np.array(Phi @ coeffs)
+        second_diffs = np.diff(y_pred, n=2)
+        assert np.all(
+            second_diffs >= -1e-2
+        ), f"trust-constr not convex: min 2nd diff = {second_diffs.min()}"
+
+    def test_constrained_bounds(self):
+        """enforcement='constrained' enforces hard output bounds."""
+        np.random.seed(42)
+        X = np.linspace(0, 5, 50).reshape(-1, 1)
+        y = 2 * X[:, 0] + 1  # y ranges 1..11
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        Phi = library.evaluate(jnp.array(X))
+        constraints = Constraints().add_bounds("y", upper=8.0, hard=True)
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="constrained",
+        )
+        y_pred = np.array(Phi @ coeffs)
+        # Allow solver tolerance
+        assert np.all(y_pred <= 8.0 + 1e-4), f"trust-constr bound violated: max = {y_pred.max()}"
+
+    # ---- Exact (QP) path ----
+
+    def test_exact_monotonic(self):
+        """enforcement='exact' produces a monotonic model."""
+        cvxpy = pytest.importorskip("cvxpy")  # noqa: F841
+        p = _make_monotonic_test_problem()
+        coeffs, mse = fit_constrained_ols(
+            Phi=p["Phi"],
+            y=p["y"],
+            constraints=p["constraints"],
+            basis_names=p["basis_names"],
+            feature_names=["x"],
+            X=p["X"],
+            basis_library=p["library"],
+            selected_indices=p["selected_indices"],
+            enforcement="exact",
+        )
+        y_pred = np.array(p["Phi"] @ coeffs)
+        diffs = np.diff(y_pred)
+        assert np.all(diffs >= -1e-5), f"QP not monotonic: min diff = {diffs.min()}"
+
+    def test_exact_convex(self):
+        """enforcement='exact' enforces convexity."""
+        cvxpy = pytest.importorskip("cvxpy")  # noqa: F841
+        np.random.seed(42)
+        X = np.linspace(-2, 2, 50).reshape(-1, 1)
+        y = -X[:, 0] ** 2
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+        Phi = library.evaluate(jnp.array(X))
+        constraints = Constraints().add_convex("x", hard=True)
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="exact",
+        )
+        y_pred = np.array(Phi @ coeffs)
+        second_diffs = np.diff(y_pred, n=2)
+        assert np.all(second_diffs >= -1e-3), f"QP not convex: min 2nd diff = {second_diffs.min()}"
+
+    def test_exact_bounds(self):
+        """enforcement='exact' enforces hard output bounds."""
+        cvxpy = pytest.importorskip("cvxpy")  # noqa: F841
+        np.random.seed(42)
+        X = np.linspace(0, 5, 50).reshape(-1, 1)
+        y = 2 * X[:, 0] + 1
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        Phi = library.evaluate(jnp.array(X))
+        constraints = Constraints().add_bounds("y", upper=8.0, hard=True)
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="exact",
+        )
+        y_pred = np.array(Phi @ coeffs)
+        assert np.all(y_pred <= 8.0 + 1e-5), f"QP bound violated: max = {y_pred.max()}"
+
+    # ---- Error cases ----
+
+    def test_invalid_enforcement_value(self):
+        """Invalid enforcement value raises ValueError."""
+        with pytest.raises(ValueError, match="enforcement"):
+            fit_constrained_ols(
+                Phi=jnp.eye(2),
+                y=jnp.array([1.0, 2.0]),
+                constraints=Constraints(),
+                basis_names=["a", "b"],
+                feature_names=["x"],
+                X=jnp.array([[1.0], [2.0]]),
+                enforcement="invalid",
+            )
+
+    def test_exact_hard_custom_raises(self):
+        """enforcement='exact' with hard=True CUSTOM constraint raises ValueError."""
+        cvxpy = pytest.importorskip("cvxpy")  # noqa: F841
+        p = _make_monotonic_test_problem()
+
+        # Add a custom constraint and force hard=True
+        constraints = Constraints().add_monotonic("x", direction="increasing", hard=True)
+        # Manually add a hard custom constraint
+        constraints.constraints.append(
+            Constraint(
+                constraint_type=ConstraintType.CUSTOM,
+                target="test",
+                params={"fn": lambda c, X, y: 0.0},
+                weight=1.0,
+                hard=True,
+            )
+        )
+
+        with pytest.raises(ValueError, match="CUSTOM"):
+            fit_constrained_ols(
+                Phi=p["Phi"],
+                y=p["y"],
+                constraints=constraints,
+                basis_names=p["basis_names"],
+                feature_names=["x"],
+                X=p["X"],
+                basis_library=p["library"],
+                selected_indices=p["selected_indices"],
+                enforcement="exact",
+            )
+
+    # ---- Soft constraints unaffected by enforcement level ----
+
+    def test_soft_constraints_same_across_levels(self):
+        """Soft (hard=False) constraints behave similarly regardless of enforcement level."""
+        np.random.seed(42)
+        X = np.linspace(0, 5, 50).reshape(-1, 1)
+        y = 2 * X[:, 0] + 1
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        Phi = library.evaluate(jnp.array(X))
+
+        # Soft bound only — no hard constraints to enforce differently
+        constraints = Constraints().add_bounds("y", upper=5.0, weight=10.0, hard=False)
+
+        coeffs_penalty, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            penalty_weight=10.0,
+            enforcement="penalty",
+        )
+        coeffs_constr, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            penalty_weight=10.0,
+            enforcement="constrained",
+        )
+        # Both should produce similar coefficients (soft penalty is the same)
+        np.testing.assert_allclose(np.array(coeffs_penalty), np.array(coeffs_constr), atol=0.5)
+
+    # ---- SymbolicRegressor integration ----
+
+    def test_regressor_enforcement_param(self):
+        """SymbolicRegressor accepts constraint_enforcement parameter."""
+        from jaxsr import BasisLibrary, SymbolicRegressor
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=2,
+            constraint_enforcement="constrained",
+        )
+        assert model.constraint_enforcement == "constrained"
+
+    def test_regressor_invalid_enforcement(self):
+        """SymbolicRegressor rejects invalid constraint_enforcement."""
+        from jaxsr import BasisLibrary, SymbolicRegressor
+
+        with pytest.raises(ValueError, match="constraint_enforcement"):
+            SymbolicRegressor(
+                basis_library=BasisLibrary(n_features=1),
+                constraint_enforcement="bad",
+            )
+
+    def test_regressor_save_load_roundtrip(self, tmp_path):
+        """constraint_enforcement persists through save/load."""
+        from jaxsr import BasisLibrary, SymbolicRegressor
+
+        np.random.seed(42)
+        X = np.random.randn(30, 1)
+        y = 2 * X[:, 0] + 1
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=2,
+            constraint_enforcement="constrained",
+        )
+        model.fit(X, y)
+
+        filepath = str(tmp_path / "model.json")
+        model.save(filepath)
+
+        loaded = SymbolicRegressor.load(filepath)
+        assert loaded.constraint_enforcement == "constrained"
+
+    def test_load_old_format_defaults_to_penalty(self, tmp_path):
+        """Loading a save without constraint_enforcement defaults to 'penalty'."""
+        import json
+
+        from jaxsr import BasisLibrary, SymbolicRegressor
+
+        np.random.seed(42)
+        X = np.random.randn(30, 1)
+        y = 2 * X[:, 0] + 1
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        model = SymbolicRegressor(basis_library=library, max_terms=2)
+        model.fit(X, y)
+
+        filepath = str(tmp_path / "old_model.json")
+        model.save(filepath)
+
+        # Remove the key to simulate an old save file
+        with open(filepath) as f:
+            data = json.load(f)
+        del data["config"]["constraint_enforcement"]
+        with open(filepath, "w") as f:
+            json.dump(data, f)
+
+        loaded = SymbolicRegressor.load(filepath)
+        assert loaded.constraint_enforcement == "penalty"
+
+    # ---- Constrained path with fixed coefficients ----
+
+    def test_constrained_with_fixed_coeff(self):
+        """enforcement='constrained' works with fixed coefficient + monotonicity."""
+        np.random.seed(42)
+        X = np.linspace(0, 3, 50).reshape(-1, 1)
+        y = 2 * X[:, 0] + 1
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+        )
+        Phi = library.evaluate(jnp.array(X))
+
+        constraints = (
+            Constraints()
+            .add_known_coefficient("1", value=0.0)
+            .add_monotonic("x", direction="increasing", hard=True)
+        )
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="constrained",
+        )
+
+        const_idx = library.names.index("1")
+        assert abs(float(coeffs[const_idx])) < 1e-10, "Intercept should be fixed to 0"
+
+        y_pred = np.array(Phi @ coeffs)
+        diffs = np.diff(y_pred)
+        assert np.all(diffs >= -1e-3), "Model should be monotonically increasing"
+
+    # ---- Linear constraint enforcement ----
+
+    def test_constrained_linear_constraint(self):
+        """enforcement='constrained' enforces hard linear constraints."""
+        np.random.seed(42)
+        X = np.random.randn(50, 1)
+        y = 3 * X[:, 0] + 5
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        Phi = library.evaluate(jnp.array(X))
+
+        # Constraint: coeff_0 + coeff_1 <= 2 (sum of coefficients <= 2)
+        A = np.array([[1.0, 1.0]])
+        b = np.array([2.0])
+        constraints = Constraints().add_linear_constraint(A, b, hard=True)
+
+        coeffs, _ = fit_constrained_ols(
+            Phi=Phi,
+            y=jnp.array(y),
+            constraints=constraints,
+            basis_names=library.names,
+            feature_names=["x"],
+            X=jnp.array(X),
+            basis_library=library,
+            selected_indices=jnp.arange(len(library.names)),
+            enforcement="constrained",
+        )
+
+        coeff_sum = float(np.sum(np.array(coeffs)))
+        assert coeff_sum <= 2.0 + 1e-4, f"Linear constraint violated: sum = {coeff_sum}"

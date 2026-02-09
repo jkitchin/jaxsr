@@ -1181,15 +1181,45 @@ def _compute_jax_penalty(
     constraint_data: dict,
     penalty_weight: float,
     hard_penalty_weight: float,
+    filter_mode: str = "all",
 ) -> jnp.ndarray:
     """
     Compute total constraint penalty using pure JAX ops (differentiable).
+
+    Parameters
+    ----------
+    evaluator : ConstraintEvaluator
+        Constraint evaluator (unused but kept for API consistency).
+    coeffs : jnp.ndarray
+        Coefficient vector.
+    constraint_data : dict
+        Pre-computed constraint data from ``_precompute_constraint_data``.
+    penalty_weight : float
+        Weight for soft constraint penalties.
+    hard_penalty_weight : float
+        Weight for hard constraint penalties.
+    filter_mode : str
+        Which constraints to include: ``"all"`` (default), ``"soft_only"``
+        (skip ``hard=True`` entries), or ``"hard_only"`` (skip ``hard=False``
+        entries).
+
+    Returns
+    -------
+    total : jnp.ndarray
+        Scalar penalty value.
     """
     total = jnp.array(0.0)
 
     for entry in constraint_data["constraints"]:
         constraint = entry["constraint"]
         is_hard = constraint.hard
+
+        # Apply filter
+        if filter_mode == "soft_only" and is_hard:
+            continue
+        if filter_mode == "hard_only" and not is_hard:
+            continue
+
         weight = hard_penalty_weight if is_hard else penalty_weight * constraint.weight
 
         ctype = entry.get("type")
@@ -1259,6 +1289,519 @@ def _has_shape_constraints(constraints: Constraints) -> bool:
     return False
 
 
+def _reconstruct_jax_from_free(
+    coeffs_free_jax: jnp.ndarray,
+    fixed_jax: list[tuple[int, jnp.ndarray]],
+    free_indices_arr: jnp.ndarray,
+    n_total: int,
+) -> jnp.ndarray:
+    """
+    Rebuild full coefficient vector from free coefficients in JAX (differentiable).
+
+    Parameters
+    ----------
+    coeffs_free_jax : jnp.ndarray
+        Free coefficient values.
+    fixed_jax : list of (int, jnp.ndarray)
+        Fixed index/value pairs as JAX scalars.
+    free_indices_arr : jnp.ndarray
+        Array of free coefficient indices.
+    n_total : int
+        Total number of coefficients.
+
+    Returns
+    -------
+    full : jnp.ndarray
+        Full coefficient vector.
+    """
+    full = jnp.zeros(n_total)
+    for idx, val in fixed_jax:
+        full = full.at[idx].set(val)
+    full = full.at[free_indices_arr].set(coeffs_free_jax)
+    return full
+
+
+def _build_scipy_linear_constraints(
+    evaluator: ConstraintEvaluator,
+    constraint_data: dict,
+    free_indices: list[int],
+    fixed: list[tuple[int, float]],
+    n_total: int,
+):
+    """
+    Convert hard linear-in-coefficient constraints into ``scipy.optimize.LinearConstraint``.
+
+    Builds a single stacked constraint ``lb <= G_free @ c_free <= ub`` for all
+    ``hard=True`` monotonic, convex, concave, bound, and linear constraints.
+
+    Parameters
+    ----------
+    evaluator : ConstraintEvaluator
+        Constraint evaluator.
+    constraint_data : dict
+        Pre-computed constraint data.
+    free_indices : list of int
+        Indices of free (non-fixed) coefficients.
+    fixed : list of (int, float)
+        Fixed coefficient index/value pairs.
+    n_total : int
+        Total number of coefficients.
+
+    Returns
+    -------
+    constraint : scipy.optimize.LinearConstraint or None
+        A single LinearConstraint, or None if no hard linear constraints exist.
+    """
+    from scipy.optimize import LinearConstraint
+
+    G_rows = []
+    lb_list = []
+    ub_list = []
+
+    for entry in constraint_data["constraints"]:
+        constraint = entry["constraint"]
+        if not constraint.hard:
+            continue
+
+        ctype = entry.get("type")
+
+        if ctype == "monotonic":
+            # Gradient row: (Phi_plus - Phi_minus) / (2*eps) per sample
+            Phi_plus = np.array(entry["Phi_plus"])
+            Phi_minus = np.array(entry["Phi_minus"])
+            eps = entry["eps"]
+            G = (Phi_plus - Phi_minus) / (2 * eps)
+            n_rows = G.shape[0]
+            if entry["direction"] == "increasing":
+                lb_list.extend([0.0] * n_rows)
+                ub_list.extend([np.inf] * n_rows)
+            else:
+                lb_list.extend([-np.inf] * n_rows)
+                ub_list.extend([0.0] * n_rows)
+            G_rows.append(G)
+
+        elif ctype == "convex":
+            Phi_plus = np.array(entry["Phi_plus"])
+            Phi_minus = np.array(entry["Phi_minus"])
+            Phi_center = np.array(entry["Phi_center"])
+            eps = entry["eps"]
+            G = (Phi_plus - 2 * Phi_center + Phi_minus) / (eps**2)
+            n_rows = G.shape[0]
+            lb_list.extend([0.0] * n_rows)
+            ub_list.extend([np.inf] * n_rows)
+            G_rows.append(G)
+
+        elif ctype == "concave":
+            Phi_plus = np.array(entry["Phi_plus"])
+            Phi_minus = np.array(entry["Phi_minus"])
+            Phi_center = np.array(entry["Phi_center"])
+            eps = entry["eps"]
+            G = (Phi_plus - 2 * Phi_center + Phi_minus) / (eps**2)
+            n_rows = G.shape[0]
+            lb_list.extend([-np.inf] * n_rows)
+            ub_list.extend([0.0] * n_rows)
+            G_rows.append(G)
+
+        elif ctype == "bound":
+            Phi_mat = np.array(entry["Phi"])
+            n_rows = Phi_mat.shape[0]
+            lower = entry["lower"]
+            upper = entry["upper"]
+            lb_list.extend([lower if lower is not None else -np.inf] * n_rows)
+            ub_list.extend([upper if upper is not None else np.inf] * n_rows)
+            G_rows.append(Phi_mat)
+
+        elif ctype == "linear":
+            A = np.array(entry["A"])
+            b = np.array(entry["b"])
+            n_rows = A.shape[0]
+            lb_list.extend([-np.inf] * n_rows)
+            ub_list.extend(b.tolist())
+            G_rows.append(A)
+
+    if not G_rows:
+        return None
+
+    G_full = np.vstack(G_rows)
+    lb = np.array(lb_list)
+    ub = np.array(ub_list)
+
+    # Project to free indices and adjust bounds for fixed coefficient contributions
+    G_free = G_full[:, free_indices]
+    fixed_contribution = np.zeros(G_full.shape[0])
+    for idx, value in fixed:
+        fixed_contribution += G_full[:, idx] * value
+
+    lb_adj = lb - fixed_contribution
+    ub_adj = ub - fixed_contribution
+
+    return LinearConstraint(G_free, lb_adj, ub_adj)
+
+
+def _fit_penalty(
+    Phi: jnp.ndarray,
+    y_jax: jnp.ndarray,
+    evaluator: ConstraintEvaluator,
+    x0: np.ndarray,
+    free_indices: list[int],
+    fixed: list[tuple[int, float]],
+    fixed_jax: list[tuple[int, jnp.ndarray]],
+    free_indices_arr: jnp.ndarray,
+    n_total: int,
+    scipy_bounds: list[tuple[float | None, float | None]],
+    constraint_data: dict,
+    penalty_weight: float,
+    max_iter: int,
+    tol: float,
+    filter_mode: str = "all",
+) -> tuple[jnp.ndarray, float]:
+    """
+    Fit via penalised least squares with L-BFGS-B (original penalty path).
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y_jax : jnp.ndarray
+        Target vector (JAX).
+    evaluator : ConstraintEvaluator
+        Constraint evaluator.
+    x0 : np.ndarray
+        Initial free coefficient values.
+    free_indices : list of int
+        Indices of free coefficients.
+    fixed : list of (int, float)
+        Fixed index/value pairs.
+    fixed_jax : list of (int, jnp.ndarray)
+        Fixed index/value pairs as JAX scalars.
+    free_indices_arr : jnp.ndarray
+        Array of free indices.
+    n_total : int
+        Total number of coefficients.
+    scipy_bounds : list of (lower, upper)
+        Bounds for free coefficients.
+    constraint_data : dict
+        Pre-computed constraint data.
+    penalty_weight : float
+        Weight for soft penalties.
+    max_iter : int
+        Maximum optimizer iterations.
+    tol : float
+        Convergence tolerance.
+    filter_mode : str
+        Which constraints to penalise (``"all"``, ``"soft_only"``).
+
+    Returns
+    -------
+    coefficients : jnp.ndarray
+        Fitted coefficients.
+    mse : float
+        Mean squared error.
+    """
+    from scipy.optimize import minimize
+
+    Phi_np = np.array(Phi)
+    y_np = np.array(y_jax)
+    hard_penalty_weight = 1e6
+
+    def jax_objective(coeffs_free_jax):
+        full_coeffs = _reconstruct_jax_from_free(
+            coeffs_free_jax, fixed_jax, free_indices_arr, n_total
+        )
+        y_pred = Phi @ full_coeffs
+        mse_term = jnp.mean((y_jax - y_pred) ** 2)
+        total_penalty = _compute_jax_penalty(
+            evaluator,
+            full_coeffs,
+            constraint_data,
+            penalty_weight,
+            hard_penalty_weight,
+            filter_mode=filter_mode,
+        )
+        return mse_term + total_penalty
+
+    grad_fn = jax.grad(jax_objective)
+
+    def objective_and_grad(coeffs_free_vec):
+        coeffs_jax = jnp.array(coeffs_free_vec)
+        val = float(jax_objective(coeffs_jax))
+        g = np.array(grad_fn(coeffs_jax), dtype=np.float64)
+        return val, g
+
+    result = minimize(
+        objective_and_grad,
+        x0,
+        method="L-BFGS-B",
+        jac=True,
+        bounds=scipy_bounds,
+        options={"maxiter": max_iter, "ftol": tol},
+    )
+
+    coeffs_opt = _reconstruct_full(result.x, free_indices, fixed, n_total)
+    coeffs_final = np.array(evaluator.apply_hard_constraints(jnp.array(coeffs_opt)))
+
+    y_pred = Phi_np @ coeffs_final
+    mse = float(np.mean((y_np - y_pred) ** 2))
+    return jnp.array(coeffs_final), mse
+
+
+def _fit_trust_constr(
+    Phi: jnp.ndarray,
+    y_jax: jnp.ndarray,
+    evaluator: ConstraintEvaluator,
+    x0: np.ndarray,
+    free_indices: list[int],
+    fixed: list[tuple[int, float]],
+    fixed_jax: list[tuple[int, jnp.ndarray]],
+    free_indices_arr: jnp.ndarray,
+    n_total: int,
+    scipy_bounds,
+    constraint_data: dict,
+    penalty_weight: float,
+    max_iter: int,
+    tol: float,
+) -> tuple[jnp.ndarray, float]:
+    """
+    Fit via scipy trust-constr with hard constraints as ``LinearConstraint``.
+
+    Hard linear-in-coefficient constraints are passed to the solver as
+    ``LinearConstraint`` objects. Soft constraints remain as a JAX penalty
+    in the objective.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y_jax : jnp.ndarray
+        Target vector (JAX).
+    evaluator : ConstraintEvaluator
+        Constraint evaluator.
+    x0 : np.ndarray
+        Initial free coefficient values.
+    free_indices : list of int
+        Indices of free coefficients.
+    fixed : list of (int, float)
+        Fixed index/value pairs.
+    fixed_jax : list of (int, jnp.ndarray)
+        Fixed index/value pairs as JAX scalars.
+    free_indices_arr : jnp.ndarray
+        Array of free indices.
+    n_total : int
+        Total number of coefficients.
+    scipy_bounds : scipy.optimize.Bounds
+        Bounds for free coefficients (from hard SIGN constraints).
+    constraint_data : dict
+        Pre-computed constraint data.
+    penalty_weight : float
+        Weight for soft penalties.
+    max_iter : int
+        Maximum optimizer iterations.
+    tol : float
+        Convergence tolerance.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray
+        Fitted coefficients.
+    mse : float
+        Mean squared error.
+    """
+    from scipy.optimize import minimize
+
+    Phi_np = np.array(Phi)
+    y_np = np.array(y_jax)
+    # Soft penalties only; hard constraints are handled by the solver
+    soft_penalty_weight = 1e6  # unused for hard, but kept for signature compat
+
+    def jax_objective(coeffs_free_jax):
+        full_coeffs = _reconstruct_jax_from_free(
+            coeffs_free_jax, fixed_jax, free_indices_arr, n_total
+        )
+        y_pred = Phi @ full_coeffs
+        mse_term = jnp.mean((y_jax - y_pred) ** 2)
+        total_penalty = _compute_jax_penalty(
+            evaluator,
+            full_coeffs,
+            constraint_data,
+            penalty_weight,
+            soft_penalty_weight,
+            filter_mode="soft_only",
+        )
+        return mse_term + total_penalty
+
+    grad_fn = jax.grad(jax_objective)
+
+    def objective_and_grad(coeffs_free_vec):
+        coeffs_jax = jnp.array(coeffs_free_vec)
+        val = float(jax_objective(coeffs_jax))
+        g = np.array(grad_fn(coeffs_jax), dtype=np.float64)
+        return val, g
+
+    # Build hard linear constraints for the solver
+    lin_constraint = _build_scipy_linear_constraints(
+        evaluator, constraint_data, free_indices, fixed, n_total
+    )
+
+    solver_constraints = []
+    if lin_constraint is not None:
+        solver_constraints.append(lin_constraint)
+
+    result = minimize(
+        objective_and_grad,
+        x0,
+        method="trust-constr",
+        jac=True,
+        bounds=scipy_bounds,
+        constraints=solver_constraints,
+        options={"maxiter": max_iter, "gtol": tol},
+    )
+
+    coeffs_opt = _reconstruct_full(result.x, free_indices, fixed, n_total)
+    coeffs_final = np.array(evaluator.apply_hard_constraints(jnp.array(coeffs_opt)))
+
+    y_pred = Phi_np @ coeffs_final
+    mse = float(np.mean((y_np - y_pred) ** 2))
+    return jnp.array(coeffs_final), mse
+
+
+def _fit_qp_exact(
+    Phi: jnp.ndarray,
+    y_jax: jnp.ndarray,
+    evaluator: ConstraintEvaluator,
+    free_indices: list[int],
+    fixed: list[tuple[int, float]],
+    n_total: int,
+    scipy_bounds: list[tuple[float | None, float | None]],
+    constraint_data: dict,
+) -> tuple[jnp.ndarray, float]:
+    """
+    Fit via convex QP for mathematically exact constraint satisfaction.
+
+    Uses ``cvxpy`` to formulate the constrained least squares problem as a QP.
+    Requires all ``hard=True`` constraints to be linear in coefficients (raises
+    ``ValueError`` for hard CUSTOM constraints).
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y_jax : jnp.ndarray
+        Target vector (JAX).
+    evaluator : ConstraintEvaluator
+        Constraint evaluator.
+    free_indices : list of int
+        Indices of free coefficients.
+    fixed : list of (int, float)
+        Fixed index/value pairs.
+    n_total : int
+        Total number of coefficients.
+    scipy_bounds : list of (lower, upper)
+        Bounds for free coefficients (from hard SIGN constraints).
+    constraint_data : dict
+        Pre-computed constraint data.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray
+        Fitted coefficients.
+    mse : float
+        Mean squared error.
+
+    Raises
+    ------
+    ImportError
+        If ``cvxpy`` is not installed.
+    ValueError
+        If any ``hard=True`` CUSTOM constraint is present.
+    RuntimeError
+        If the QP problem is infeasible.
+    """
+    try:
+        import cvxpy as cp
+    except ImportError:
+        raise ImportError(
+            "cvxpy is required for enforcement='exact'. " "Install it with: pip install jaxsr[qp]"
+        ) from None
+
+    # Validate: no hard CUSTOM constraints
+    for constraint in evaluator.constraints:
+        if constraint.hard and constraint.constraint_type == ConstraintType.CUSTOM:
+            raise ValueError(
+                "enforcement='exact' does not support hard=True CUSTOM constraints. "
+                "Nonlinear constraints cannot be formulated as a QP. "
+                "Use enforcement='penalty' or 'constrained' instead, or set hard=False."
+            )
+
+    Phi_np = np.array(Phi)
+    y_np = np.array(y_jax)
+
+    n_free = len(free_indices)
+    c = cp.Variable(n_free)
+
+    # Adjust y for fixed coefficient contributions
+    y_adjusted = y_np.copy()
+    for idx, value in fixed:
+        y_adjusted = y_adjusted - Phi_np[:, idx] * value
+
+    Phi_free = Phi_np[:, free_indices]
+
+    # Objective: minimise ||Phi_free @ c - y_adjusted||^2
+    objective = cp.Minimize(cp.sum_squares(Phi_free @ c - y_adjusted))
+
+    # Build constraints
+    cp_constraints = []
+
+    # Bounds from hard SIGN constraints
+    for i, (lo, hi) in enumerate(scipy_bounds):
+        if lo is not None:
+            cp_constraints.append(c[i] >= lo)
+        if hi is not None:
+            cp_constraints.append(c[i] <= hi)
+
+    # Linear constraints from hard shape constraints
+    lin_constraint = _build_scipy_linear_constraints(
+        evaluator, constraint_data, free_indices, fixed, n_total
+    )
+    if lin_constraint is not None:
+        G_free = lin_constraint.A
+        lb = lin_constraint.lb
+        ub = lin_constraint.ub
+
+        finite_lb = np.isfinite(lb)
+        finite_ub = np.isfinite(ub)
+
+        if np.any(finite_lb):
+            rows_lb = np.where(finite_lb)[0]
+            cp_constraints.append(G_free[rows_lb] @ c >= lb[rows_lb])
+        if np.any(finite_ub):
+            rows_ub = np.where(finite_ub)[0]
+            cp_constraints.append(G_free[rows_ub] @ c <= ub[rows_ub])
+
+    problem = cp.Problem(objective, cp_constraints)
+
+    # Solve with OSQP first, fall back to SCS
+    problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
+    if problem.status not in ("optimal", "optimal_inaccurate"):
+        problem.solve(solver=cp.SCS, verbose=False)
+
+    if problem.status not in ("optimal", "optimal_inaccurate"):
+        raise RuntimeError(
+            f"QP solver returned status '{problem.status}'. "
+            "The constrained problem may be infeasible."
+        )
+
+    coeffs_free_opt = np.array(c.value).flatten()
+    coeffs_opt = _reconstruct_full(coeffs_free_opt, free_indices, fixed, n_total)
+    coeffs_final = np.array(evaluator.apply_hard_constraints(jnp.array(coeffs_opt)))
+
+    y_pred = Phi_np @ coeffs_final
+    mse = float(np.mean((y_np - y_pred) ** 2))
+    return jnp.array(coeffs_final), mse
+
+
+_VALID_ENFORCEMENT_LEVELS = ("penalty", "constrained", "exact")
+
+
 def fit_constrained_ols(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
@@ -1271,13 +1814,14 @@ def fit_constrained_ols(
     penalty_weight: float = 1.0,
     basis_library: Any | None = None,
     selected_indices: Any | None = None,
+    enforcement: str = "penalty",
 ) -> tuple[jnp.ndarray, float]:
     """
     Fit least squares with constraints.
 
     For simple SIGN/FIXED constraints, uses OLS + projection (fast path).
-    For shape constraints (monotonic, convex, bounds, etc.), uses penalized
-    least squares via scipy.optimize.minimize with L-BFGS-B.
+    For shape constraints (monotonic, convex, bounds, etc.), the solver is
+    chosen by the ``enforcement`` parameter.
 
     Parameters
     ----------
@@ -1303,6 +1847,13 @@ def fit_constrained_ols(
         Basis library for evaluating predictions at arbitrary X points.
     selected_indices : array-like, optional
         Indices of selected basis functions in the full library.
+    enforcement : str
+        Constraint enforcement level:
+
+        - ``"penalty"`` (default) – L-BFGS-B with penalty terms.  Approximate.
+        - ``"constrained"`` – scipy ``trust-constr`` with ``LinearConstraint``.
+          Solver-tolerance guarantee (~1e-8).
+        - ``"exact"`` – cvxpy QP.  Mathematical guarantee.  Requires ``cvxpy``.
 
     Returns
     -------
@@ -1310,8 +1861,21 @@ def fit_constrained_ols(
         Fitted coefficients.
     mse : float
         Mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If *enforcement* is not one of the valid levels, or if
+        ``enforcement='exact'`` is used with ``hard=True`` CUSTOM constraints.
+    ImportError
+        If ``enforcement='exact'`` and ``cvxpy`` is not installed.
+    RuntimeError
+        If ``enforcement='exact'`` and the QP is infeasible.
     """
-    from scipy.optimize import minimize
+    if enforcement not in _VALID_ENFORCEMENT_LEVELS:
+        raise ValueError(
+            f"enforcement must be one of {_VALID_ENFORCEMENT_LEVELS!r}, " f"got {enforcement!r}"
+        )
 
     evaluator = ConstraintEvaluator(constraints, basis_names, feature_names)
 
@@ -1372,71 +1936,60 @@ def fit_constrained_ols(
     # Build scipy bounds from hard SIGN constraints
     scipy_bounds = _build_scipy_bounds(evaluator, free_indices, basis_names)
 
-    # Heavy penalty weight for hard shape constraints
-    hard_penalty_weight = 1e6
-
     # Pre-convert fixed info to JAX arrays for the objective
     fixed_jax = [(idx, jnp.asarray(val)) for idx, val in fixed]
     free_indices_arr = jnp.array(free_indices, dtype=jnp.int32)
 
-    def _reconstruct_jax(coeffs_free_jax):
-        """Rebuild full coefficient vector in JAX (differentiable)."""
-        full = jnp.zeros(n_total)
-        for idx, val in fixed_jax:
-            full = full.at[idx].set(val)
-        full = full.at[free_indices_arr].set(coeffs_free_jax)
-        return full
-
     # Pre-compute perturbed design matrices for constraint evaluation
-    _constraint_data = _precompute_constraint_data(
+    constraint_data = _precompute_constraint_data(
         evaluator, X_jax, basis_library, selected_indices, Phi
     )
 
     y_jax = jnp.array(y)
 
-    def jax_objective(coeffs_free_jax):
-        """Penalized least squares objective (pure JAX, differentiable)."""
-        full_coeffs = _reconstruct_jax(coeffs_free_jax)
-
-        # MSE term
-        y_pred = Phi @ full_coeffs
-        mse_term = jnp.mean((y_jax - y_pred) ** 2)
-
-        # Compute penalties inline (all JAX, differentiable)
-        total_penalty = _compute_jax_penalty(
-            evaluator, full_coeffs, _constraint_data, penalty_weight, hard_penalty_weight
+    # Dispatch to the chosen enforcement solver
+    if enforcement == "penalty":
+        return _fit_penalty(
+            Phi=Phi,
+            y_jax=y_jax,
+            evaluator=evaluator,
+            x0=x0,
+            free_indices=free_indices,
+            fixed=fixed,
+            fixed_jax=fixed_jax,
+            free_indices_arr=free_indices_arr,
+            n_total=n_total,
+            scipy_bounds=scipy_bounds,
+            constraint_data=constraint_data,
+            penalty_weight=penalty_weight,
+            max_iter=max_iter,
+            tol=tol,
         )
-
-        return mse_term + total_penalty
-
-    # Compute JAX gradient function
-    grad_fn = jax.grad(jax_objective)
-
-    def objective_and_grad(coeffs_free_vec):
-        """Scipy-compatible objective returning (value, gradient) as numpy."""
-        coeffs_jax = jnp.array(coeffs_free_vec)
-        val = float(jax_objective(coeffs_jax))
-        g = np.array(grad_fn(coeffs_jax), dtype=np.float64)
-        return val, g
-
-    # Run optimizer with analytical gradient
-    result = minimize(
-        objective_and_grad,
-        x0,
-        method="L-BFGS-B",
-        jac=True,
-        bounds=scipy_bounds,
-        options={"maxiter": max_iter, "ftol": tol},
-    )
-
-    # Reconstruct full coefficients from optimized free values
-    coeffs_opt = _reconstruct_full(result.x, free_indices, fixed, n_total)
-
-    # Apply hard sign/fixed constraints (final projection)
-    coeffs_final = np.array(evaluator.apply_hard_constraints(jnp.array(coeffs_opt)))
-
-    # Compute MSE
-    y_pred = Phi_np @ coeffs_final
-    mse = float(np.mean((y_np - y_pred) ** 2))
-
-    return jnp.array(coeffs_final), mse
+    elif enforcement == "constrained":
+        return _fit_trust_constr(
+            Phi=Phi,
+            y_jax=y_jax,
+            evaluator=evaluator,
+            x0=x0,
+            free_indices=free_indices,
+            fixed=fixed,
+            fixed_jax=fixed_jax,
+            free_indices_arr=free_indices_arr,
+            n_total=n_total,
+            scipy_bounds=scipy_bounds,
+            constraint_data=constraint_data,
+            penalty_weight=penalty_weight,
+            max_iter=max_iter,
+            tol=tol,
+        )
+    else:  # enforcement == "exact"
+        return _fit_qp_exact(
+            Phi=Phi,
+            y_jax=y_jax,
+            evaluator=evaluator,
+            free_indices=free_indices,
+            fixed=fixed,
+            n_total=n_total,
+            scipy_bounds=scipy_bounds,
+            constraint_data=constraint_data,
+        )

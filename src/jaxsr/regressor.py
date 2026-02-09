@@ -112,7 +112,13 @@ class SymbolicRegressor:
         random_state: int | None = None,
         param_optimizer: str = "scipy",
         param_optimization_budget: int = 50,
+        constraint_enforcement: str = "penalty",
     ):
+        if constraint_enforcement not in ("penalty", "constrained", "exact"):
+            raise ValueError(
+                f"constraint_enforcement must be 'penalty', 'constrained', or 'exact', "
+                f"got {constraint_enforcement!r}"
+            )
         self.basis_library = basis_library
         self.max_terms = max_terms
         self.strategy = strategy
@@ -123,6 +129,7 @@ class SymbolicRegressor:
         self.random_state = random_state
         self.param_optimizer = param_optimizer
         self.param_optimization_budget = param_optimization_budget
+        self.constraint_enforcement = constraint_enforcement
 
         # Fitted attributes
         self._result: SelectionResult | None = None
@@ -305,6 +312,7 @@ class SymbolicRegressor:
             X=X,
             basis_library=self.basis_library,
             selected_indices=indices,
+            enforcement=self.constraint_enforcement,
         )
 
         # Update result with recalculated information criteria
@@ -690,6 +698,7 @@ class SymbolicRegressor:
                     X=X_combined,
                     basis_library=self.basis_library,
                     selected_indices=self._result.selected_indices,
+                    enforcement=self.constraint_enforcement,
                 )
                 if self.constraints
                 else (
@@ -1033,6 +1042,7 @@ class SymbolicRegressor:
                 "random_state": self.random_state,
                 "param_optimizer": self.param_optimizer,
                 "param_optimization_budget": self.param_optimization_budget,
+                "constraint_enforcement": self.constraint_enforcement,
             },
             "basis_library": self.basis_library.to_dict(),
             "result": self._result.to_dict(),
@@ -1068,11 +1078,15 @@ class SymbolicRegressor:
         if data.get("constraints"):
             constraints = Constraints.from_dict(data["constraints"])
 
+        # Ensure backward compatibility for saves without constraint_enforcement
+        config = data["config"]
+        config.setdefault("constraint_enforcement", "penalty")
+
         # Create model
         model = cls(
             basis_library=basis_library,
             constraints=constraints,
-            **data["config"],
+            **config,
         )
 
         # Reconstruct result
