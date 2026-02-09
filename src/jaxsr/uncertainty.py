@@ -1098,3 +1098,308 @@ def anova(
     )
 
     return AnovaResult(rows=rows, type=anova_type, warnings=warn)
+
+
+# =============================================================================
+# Classification Uncertainty Quantification
+# =============================================================================
+
+
+def classification_coefficient_intervals(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    coefficients: jnp.ndarray,
+    names: list[str],
+    alpha: float = 0.05,
+) -> dict[str, tuple[float, float, float, float]]:
+    """
+    Wald confidence intervals for logistic regression coefficients.
+
+    Uses the Fisher information matrix
+    ``I(w) = Phi^T diag(mu*(1-mu)) Phi`` to compute asymptotic
+    standard errors, then applies Normal quantiles (MLE asymptotics).
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix of shape ``(n, p)``.
+    y : jnp.ndarray
+        Binary labels of shape ``(n,)``.
+    coefficients : jnp.ndarray
+        Fitted logistic regression coefficients.
+    names : list of str
+        Coefficient names.
+    alpha : float
+        Significance level (default 0.05 for 95% CIs).
+
+    Returns
+    -------
+    intervals : dict
+        ``{name: (estimate, lower, upper, se)}`` for each coefficient.
+    """
+    from .selection import _sigmoid
+
+    eta = Phi @ coefficients
+    mu = _sigmoid(eta)
+    mu = jnp.clip(mu, 1e-10, 1.0 - 1e-10)
+    W_diag = mu * (1.0 - mu)
+
+    # Fisher information matrix: I = Phi^T W Phi
+    # Use SVD of sqrt(W)*Phi for stability
+    sqrt_W = jnp.sqrt(W_diag)
+    Phi_w = Phi * sqrt_W[:, None]
+    U, s, Vt = jnp.linalg.svd(Phi_w, full_matrices=False)
+
+    rcond = jnp.finfo(Phi.dtype).eps * max(Phi.shape)
+    cutoff = rcond * jnp.max(s)
+    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
+    fisher_inv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
+
+    se = jnp.sqrt(jnp.diag(fisher_inv))
+    z_crit = stats.norm.ppf(1 - alpha / 2)
+
+    intervals = {}
+    for i, name in enumerate(names):
+        est = float(coefficients[i])
+        std_err = float(se[i])
+        lower = est - z_crit * std_err
+        upper = est + z_crit * std_err
+        intervals[name] = (est, lower, upper, std_err)
+
+    return intervals
+
+
+def bootstrap_classification_coefficients(
+    model,
+    n_bootstrap: int = 1000,
+    alpha: float = 0.05,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """
+    Pairs bootstrap for logistic regression coefficient uncertainty.
+
+    Resamples ``(X_i, y_i)`` pairs, refits IRLS on each bootstrap
+    sample, and collects coefficient distributions.
+
+    Parameters
+    ----------
+    model : SymbolicClassifier
+        Fitted binary classifier.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    alpha : float
+        Significance level for confidence intervals.
+    seed : int, optional
+        Random seed.
+
+    Returns
+    -------
+    result : dict
+        Dictionary with keys:
+
+        - ``"coefficients"``: ``(n_bootstrap, p)`` array
+        - ``"mean"``: mean of bootstrap coefficients
+        - ``"std"``: std of bootstrap coefficients
+        - ``"lower"``: lower CI bound per coefficient
+        - ``"upper"``: upper CI bound per coefficient
+        - ``"names"``: coefficient names
+    """
+    from .selection import fit_irls
+
+    model._check_is_fitted()
+    X = model._X_train
+    y = model._y_train
+    n = len(y)
+
+    Phi_train = model.basis_library.evaluate_subset(X, model._result.selected_indices)
+
+    rng = np.random.RandomState(seed)
+    boot_coeffs_list = []
+
+    for _b in range(n_bootstrap):
+        boot_idx = rng.randint(0, n, size=n)
+        Phi_boot = Phi_train[boot_idx]
+        y_boot = y[boot_idx]
+
+        try:
+            coeffs, _nll, _nit, _conv = fit_irls(
+                Phi_boot,
+                y_boot,
+                regularization=model.regularization,
+            )
+            boot_coeffs_list.append(np.array(coeffs))
+        except Exception:
+            continue
+
+    if not boot_coeffs_list:
+        p = len(model._result.coefficients)
+        return {
+            "coefficients": jnp.zeros((0, p)),
+            "mean": jnp.zeros(p),
+            "std": jnp.zeros(p),
+            "lower": jnp.zeros(p),
+            "upper": jnp.zeros(p),
+            "names": model._result.selected_names,
+        }
+
+    boot_coeffs = jnp.array(np.stack(boot_coeffs_list))
+    lower = jnp.percentile(boot_coeffs, 100 * alpha / 2, axis=0)
+    upper = jnp.percentile(boot_coeffs, 100 * (1 - alpha / 2), axis=0)
+
+    return {
+        "coefficients": boot_coeffs,
+        "mean": jnp.mean(boot_coeffs, axis=0),
+        "std": jnp.std(boot_coeffs, axis=0),
+        "lower": lower,
+        "upper": upper,
+        "names": model._result.selected_names,
+    }
+
+
+def conformal_classification_split(
+    model,
+    X_cal: jnp.ndarray,
+    y_cal: jnp.ndarray,
+    X_new: jnp.ndarray,
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    """
+    Split conformal prediction sets for classification.
+
+    Returns prediction sets (sets of labels) with marginal coverage
+    guarantee.  Uses the nonconformity score ``1 - P(y_true | x)``.
+
+    Parameters
+    ----------
+    model : SymbolicClassifier
+        Fitted classification model.
+    X_cal : jnp.ndarray
+        Calibration features of shape ``(n_cal, p)``.
+    y_cal : jnp.ndarray
+        Calibration labels of shape ``(n_cal,)``.
+    X_new : jnp.ndarray
+        New features of shape ``(n_new, p)``.
+    alpha : float
+        Significance level (coverage = 1 - alpha).
+
+    Returns
+    -------
+    result : dict
+        Dictionary with keys:
+
+        - ``"prediction_sets"``: list of sets of predicted labels
+        - ``"quantile"``: the conformal quantile used
+        - ``"y_pred"``: point predictions (most likely class)
+    """
+    model._check_is_fitted()
+    X_cal = jnp.atleast_2d(jnp.asarray(X_cal))
+    y_cal = jnp.asarray(y_cal).ravel()
+    X_new = jnp.atleast_2d(jnp.asarray(X_new))
+
+    proba_cal = model.predict_proba(X_cal)
+    n_cal = len(y_cal)
+
+    # Nonconformity scores: 1 - P(y_true | x)
+    if proba_cal.ndim == 1:
+        # Binary: proba_cal is P(y=1)
+        p_true = jnp.where(y_cal == 1, proba_cal, 1 - proba_cal)
+    else:
+        idx = jnp.arange(n_cal)
+        y_int = y_cal.astype(int)
+        p_true = proba_cal[idx, y_int]
+
+    scores = 1.0 - p_true
+
+    # Quantile with finite-sample correction
+    q_level = min((1 - alpha) * (1 + 1 / n_cal), 1.0)
+    quantile = float(jnp.quantile(scores, q_level))
+
+    # Construct prediction sets
+    proba_new = model.predict_proba(X_new)
+    classes = np.asarray(model.classes_)
+    prediction_sets = []
+
+    if proba_new.ndim == 1:
+        # Binary
+        for i in range(len(X_new)):
+            pset = set()
+            if 1 - float(proba_new[i]) <= quantile:
+                pset.add(int(classes[1]))
+            if float(proba_new[i]) <= quantile:
+                pset.add(int(classes[0]))
+            if not pset:
+                pset.add(int(classes[1]) if float(proba_new[i]) >= 0.5 else int(classes[0]))
+            prediction_sets.append(pset)
+    else:
+        for i in range(len(X_new)):
+            pset = set()
+            for k in range(len(classes)):
+                if 1 - float(proba_new[i, k]) <= quantile:
+                    pset.add(int(classes[k]))
+            if not pset:
+                pset.add(int(classes[int(jnp.argmax(proba_new[i]))]))
+            prediction_sets.append(pset)
+
+    y_pred = model.predict(X_new)
+
+    return {
+        "prediction_sets": prediction_sets,
+        "quantile": quantile,
+        "y_pred": y_pred,
+    }
+
+
+def calibration_curve(
+    y_true: jnp.ndarray,
+    y_prob: jnp.ndarray,
+    n_bins: int = 10,
+) -> dict[str, np.ndarray]:
+    """
+    Compute reliability diagram data for binary classification.
+
+    Bins predicted probabilities and computes the observed fraction of
+    positives (``fraction_of_positives``) and the average predicted
+    probability (``mean_predicted_value``) in each bin.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True binary labels.
+    y_prob : jnp.ndarray
+        Predicted probabilities for the positive class.
+    n_bins : int
+        Number of bins.
+
+    Returns
+    -------
+    result : dict
+        Dictionary with keys:
+
+        - ``"fraction_of_positives"``: observed positive rate per bin
+        - ``"mean_predicted_value"``: mean predicted probability per bin
+        - ``"bin_counts"``: number of samples per bin
+    """
+    y_true = np.asarray(y_true).ravel()
+    y_prob = np.asarray(y_prob).ravel()
+
+    bin_edges = np.linspace(0, 1, n_bins + 1)
+    fractions = []
+    means = []
+    counts = []
+
+    for lo, hi in zip(bin_edges[:-1], bin_edges[1:], strict=False):
+        if hi == 1.0:
+            mask = (y_prob >= lo) & (y_prob <= hi)
+        else:
+            mask = (y_prob >= lo) & (y_prob < hi)
+        count = mask.sum()
+        if count > 0:
+            fractions.append(y_true[mask].mean())
+            means.append(y_prob[mask].mean())
+            counts.append(count)
+
+    return {
+        "fraction_of_positives": np.array(fractions),
+        "mean_predicted_value": np.array(means),
+        "bin_counts": np.array(counts),
+    }

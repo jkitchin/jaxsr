@@ -744,3 +744,510 @@ def format_comparison_table(comparison: ModelComparison) -> str:
 
     lines.append("=" * 80)
     return "\n".join(lines)
+
+
+# =============================================================================
+# Classification Information Criteria
+# =============================================================================
+
+
+def compute_classification_ic(
+    n_samples: int,
+    n_params: int,
+    neg_log_likelihood: float,
+    criterion: str = "bic",
+) -> float:
+    """
+    Compute information criterion from Bernoulli negative log-likelihood.
+
+    Unlike regression IC (which starts from MSE/Gaussian likelihood), this
+    uses the Bernoulli log-likelihood directly:
+        AIC = 2*NLL + 2*k
+        BIC = 2*NLL + k*log(n)
+        AICc = AIC + 2*k*(k+1)/(n-k-1)
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples.
+    n_params : int
+        Number of model parameters.
+    neg_log_likelihood : float
+        Negative log-likelihood (sum, not mean).
+    criterion : str
+        One of ``"aic"``, ``"aicc"``, ``"bic"``.
+
+    Returns
+    -------
+    ic : float
+        Information criterion value (lower is better).
+
+    Raises
+    ------
+    ValueError
+        If *criterion* is not one of ``"aic"``, ``"aicc"``, ``"bic"``.
+    """
+    n = n_samples
+    k = n_params
+    nll = neg_log_likelihood
+
+    if criterion == "aic":
+        return 2 * nll + 2 * k
+    elif criterion == "bic":
+        return 2 * nll + k * float(jnp.log(n))
+    elif criterion == "aicc":
+        aic = 2 * nll + 2 * k
+        if n - k - 1 <= 0:
+            return float("inf")
+        return aic + (2 * k * (k + 1)) / (n - k - 1)
+    else:
+        raise ValueError(f"Unknown criterion: {criterion}. Available: ['aic', 'aicc', 'bic']")
+
+
+# =============================================================================
+# Classification Metrics
+# =============================================================================
+
+
+def compute_accuracy(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
+    """
+    Compute classification accuracy.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+
+    Returns
+    -------
+    accuracy : float
+        Fraction of correct predictions.
+    """
+    y_true = jnp.asarray(y_true).ravel()
+    y_pred = jnp.asarray(y_pred).ravel()
+    return float(jnp.mean(y_true == y_pred))
+
+
+def compute_log_loss(
+    y_true: jnp.ndarray,
+    y_pred_proba: jnp.ndarray,
+    eps: float = 1e-15,
+) -> float:
+    """
+    Compute binary or multiclass log-loss (cross-entropy).
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels of shape ``(n,)``.
+    y_pred_proba : jnp.ndarray
+        Predicted probabilities. Shape ``(n,)`` for binary or ``(n, K)``
+        for multiclass.
+    eps : float
+        Clipping bound for numerical safety.
+
+    Returns
+    -------
+    loss : float
+        Mean negative log-likelihood per sample.
+    """
+    y_true = jnp.asarray(y_true).ravel()
+    y_pred_proba = jnp.asarray(y_pred_proba)
+
+    if y_pred_proba.ndim == 1:
+        # Binary case: y_pred_proba is P(y=1)
+        p = jnp.clip(y_pred_proba, eps, 1 - eps)
+        nll = -(y_true * jnp.log(p) + (1 - y_true) * jnp.log(1 - p))
+    else:
+        # Multiclass: y_pred_proba is (n, K)
+        p = jnp.clip(y_pred_proba, eps, 1.0)
+        n = len(y_true)
+        idx = jnp.arange(n)
+        y_int = y_true.astype(int)
+        nll = -jnp.log(p[idx, y_int])
+
+    return float(jnp.mean(nll))
+
+
+def compute_precision(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    pos_label: int = 1,
+) -> float:
+    """
+    Compute precision for a binary classification problem.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+    pos_label : int
+        Label considered as positive.
+
+    Returns
+    -------
+    precision : float
+        TP / (TP + FP). Returns 0.0 when there are no positive predictions.
+    """
+    y_true = jnp.asarray(y_true).ravel()
+    y_pred = jnp.asarray(y_pred).ravel()
+    tp = float(jnp.sum((y_pred == pos_label) & (y_true == pos_label)))
+    fp = float(jnp.sum((y_pred == pos_label) & (y_true != pos_label)))
+    if tp + fp == 0:
+        return 0.0
+    return tp / (tp + fp)
+
+
+def compute_recall(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    pos_label: int = 1,
+) -> float:
+    """
+    Compute recall (sensitivity) for a binary classification problem.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+    pos_label : int
+        Label considered as positive.
+
+    Returns
+    -------
+    recall : float
+        TP / (TP + FN). Returns 0.0 when there are no positive samples.
+    """
+    y_true = jnp.asarray(y_true).ravel()
+    y_pred = jnp.asarray(y_pred).ravel()
+    tp = float(jnp.sum((y_pred == pos_label) & (y_true == pos_label)))
+    fn = float(jnp.sum((y_pred != pos_label) & (y_true == pos_label)))
+    if tp + fn == 0:
+        return 0.0
+    return tp / (tp + fn)
+
+
+def compute_f1_score(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    pos_label: int = 1,
+) -> float:
+    """
+    Compute F1 score (harmonic mean of precision and recall).
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+    pos_label : int
+        Label considered as positive.
+
+    Returns
+    -------
+    f1 : float
+        F1 score. Returns 0.0 when precision + recall = 0.
+    """
+    p = compute_precision(y_true, y_pred, pos_label)
+    r = compute_recall(y_true, y_pred, pos_label)
+    if p + r == 0:
+        return 0.0
+    return 2 * p * r / (p + r)
+
+
+def compute_auc_roc(
+    y_true: jnp.ndarray,
+    y_score: jnp.ndarray,
+) -> float:
+    """
+    Compute Area Under the ROC Curve via the trapezoidal rule.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True binary labels (0 or 1).
+    y_score : jnp.ndarray
+        Predicted scores or probabilities for the positive class.
+
+    Returns
+    -------
+    auc : float
+        AUC-ROC value in ``[0, 1]``.
+
+    Raises
+    ------
+    ValueError
+        If *y_true* contains fewer than two distinct classes.
+    """
+    y_true = np.asarray(y_true).ravel()
+    y_score = np.asarray(y_score).ravel()
+
+    if len(np.unique(y_true)) < 2:
+        raise ValueError("AUC-ROC requires at least two distinct classes in y_true.")
+
+    # Sort by descending score
+    order = np.argsort(-y_score)
+    y_sorted = y_true[order]
+
+    # Compute TPR and FPR at each threshold
+    tps = np.cumsum(y_sorted)
+    fps = np.cumsum(1 - y_sorted)
+
+    total_pos = tps[-1]
+    total_neg = fps[-1]
+
+    if total_pos == 0 or total_neg == 0:
+        return 0.0
+
+    tpr = np.concatenate([[0], tps / total_pos])
+    fpr = np.concatenate([[0], fps / total_neg])
+
+    # Trapezoidal rule
+    auc = float(np.trapz(tpr, fpr))
+    return auc
+
+
+def compute_confusion_matrix(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    n_classes: int | None = None,
+) -> np.ndarray:
+    """
+    Compute the confusion matrix.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+    n_classes : int, optional
+        Number of classes. Inferred from data if ``None``.
+
+    Returns
+    -------
+    cm : np.ndarray
+        Confusion matrix of shape ``(n_classes, n_classes)`` where
+        ``cm[i, j]`` is the count of samples with true label *i* and
+        predicted label *j*.
+    """
+    y_true = np.asarray(y_true).ravel().astype(int)
+    y_pred = np.asarray(y_pred).ravel().astype(int)
+
+    if n_classes is None:
+        n_classes = int(max(y_true.max(), y_pred.max())) + 1
+
+    cm = np.zeros((n_classes, n_classes), dtype=int)
+    for t, p in zip(y_true, y_pred, strict=False):
+        cm[t, p] += 1
+    return cm
+
+
+def compute_matthews_corrcoef(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+) -> float:
+    """
+    Compute Matthews Correlation Coefficient for binary classification.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True binary labels.
+    y_pred : jnp.ndarray
+        Predicted binary labels.
+
+    Returns
+    -------
+    mcc : float
+        MCC in ``[-1, 1]``. Returns 0.0 when the denominator is zero.
+    """
+    cm = compute_confusion_matrix(y_true, y_pred, n_classes=2)
+    tp = float(cm[1, 1])
+    tn = float(cm[0, 0])
+    fp = float(cm[0, 1])
+    fn = float(cm[1, 0])
+
+    denom = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    if denom == 0:
+        return 0.0
+    return (tp * tn - fp * fn) / denom
+
+
+def compute_all_classification_metrics(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    y_pred_proba: jnp.ndarray | None = None,
+    n_params: int = 0,
+) -> dict[str, float]:
+    """
+    Compute a comprehensive suite of classification metrics.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True class labels.
+    y_pred : jnp.ndarray
+        Predicted class labels.
+    y_pred_proba : jnp.ndarray, optional
+        Predicted probabilities (enables log-loss and AUC-ROC).
+    n_params : int
+        Number of model parameters (for IC calculation).
+
+    Returns
+    -------
+    metrics : dict[str, float]
+        Dictionary of metric name to value.
+    """
+    metrics: dict[str, float] = {
+        "accuracy": compute_accuracy(y_true, y_pred),
+        "precision": compute_precision(y_true, y_pred),
+        "recall": compute_recall(y_true, y_pred),
+        "f1": compute_f1_score(y_true, y_pred),
+        "mcc": compute_matthews_corrcoef(y_true, y_pred),
+    }
+
+    if y_pred_proba is not None:
+        metrics["log_loss"] = compute_log_loss(y_true, y_pred_proba)
+        n = len(y_true)
+        nll = metrics["log_loss"] * n
+        metrics["aic"] = compute_classification_ic(n, n_params, nll, "aic")
+        metrics["bic"] = compute_classification_ic(n, n_params, nll, "bic")
+        metrics["aicc"] = compute_classification_ic(n, n_params, nll, "aicc")
+
+        y_proba_arr = jnp.asarray(y_pred_proba)
+        if y_proba_arr.ndim == 1:
+            try:
+                metrics["auc_roc"] = compute_auc_roc(y_true, y_pred_proba)
+            except ValueError:
+                pass
+
+    return metrics
+
+
+def cross_validate_classification(
+    model,
+    X: jnp.ndarray,
+    y: jnp.ndarray,
+    cv: int = 5,
+    scoring: str = "accuracy",
+    random_state: int | None = None,
+) -> dict[str, Any]:
+    """
+    Perform k-fold cross-validation for a classification model.
+
+    Parameters
+    ----------
+    model : SymbolicClassifier
+        Model to evaluate (must implement ``fit`` and ``predict``).
+    X : jnp.ndarray
+        Feature matrix.
+    y : jnp.ndarray
+        Target labels.
+    cv : int
+        Number of folds.
+    scoring : str
+        Scoring metric: ``"accuracy"``, ``"neg_log_loss"``, ``"f1"``.
+    random_state : int, optional
+        Random seed for fold splitting.
+
+    Returns
+    -------
+    results : dict
+        Dictionary with keys ``"test_scores"``, ``"train_scores"``,
+        ``"mean_test_score"``, ``"std_test_score"``,
+        ``"mean_train_score"``, ``"std_train_score"``.
+
+    Raises
+    ------
+    ValueError
+        If *scoring* is not a recognised metric name.
+    """
+    n_samples = X.shape[0]
+    rng = np.random.RandomState(random_state)
+    indices = rng.permutation(n_samples)
+
+    fold_size = n_samples // cv
+    test_scores = []
+    train_scores = []
+
+    def _acc(y_t, y_p, _model):
+        return compute_accuracy(y_t, y_p)
+
+    def _neg_ll(y_t, _y_p, m):
+        return -compute_log_loss(y_t, m.predict_proba(jnp.atleast_2d(jnp.asarray(X))))
+
+    def _f1(y_t, y_p, _model):
+        return compute_f1_score(y_t, y_p)
+
+    scoring_funcs = {
+        "accuracy": _acc,
+        "f1": _f1,
+    }
+
+    if scoring == "neg_log_loss":
+        # Special handling: needs predict_proba, not predict
+        pass
+    elif scoring not in scoring_funcs:
+        raise ValueError(
+            f"Unknown scoring: {scoring}. Available: {list(scoring_funcs.keys()) + ['neg_log_loss']}"
+        )
+
+    for i in range(cv):
+        start_idx = i * fold_size
+        end_idx = start_idx + fold_size if i < cv - 1 else n_samples
+
+        test_idx = indices[start_idx:end_idx]
+        train_idx = np.concatenate([indices[:start_idx], indices[end_idx:]])
+
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Clone and fit model
+        from .classifier import SymbolicClassifier
+
+        model_clone = SymbolicClassifier(
+            basis_library=model.basis_library,
+            max_terms=model.max_terms,
+            strategy=model.strategy,
+            information_criterion=model.information_criterion,
+            regularization=model.regularization,
+            constraints=model.constraints,
+            random_state=model.random_state,
+        )
+        model_clone.fit(X_train, y_train)
+
+        y_pred_test = model_clone.predict(X_test)
+        y_pred_train = model_clone.predict(X_train)
+
+        if scoring == "neg_log_loss":
+            proba_test = model_clone.predict_proba(X_test)
+            proba_train = model_clone.predict_proba(X_train)
+            if proba_test.ndim == 2:
+                proba_test = proba_test[:, 1]
+                proba_train = proba_train[:, 1]
+            test_scores.append(-compute_log_loss(y_test, proba_test))
+            train_scores.append(-compute_log_loss(y_train, proba_train))
+        else:
+            score_func = scoring_funcs[scoring]
+            test_scores.append(score_func(y_test, y_pred_test, model_clone))
+            train_scores.append(score_func(y_train, y_pred_train, model_clone))
+
+    test_scores_arr = np.array(test_scores)
+    train_scores_arr = np.array(train_scores)
+
+    return {
+        "test_scores": test_scores_arr,
+        "train_scores": train_scores_arr,
+        "mean_test_score": float(np.mean(test_scores_arr)),
+        "std_test_score": float(np.std(test_scores_arr)),
+        "mean_train_score": float(np.mean(train_scores_arr)),
+        "std_train_score": float(np.std(train_scores_arr)),
+    }

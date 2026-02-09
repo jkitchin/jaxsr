@@ -7,19 +7,21 @@ Implements multiple strategies for selecting sparse subsets of basis functions:
 - Exhaustive search
 - LASSO path screening
 - Coordinate descent LASSO
+- Logistic (classification) selection via IRLS and FISTA
 """
 
 from __future__ import annotations
 
 import itertools
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 
-from .metrics import compute_information_criterion
+from .metrics import compute_classification_ic, compute_information_criterion
 
 # =============================================================================
 # Data Structures
@@ -1277,6 +1279,962 @@ def select_features(
         "greedy_backward": greedy_backward_elimination,
         "exhaustive": exhaustive_search,
         "lasso_path": lasso_path_selection,
+    }
+
+    if strategy not in strategies:
+        raise ValueError(f"Unknown strategy: {strategy}. Available: {list(strategies.keys())}")
+
+    return strategies[strategy](
+        Phi=Phi,
+        y=y,
+        basis_names=basis_names,
+        complexities=complexities,
+        max_terms=max_terms,
+        information_criterion=information_criterion,
+        **kwargs,
+    )
+
+
+# =============================================================================
+# Classification Data Structures
+# =============================================================================
+
+
+@dataclass
+class ClassificationResult:
+    """
+    Result of model selection for a single logistic model.
+
+    Parameters
+    ----------
+    coefficients : jnp.ndarray
+        Fitted coefficients for selected features.
+    selected_indices : jnp.ndarray
+        Indices of selected basis functions.
+    selected_names : list of str
+        Names of selected basis functions.
+    neg_log_likelihood : float
+        Negative log-likelihood (sum, not mean).
+    complexity : int
+        Total complexity score.
+    aic : float
+        Akaike Information Criterion (from Bernoulli likelihood).
+    bic : float
+        Bayesian Information Criterion.
+    aicc : float
+        Corrected AIC.
+    n_samples : int
+        Number of training samples.
+    n_iter : int
+        Number of IRLS iterations used.
+    converged : bool
+        Whether IRLS converged within tolerance.
+    """
+
+    coefficients: jnp.ndarray
+    selected_indices: jnp.ndarray
+    selected_names: list[str]
+    neg_log_likelihood: float
+    complexity: int
+    aic: float
+    bic: float
+    aicc: float
+    n_samples: int
+    n_iter: int = 0
+    converged: bool = True
+
+    def expression(self) -> str:
+        """Return human-readable expression for the linear predictor."""
+        from .utils import build_expression_string
+
+        return build_expression_string(self.coefficients, self.selected_names)
+
+    @property
+    def n_terms(self) -> int:
+        """Number of terms in the model."""
+        return len(self.selected_indices)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            "coefficients": np.array(self.coefficients).tolist(),
+            "selected_indices": np.array(self.selected_indices).tolist(),
+            "selected_names": self.selected_names,
+            "neg_log_likelihood": self.neg_log_likelihood,
+            "complexity": self.complexity,
+            "aic": self.aic,
+            "bic": self.bic,
+            "aicc": self.aicc,
+            "n_samples": self.n_samples,
+            "n_iter": self.n_iter,
+            "converged": self.converged,
+        }
+
+
+@dataclass
+class ClassificationPath:
+    """
+    Full path of classification model selection.
+
+    Parameters
+    ----------
+    results : list of ClassificationResult
+        Results at each step.
+    strategy : str
+        Selection strategy used.
+    best_index : int
+        Index of best model according to information criterion.
+    """
+
+    results: list[ClassificationResult]
+    strategy: str
+    best_index: int
+
+    @property
+    def best(self) -> ClassificationResult:
+        """Return the best model."""
+        return self.results[self.best_index]
+
+
+# =============================================================================
+# IRLS (Iteratively Reweighted Least Squares) for Logistic Regression
+# =============================================================================
+
+
+def _sigmoid(eta: jnp.ndarray) -> jnp.ndarray:
+    """Numerically stable sigmoid function."""
+    return jnp.where(
+        eta >= 0,
+        1.0 / (1.0 + jnp.exp(-eta)),
+        jnp.exp(eta) / (1.0 + jnp.exp(eta)),
+    )
+
+
+def fit_irls(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+    regularization: float | None = None,
+) -> tuple[jnp.ndarray, float, int, bool]:
+    """
+    Fit logistic regression via Iteratively Reweighted Least Squares.
+
+    Solves binary logistic regression by iteratively solving weighted
+    least-squares problems.  Each iteration has quadratic convergence
+    near the optimum.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix of shape ``(n, p)``.
+    y : jnp.ndarray
+        Binary labels in ``{0, 1}`` of shape ``(n,)``.
+    max_iter : int
+        Maximum number of IRLS iterations.
+    tol : float
+        Convergence tolerance on ``max(|w_new - w_old|)``.
+    regularization : float, optional
+        L2 ridge penalty to add to the diagonal of the weighted
+        normal equations.  Helps when data are (nearly) separable.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray
+        Fitted coefficient vector of shape ``(p,)``.
+    nll : float
+        Negative log-likelihood (sum, not mean).
+    n_iter : int
+        Number of iterations performed.
+    converged : bool
+        Whether the algorithm converged within *tol*.
+    """
+    n, p = Phi.shape
+    w = jnp.zeros(p)
+    _eps = 1e-10
+
+    converged = False
+    n_iter = 0
+
+    for it in range(max_iter):
+        n_iter = it + 1
+        eta = Phi @ w
+        mu = _sigmoid(eta)
+        mu = jnp.clip(mu, _eps, 1.0 - _eps)
+
+        # Working weights and working response
+        W_diag = mu * (1.0 - mu)
+        z = eta + (y - mu) / W_diag
+
+        # sqrt-W formulation for stability: solve ||sqrt(W)*(z - Phi@w)||^2
+        sqrt_W = jnp.sqrt(W_diag)
+        Phi_w = Phi * sqrt_W[:, None]
+        z_w = z * sqrt_W
+
+        if regularization is not None and regularization > 0:
+            # Augment system for L2 penalty
+            aug_Phi = jnp.vstack([Phi_w, jnp.sqrt(regularization) * jnp.eye(p)])
+            aug_z = jnp.concatenate([z_w, jnp.zeros(p)])
+            w_new = jnp.linalg.lstsq(aug_Phi, aug_z, rcond=None)[0]
+        else:
+            w_new = jnp.linalg.lstsq(Phi_w, z_w, rcond=None)[0]
+
+        # Check convergence
+        if jnp.max(jnp.abs(w_new - w)) < tol:
+            w = w_new
+            converged = True
+            break
+
+        w = w_new
+
+    # Complete separation detection
+    if jnp.max(jnp.abs(w)) > 20:
+        warnings.warn(
+            "Large coefficients detected (max |w| > 20), which may indicate "
+            "complete or quasi-complete separation. Consider adding "
+            "regularization.",
+            stacklevel=2,
+        )
+
+    # Compute negative log-likelihood
+    eta = Phi @ w
+    mu = _sigmoid(eta)
+    mu = jnp.clip(mu, _eps, 1.0 - _eps)
+    nll = -float(jnp.sum(y * jnp.log(mu) + (1 - y) * jnp.log(1 - mu)))
+
+    return w, nll, n_iter, converged
+
+
+# =============================================================================
+# FISTA for L1-penalised Logistic Regression
+# =============================================================================
+
+
+def fit_logistic_lasso(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    alpha: float,
+    l1_ratio: float = 1.0,
+    max_iter: int = 500,
+    tol: float = 1e-6,
+    warm_start: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """
+    L1/elastic-net penalised logistic regression via FISTA.
+
+    Minimises::
+
+        (1/n) * NLL(w) + alpha * (l1_ratio * ||w||_1
+                                   + (1-l1_ratio)/2 * ||w||_2^2)
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix of shape ``(n, p)``.
+    y : jnp.ndarray
+        Binary labels of shape ``(n,)``.
+    alpha : float
+        Overall regularisation strength.
+    l1_ratio : float
+        Mix between L1 (1.0) and L2 (0.0).
+    max_iter : int
+        Maximum FISTA iterations.
+    tol : float
+        Convergence tolerance.
+    warm_start : jnp.ndarray, optional
+        Initial coefficient vector.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray
+        Fitted (sparse) coefficient vector.
+    """
+    n, p = Phi.shape
+    _eps = 1e-10
+
+    if warm_start is not None:
+        w = jnp.array(warm_start)
+    else:
+        w = jnp.zeros(p)
+
+    l1_pen = alpha * l1_ratio
+    l2_pen = alpha * (1 - l1_ratio)
+
+    # Backtracking line search parameters
+    L = 1.0  # initial Lipschitz estimate
+    beta_bt = 0.5  # backtracking factor
+
+    # Nesterov acceleration state
+    w_prev = w
+    t = 1.0
+
+    for _it in range(max_iter):
+        # Momentum point
+        w_mom = w + ((t - 1.0) / (t + 2.0)) * (w - w_prev)
+
+        # Gradient of smooth part at momentum point
+        eta = Phi @ w_mom
+        mu = _sigmoid(eta)
+        mu = jnp.clip(mu, _eps, 1.0 - _eps)
+        grad = (1.0 / n) * (Phi.T @ (mu - y)) + l2_pen * w_mom
+
+        # Backtracking line search for step size
+        for _bt in range(20):
+            step = 1.0 / L
+            # Proximal (soft-thresholding) step
+            w_cand = w_mom - step * grad
+            w_cand = jnp.sign(w_cand) * jnp.maximum(jnp.abs(w_cand) - step * l1_pen, 0.0)
+
+            # Check sufficient decrease
+            eta_cand = Phi @ w_cand
+            mu_cand = _sigmoid(eta_cand)
+            mu_cand = jnp.clip(mu_cand, _eps, 1.0 - _eps)
+            f_cand = -(1.0 / n) * jnp.sum(
+                y * jnp.log(mu_cand) + (1 - y) * jnp.log(1 - mu_cand)
+            ) + 0.5 * l2_pen * jnp.sum(w_cand**2)
+
+            f_mom = -(1.0 / n) * jnp.sum(
+                y * jnp.log(mu) + (1 - y) * jnp.log(1 - mu)
+            ) + 0.5 * l2_pen * jnp.sum(w_mom**2)
+
+            diff = w_cand - w_mom
+            quad_approx = f_mom + jnp.sum(grad * diff) + 0.5 * L * jnp.sum(diff**2)
+
+            if float(f_cand) <= float(quad_approx) + 1e-12:
+                break
+            L = L / beta_bt
+
+        w_prev = w
+        w = w_cand
+
+        # Nesterov step update
+        t_new = (1.0 + np.sqrt(1.0 + 4.0 * t**2)) / 2.0
+        t = t_new
+
+        # Convergence check
+        if jnp.max(jnp.abs(w - w_prev)) < tol:
+            break
+
+    return w
+
+
+# =============================================================================
+# Classification Subset Fitting
+# =============================================================================
+
+
+def fit_classification_subset(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    indices: list[int] | jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    information_criterion: str = "bic",
+    regularization: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> ClassificationResult:
+    """
+    Fit a logistic regression model on a subset of basis functions.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Full design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    indices : array-like
+        Indices of selected basis functions.
+    basis_names : list of str
+        Names of all basis functions.
+    complexities : jnp.ndarray
+        Complexity scores for all basis functions.
+    information_criterion : str
+        IC for model evaluation.
+    regularization : float, optional
+        L2 regularisation strength.
+    max_iter : int
+        Maximum IRLS iterations.
+    tol : float
+        IRLS convergence tolerance.
+
+    Returns
+    -------
+    result : ClassificationResult
+        Fitting result.
+    """
+    indices = jnp.array(indices)
+    Phi_subset = Phi[:, indices]
+
+    coeffs, nll, n_iter, converged = fit_irls(
+        Phi_subset, y, max_iter=max_iter, tol=tol, regularization=regularization
+    )
+
+    n = len(y)
+    k = len(indices)
+    complexity = int(jnp.sum(complexities[indices]))
+
+    return ClassificationResult(
+        coefficients=coeffs,
+        selected_indices=indices,
+        selected_names=[basis_names[int(i)] for i in indices],
+        neg_log_likelihood=nll,
+        complexity=complexity,
+        aic=compute_classification_ic(n, k, nll, "aic"),
+        bic=compute_classification_ic(n, k, nll, "bic"),
+        aicc=compute_classification_ic(n, k, nll, "aicc"),
+        n_samples=n,
+        n_iter=n_iter,
+        converged=converged,
+    )
+
+
+# =============================================================================
+# Classification Selection Strategies
+# =============================================================================
+
+
+def greedy_forward_classification(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    max_terms: int = 5,
+    information_criterion: str = "bic",
+    early_stop: bool = True,
+    candidate_indices: list[int] | None = None,
+    regularization: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> ClassificationPath:
+    """
+    Greedy forward stepwise selection for logistic regression.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    basis_names : list of str
+        Names of basis functions.
+    complexities : jnp.ndarray
+        Complexity scores.
+    max_terms : int
+        Maximum number of terms.
+    information_criterion : str
+        Criterion for selection (``"aic"``, ``"bic"``, ``"aicc"``).
+    early_stop : bool
+        If ``True``, stop when IC stops improving.
+    candidate_indices : list of int, optional
+        Indices of candidate basis functions to consider.
+    regularization : float, optional
+        L2 regularisation strength.
+    max_iter : int
+        Maximum IRLS iterations.
+    tol : float
+        IRLS convergence tolerance.
+
+    Returns
+    -------
+    path : ClassificationPath
+        Selection path with all intermediate results.
+    """
+    n_basis = Phi.shape[1]
+
+    if candidate_indices is None:
+        available = set(range(n_basis))
+    else:
+        available = set(candidate_indices)
+
+    selected: list[int] = []
+    results: list[ClassificationResult] = []
+
+    current_ic = float("inf")
+    best_ic = float("inf")
+    best_index = -1
+
+    for _step in range(min(max_terms, len(available))):
+        best_step_ic = float("inf")
+        best_idx = None
+        best_result = None
+
+        for idx in available:
+            candidate = selected + [idx]
+            result = fit_classification_subset(
+                Phi,
+                y,
+                candidate,
+                basis_names,
+                complexities,
+                information_criterion,
+                regularization,
+                max_iter,
+                tol,
+            )
+            ic_value = getattr(result, information_criterion)
+            if ic_value < best_step_ic:
+                best_step_ic = ic_value
+                best_idx = idx
+                best_result = result
+
+        if best_result is None:
+            break
+
+        if early_stop and best_step_ic >= current_ic:
+            break
+
+        selected.append(best_idx)
+        available.remove(best_idx)
+        current_ic = best_step_ic
+        results.append(best_result)
+
+        if best_step_ic < best_ic:
+            best_ic = best_step_ic
+            best_index = len(results) - 1
+
+    if not results:
+        # Fallback: fit first available feature
+        const_idx = [i for i, name in enumerate(basis_names) if name == "1"]
+        idx = const_idx[0] if const_idx else (list(available)[0] if available else 0)
+        result = fit_classification_subset(
+            Phi,
+            y,
+            [idx],
+            basis_names,
+            complexities,
+            information_criterion,
+            regularization,
+            max_iter,
+            tol,
+        )
+        results = [result]
+        best_index = 0
+
+    return ClassificationPath(
+        results=results,
+        strategy="greedy_forward",
+        best_index=max(0, best_index),
+    )
+
+
+def greedy_backward_classification(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    min_terms: int = 1,
+    information_criterion: str = "bic",
+    start_indices: list[int] | None = None,
+    max_terms: int = 5,
+    regularization: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> ClassificationPath:
+    """
+    Greedy backward elimination for logistic regression.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    basis_names : list of str
+        Names of basis functions.
+    complexities : jnp.ndarray
+        Complexity scores.
+    min_terms : int
+        Minimum number of terms to keep.
+    information_criterion : str
+        Criterion for selection.
+    start_indices : list of int, optional
+        Starting indices. If ``None``, uses all basis functions.
+    max_terms : int
+        For API compatibility.
+    regularization : float, optional
+        L2 regularisation strength.
+    max_iter : int
+        Maximum IRLS iterations.
+    tol : float
+        IRLS convergence tolerance.
+
+    Returns
+    -------
+    path : ClassificationPath
+        Selection path.
+    """
+    n_basis = Phi.shape[1]
+
+    if start_indices is None:
+        selected = list(range(n_basis))
+    else:
+        selected = list(start_indices)
+
+    results: list[ClassificationResult] = []
+    best_ic = float("inf")
+    best_index = -1
+
+    result = fit_classification_subset(
+        Phi,
+        y,
+        selected,
+        basis_names,
+        complexities,
+        information_criterion,
+        regularization,
+        max_iter,
+        tol,
+    )
+    results.append(result)
+    current_ic = getattr(result, information_criterion)
+    if current_ic < best_ic:
+        best_ic = current_ic
+        best_index = 0
+
+    while len(selected) > min_terms:
+        best_step_ic = float("inf")
+        worst_idx = None
+        best_result = None
+
+        for i, _idx in enumerate(selected):
+            candidate = selected[:i] + selected[i + 1 :]
+            if not candidate:
+                continue
+            result = fit_classification_subset(
+                Phi,
+                y,
+                candidate,
+                basis_names,
+                complexities,
+                information_criterion,
+                regularization,
+                max_iter,
+                tol,
+            )
+            ic_value = getattr(result, information_criterion)
+            if ic_value < best_step_ic:
+                best_step_ic = ic_value
+                worst_idx = i
+                best_result = result
+
+        if best_step_ic >= current_ic:
+            break
+
+        selected.pop(worst_idx)
+        current_ic = best_step_ic
+        results.append(best_result)
+
+        if best_step_ic < best_ic:
+            best_ic = best_step_ic
+            best_index = len(results) - 1
+
+    return ClassificationPath(
+        results=results,
+        strategy="greedy_backward",
+        best_index=max(0, best_index),
+    )
+
+
+def exhaustive_classification(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    max_terms: int = 5,
+    information_criterion: str = "bic",
+    candidate_indices: list[int] | None = None,
+    max_combinations: int = 100000,
+    regularization: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> ClassificationPath:
+    """
+    Exhaustive search over all combinations for logistic regression.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    basis_names : list of str
+        Names of basis functions.
+    complexities : jnp.ndarray
+        Complexity scores.
+    max_terms : int
+        Maximum number of terms.
+    information_criterion : str
+        Criterion for selection.
+    candidate_indices : list of int, optional
+        Indices to consider.
+    max_combinations : int
+        Safety limit on combinations.
+    regularization : float, optional
+        L2 regularisation strength.
+    max_iter : int
+        Maximum IRLS iterations.
+    tol : float
+        IRLS convergence tolerance.
+
+    Returns
+    -------
+    path : ClassificationPath
+        Selection path.
+
+    Raises
+    ------
+    ValueError
+        If too many combinations would be evaluated.
+    """
+    if candidate_indices is None:
+        candidate_indices = list(range(Phi.shape[1]))
+
+    n_candidates = len(candidate_indices)
+    total = sum(math.comb(n_candidates, k) for k in range(1, min(max_terms, n_candidates) + 1))
+    if total > max_combinations:
+        raise ValueError(
+            f"Exhaustive search would evaluate {total} combinations, "
+            f"exceeding limit of {max_combinations}."
+        )
+
+    results: list[ClassificationResult] = []
+    best_ic = float("inf")
+    best_index = -1
+
+    for k in range(1, min(max_terms, n_candidates) + 1):
+        for combo in itertools.combinations(candidate_indices, k):
+            result = fit_classification_subset(
+                Phi,
+                y,
+                list(combo),
+                basis_names,
+                complexities,
+                information_criterion,
+                regularization,
+                max_iter,
+                tol,
+            )
+            results.append(result)
+            ic_value = getattr(result, information_criterion)
+            if ic_value < best_ic:
+                best_ic = ic_value
+                best_index = len(results) - 1
+
+    return ClassificationPath(
+        results=results,
+        strategy="exhaustive",
+        best_index=best_index,
+    )
+
+
+def lasso_path_classification(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    max_terms: int = 5,
+    information_criterion: str = "bic",
+    n_alphas: int = 50,
+    alpha_min_ratio: float = 1e-3,
+    regularization: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> ClassificationPath:
+    """
+    LASSO path screening for logistic classification.
+
+    Traces an L1-penalised logistic regression path, identifies unique
+    active sets, and refits each with IRLS for unbiased IC comparison.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    basis_names : list of str
+        Names of basis functions.
+    complexities : jnp.ndarray
+        Complexity scores.
+    max_terms : int
+        Maximum number of terms.
+    information_criterion : str
+        Criterion for selection.
+    n_alphas : int
+        Number of regularisation values.
+    alpha_min_ratio : float
+        Ratio of minimum to maximum alpha.
+    regularization : float, optional
+        L2 regularisation for IRLS refitting.
+    max_iter : int
+        Maximum IRLS iterations.
+    tol : float
+        IRLS convergence tolerance.
+
+    Returns
+    -------
+    path : ClassificationPath
+        Selection path.
+    """
+    n, p = Phi.shape
+
+    # Compute alpha_max: gradient of NLL at w=0
+    mu0 = jnp.mean(y)
+    grad0 = (1.0 / n) * jnp.abs(Phi.T @ (mu0 - y))
+    alpha_max = float(jnp.max(grad0))
+    alpha_min = alpha_max * alpha_min_ratio
+
+    alphas = jnp.logspace(jnp.log10(alpha_max), jnp.log10(alpha_min), n_alphas)
+
+    seen_subsets: set = set()
+    results: list[ClassificationResult] = []
+    best_ic = float("inf")
+    best_index = -1
+
+    w = jnp.zeros(p)
+
+    for alpha_val in alphas:
+        w = fit_logistic_lasso(Phi, y, float(alpha_val), warm_start=w)
+        active = jnp.where(jnp.abs(w) > 1e-8)[0]
+
+        if len(active) == 0 or len(active) > max_terms:
+            continue
+
+        subset_key = tuple(sorted(int(i) for i in active))
+        if subset_key in seen_subsets:
+            continue
+        seen_subsets.add(subset_key)
+
+        # Refit with IRLS
+        result = fit_classification_subset(
+            Phi,
+            y,
+            list(active),
+            basis_names,
+            complexities,
+            information_criterion,
+            regularization,
+            max_iter,
+            tol,
+        )
+        results.append(result)
+
+        ic_value = getattr(result, information_criterion)
+        if ic_value < best_ic:
+            best_ic = ic_value
+            best_index = len(results) - 1
+
+    if not results:
+        return greedy_forward_classification(
+            Phi,
+            y,
+            basis_names,
+            complexities,
+            max_terms,
+            information_criterion,
+            regularization=regularization,
+            max_iter=max_iter,
+            tol=tol,
+        )
+
+    return ClassificationPath(
+        results=results,
+        strategy="lasso_path",
+        best_index=best_index,
+    )
+
+
+# =============================================================================
+# Classification Pareto Front
+# =============================================================================
+
+
+def compute_pareto_front_classification(
+    results: list[ClassificationResult],
+) -> list[ClassificationResult]:
+    """
+    Extract Pareto-optimal classification models (complexity vs NLL).
+
+    Parameters
+    ----------
+    results : list of ClassificationResult
+        All candidate models.
+
+    Returns
+    -------
+    pareto : list of ClassificationResult
+        Pareto-optimal models sorted by complexity.
+    """
+    if not results:
+        return []
+
+    sorted_results = sorted(results, key=lambda r: (r.complexity, r.neg_log_likelihood))
+
+    pareto = []
+    best_nll = float("inf")
+
+    for r in sorted_results:
+        if r.neg_log_likelihood < best_nll:
+            pareto.append(r)
+            best_nll = r.neg_log_likelihood
+
+    return pareto
+
+
+# =============================================================================
+# Classification Selection Dispatcher
+# =============================================================================
+
+
+def select_features_classification(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    strategy: str = "greedy_forward",
+    max_terms: int = 5,
+    information_criterion: str = "bic",
+    **kwargs,
+) -> ClassificationPath:
+    """
+    Run classification feature selection with the specified strategy.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix.
+    y : jnp.ndarray
+        Binary labels.
+    basis_names : list of str
+        Names of basis functions.
+    complexities : jnp.ndarray
+        Complexity scores.
+    strategy : str
+        One of ``"greedy_forward"``, ``"greedy_backward"``,
+        ``"exhaustive"``, ``"lasso_path"``.
+    max_terms : int
+        Maximum number of terms.
+    information_criterion : str
+        Information criterion for model selection.
+    **kwargs
+        Additional arguments for specific strategies.
+
+    Returns
+    -------
+    path : ClassificationPath
+        Selection results.
+
+    Raises
+    ------
+    ValueError
+        If *strategy* is not recognised.
+    """
+    strategies = {
+        "greedy_forward": greedy_forward_classification,
+        "greedy_backward": greedy_backward_classification,
+        "exhaustive": exhaustive_classification,
+        "lasso_path": lasso_path_classification,
     }
 
     if strategy not in strategies:

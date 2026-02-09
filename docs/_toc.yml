@@ -23,6 +23,7 @@ parts:
       - file: examples/categorical_variables
       - file: examples/doe_study_workflow
       - file: examples/ode_discovery
+      - file: examples/symbolic_classification
       - file: examples/comprehensive_tutorial
 
   - caption: Reference
