@@ -15,6 +15,9 @@ import numpy as np
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
 
+# NumPy 2.0 renamed trapz -> trapezoid
+_np_trapezoid = getattr(np, "trapezoid", getattr(np, "trapz", None))
+
 
 # =============================================================================
 # Information Criteria
@@ -1010,7 +1013,7 @@ def compute_auc_roc(
     fpr = np.concatenate([[0], fps / total_neg])
 
     # Trapezoidal rule
-    auc = float(np.trapz(tpr, fpr))
+    auc = float(_np_trapezoid(tpr, fpr))
     return auc
 
 
