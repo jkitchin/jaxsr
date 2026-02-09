@@ -17,6 +17,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **Physical Constraints**: Enforce monotonicity, bounds, convexity, and linear constraints
 - **Adaptive Sampling**: Intelligently suggest new data points to improve model quality
 - **JAX-Accelerated**: JIT compilation and GPU support for fast computation
+- **Symbolic Classification**: Discover interpretable logistic models for binary and multiclass problems via IRLS + sparse selection
 - **Scikit-learn Compatible**: Familiar `fit`/`predict` interface
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
 
@@ -212,6 +213,42 @@ print(f"Ensemble std: {result['y_std']}")
 from jaxsr import bootstrap_predict
 result = bootstrap_predict(model, X_new, n_bootstrap=1000)
 ```
+
+## Symbolic Classification
+
+JAXSR also supports interpretable classification — discover sparse logistic models that explain class boundaries:
+
+```python
+import jax.numpy as jnp
+import numpy as np
+from jaxsr import BasisLibrary, SymbolicClassifier
+
+# Generate binary classification data
+np.random.seed(42)
+X = np.random.randn(200, 2)
+y = (X[:, 0] + 0.5 * X[:, 1] ** 2 > 0).astype(float)
+
+# Build basis library and fit classifier
+library = (BasisLibrary(n_features=2, feature_names=["x0", "x1"])
+    .add_constant()
+    .add_linear()
+    .add_polynomials(max_degree=3)
+    .add_interactions(max_order=2)
+)
+
+clf = SymbolicClassifier(basis_library=library, max_terms=4, strategy="greedy_forward")
+clf.fit(jnp.array(X), jnp.array(y))
+
+# Results
+print(f"Expression: {clf.expression_}")
+print(f"Accuracy: {clf.score(jnp.array(X), jnp.array(y)):.4f}")
+
+# Probabilities and class predictions
+proba = clf.predict_proba(jnp.array(X))
+y_pred = clf.predict(jnp.array(X))
+```
+
+Multiclass problems are handled automatically via one-vs-rest (OVR), giving each class its own interpretable expression. The classifier also supports coefficient intervals, conformal prediction sets, SymPy/LaTeX export, and save/load.
 
 ## Visualization
 
