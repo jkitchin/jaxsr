@@ -1,9 +1,12 @@
 VENV := .venv
 UV := uv
 PYTHON := $(VENV)/bin/python
-NOTEBOOKS := $(shell find . -name '*.ipynb' -not -path './.ipynb_checkpoints/*' -not -path './.venv/*')
+NOTEBOOKS := $(shell find ./examples ./docs -name '*.ipynb' -not -name 'gpu_benchmarks.ipynb' -not -path './.ipynb_checkpoints/*' -not -path './.venv/*' -not -path './docs/_build/*')
+GPU_NOTEBOOK := examples/gpu_benchmarks.ipynb
+NB_STAMP_DIR := .nb_stamps
+NB_STAMPS := $(patsubst %.ipynb,$(NB_STAMP_DIR)/%.stamp,$(NOTEBOOKS))
 
-.PHONY: venv install install-all test lint format check notebooks docs docs-clean clean
+.PHONY: venv install install-all test lint format check notebooks notebooks-all notebooks-gpu docs docs-clean clean
 
 # --- Environment ---
 
@@ -33,11 +36,20 @@ check: lint test
 
 # --- Notebooks & Docs ---
 
-notebooks:
-	@for nb in $(NOTEBOOKS); do \
-		echo "Running $$nb"; \
-		JAX_PLATFORMS=cpu $(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace "$$nb" || exit 1; \
-	done
+notebooks: $(NB_STAMPS)
+
+$(NB_STAMP_DIR)/%.stamp: %.ipynb
+	@mkdir -p $(dir $@)
+	JAX_PLATFORMS=cpu $(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace "$<"
+	@touch "$@"
+
+notebooks-all:
+	@rm -rf $(NB_STAMP_DIR)
+	$(MAKE) notebooks
+
+notebooks-gpu:
+	@echo "Running $(GPU_NOTEBOOK)"
+	$(PYTHON) -m jupyter nbconvert --to notebook --execute --inplace "$(GPU_NOTEBOOK)"
 
 docs:
 	JAX_PLATFORMS=cpu $(PYTHON) -m jupyter_book build docs/
@@ -48,5 +60,5 @@ docs-clean:
 # --- Cleanup ---
 
 clean:
-	rm -rf $(VENV) htmlcov .pytest_cache .mypy_cache .ruff_cache
+	rm -rf $(VENV) htmlcov .pytest_cache .mypy_cache .ruff_cache $(NB_STAMP_DIR)
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
