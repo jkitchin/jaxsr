@@ -1797,7 +1797,10 @@ def _fit_qp_exact(
     # OSQP is fast but may be less accurate for equality constraints
     # SCS is a robust fallback
     solvers_to_try = [
-        (cp.CLARABEL, {"tol_gap_abs": 1e-10, "tol_gap_rel": 1e-10, "tol_feas": 1e-10, "max_iter": 200}),
+        (
+            cp.CLARABEL,
+            {"tol_gap_abs": 1e-10, "tol_gap_rel": 1e-10, "tol_feas": 1e-10, "max_iter": 200},
+        ),
         (cp.OSQP, {"eps_abs": 1e-9, "eps_rel": 1e-9, "max_iter": 10000}),
         (cp.SCS, {"eps_abs": 1e-9, "eps_rel": 1e-9, "max_iters": 5000}),
     ]
