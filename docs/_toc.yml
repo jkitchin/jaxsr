@@ -22,9 +22,12 @@ parts:
       - file: examples/active_learning
       - file: examples/categorical_variables
       - file: examples/doe_study_workflow
-      - file: examples/ode_discovery
-      - file: examples/symbolic_classification
       - file: examples/comprehensive_tutorial
+      - file: examples/constraint_enforcement
+      - file: examples/langmuir_doe_active_learning
+      - file: examples/model_comparison_isotherms
+      - file: examples/rsm_formulation
+      - file: examples/serialization_and_sharing
 
   - caption: Reference
     chapters:

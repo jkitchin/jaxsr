@@ -11,6 +11,7 @@ Provides functionality to incorporate domain knowledge through:
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1767,27 +1768,76 @@ def _fit_qp_exact(
         lb = lin_constraint.lb
         ub = lin_constraint.ub
 
+        # Separate equality and inequality constraints for better numerical stability
         finite_lb = np.isfinite(lb)
         finite_ub = np.isfinite(ub)
+        both_finite = finite_lb & finite_ub
 
-        if np.any(finite_lb):
-            rows_lb = np.where(finite_lb)[0]
+        # Equality constraints: rows where lb == ub
+        eq_mask = both_finite & (np.abs(lb - ub) < 1e-14)
+        if np.any(eq_mask):
+            eq_rows = np.where(eq_mask)[0]
+            cp_constraints.append(G_free[eq_rows] @ c == lb[eq_rows])
+
+        # Inequality constraints: rows where lb != ub
+        ineq_lb_mask = finite_lb & ~eq_mask
+        ineq_ub_mask = finite_ub & ~eq_mask
+
+        if np.any(ineq_lb_mask):
+            rows_lb = np.where(ineq_lb_mask)[0]
             cp_constraints.append(G_free[rows_lb] @ c >= lb[rows_lb])
-        if np.any(finite_ub):
-            rows_ub = np.where(finite_ub)[0]
+        if np.any(ineq_ub_mask):
+            rows_ub = np.where(ineq_ub_mask)[0]
             cp_constraints.append(G_free[rows_ub] @ c <= ub[rows_ub])
 
     problem = cp.Problem(objective, cp_constraints)
 
-    # Solve with OSQP first, fall back to SCS
-    problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
-    if problem.status not in ("optimal", "optimal_inaccurate"):
-        problem.solve(solver=cp.SCS, verbose=False)
+    # Try multiple solvers with tight tolerances for accurate constraint satisfaction
+    # CLARABEL is a modern solver with good accuracy for equality constraints
+    # OSQP is fast but may be less accurate for equality constraints
+    # SCS is a robust fallback
+    solvers_to_try = [
+        (cp.CLARABEL, {"tol_gap_abs": 1e-10, "tol_gap_rel": 1e-10, "tol_feas": 1e-10, "max_iter": 200}),
+        (cp.OSQP, {"eps_abs": 1e-9, "eps_rel": 1e-9, "max_iter": 10000}),
+        (cp.SCS, {"eps_abs": 1e-9, "eps_rel": 1e-9, "max_iters": 5000}),
+    ]
 
-    if problem.status not in ("optimal", "optimal_inaccurate"):
+    best_status = None
+    solved = False
+    for solver, kwargs in solvers_to_try:
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Solution may be inaccurate")
+                problem.solve(solver=solver, **kwargs, verbose=False)
+
+            if problem.status == "optimal":
+                # Found exact solution, use it
+                best_status = problem.status
+                solved = True
+                break
+            elif problem.status == "optimal_inaccurate" and not solved:
+                # Save this in case we don't find better
+                best_status = problem.status
+                solved = True
+                # Continue trying other solvers
+        except (cp.SolverError, Exception):
+            # Solver failed, try next one
+            continue
+
+    if not solved or problem.status not in ("optimal", "optimal_inaccurate"):
         raise RuntimeError(
             f"QP solver returned status '{problem.status}'. "
             "The constrained problem may be infeasible."
+        )
+
+    # Warn if we only got an inaccurate solution
+    if best_status == "optimal_inaccurate":
+        warnings.warn(
+            "QP solver could only find an approximate solution. "
+            "Constraint violations may be larger than expected. "
+            "Consider using enforcement='constrained' instead.",
+            UserWarning,
+            stacklevel=2,
         )
 
     coeffs_free_opt = np.array(c.value).flatten()
