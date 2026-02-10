@@ -190,6 +190,192 @@ def fit_ridge(
     return coeffs, mse
 
 
+# =============================================================================
+# Gram Matrix Precomputation Helpers
+# =============================================================================
+
+
+def _precompute_gram(
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    regularization: float | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, float, jnp.ndarray, jnp.ndarray]:
+    """
+    Precompute Gram matrix products for fast subset solving.
+
+    Computes ``Phi^T @ Phi``, ``Phi^T @ y``, and ``y^T @ y`` once so that
+    each subset solve only requires extracting a small k-by-k submatrix and
+    solving the normal equations. The original ``Phi`` and ``y`` are also
+    returned as a fallback for residual-based MSE in float32.
+
+    Parameters
+    ----------
+    Phi : jnp.ndarray
+        Design matrix of shape ``(n_samples, n_basis)``.
+    y : jnp.ndarray
+        Target vector of shape ``(n_samples,)``.
+    regularization : float, optional
+        L2 regularization strength. If positive, ``alpha * I`` is added to the
+        Gram matrix diagonal.
+
+    Returns
+    -------
+    PhiTPhi : jnp.ndarray
+        Gram matrix of shape ``(n_basis, n_basis)``, with ridge term if applicable.
+    PhiTy : jnp.ndarray
+        Cross-product vector of shape ``(n_basis,)``.
+    yTy : float
+        Scalar ``y^T @ y`` (used for closed-form MSE in float64).
+    Phi : jnp.ndarray
+        Original design matrix (used for residual MSE in float32).
+    y : jnp.ndarray
+        Original target vector (used for residual MSE in float32).
+    """
+    PhiTPhi = Phi.T @ Phi
+    PhiTy = Phi.T @ y
+    yTy = float(y @ y)
+
+    if regularization is not None and regularization > 0:
+        PhiTPhi = PhiTPhi + regularization * jnp.eye(PhiTPhi.shape[0])
+
+    return PhiTPhi, PhiTy, yTy, Phi, y
+
+
+def _solve_subset_gram(
+    PhiTPhi: jnp.ndarray,
+    PhiTy: jnp.ndarray,
+    yTy: float,
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    indices: list[int],
+) -> tuple[jnp.ndarray, float]:
+    """
+    Solve OLS or ridge for a subset using precomputed Gram matrix.
+
+    Extracts the k-by-k sub-block of the Gram matrix and the corresponding
+    right-hand side, then solves the normal equations via ``jnp.linalg.solve``.
+
+    For float64 data, MSE is computed via the closed-form
+    ``(yTy - c^T @ rhs) / n`` which is O(k) and eliminates n_samples from
+    the inner loop entirely. For float32, MSE is computed from residuals
+    (O(n*k)) to avoid catastrophic cancellation.
+
+    Parameters
+    ----------
+    PhiTPhi : jnp.ndarray
+        Precomputed Gram matrix (may already include ridge diagonal).
+    PhiTy : jnp.ndarray
+        Precomputed ``Phi^T @ y``.
+    yTy : float
+        Precomputed ``y^T @ y``.
+    Phi : jnp.ndarray
+        Original design matrix of shape ``(n_samples, n_basis)``.
+    y : jnp.ndarray
+        Original target vector of shape ``(n_samples,)``.
+    indices : list of int
+        Subset of basis function indices.
+
+    Returns
+    -------
+    coeffs : jnp.ndarray
+        Fitted coefficients of shape ``(k,)``.
+    mse : float
+        Mean squared error.
+    """
+    idx = jnp.array(indices)
+    gram_sub = PhiTPhi[jnp.ix_(idx, idx)]
+    rhs_sub = PhiTy[idx]
+
+    # Solve the k×k system (O(k³) instead of O(n*k²) for lstsq)
+    coeffs = jnp.linalg.solve(gram_sub, rhs_sub)
+
+    # Check for numerical failure
+    if not jnp.all(jnp.isfinite(coeffs)):
+        # Fallback to lstsq on the k×k system
+        coeffs = jnp.linalg.lstsq(gram_sub, rhs_sub, rcond=None)[0]
+
+    # MSE computation strategy depends on dtype precision.
+    # float64 (~15 digits) can safely use the closed-form O(k) formula.
+    # float32 (~7 digits) suffers catastrophic cancellation in yTy - c^T rhs
+    # when the residual is small relative to yTy, so we fall back to O(n*k).
+    if Phi.dtype == jnp.float64:
+        # Closed-form: at the OLS/ridge optimum, MSE = (yTy - c^T rhs) / n
+        n = Phi.shape[0]
+        mse = float((yTy - jnp.dot(coeffs, rhs_sub)) / n)
+        mse = max(mse, 0.0)
+    else:
+        # Residual-based: numerically stable for float32
+        y_pred = Phi[:, idx] @ coeffs
+        mse = float(jnp.mean((y - y_pred) ** 2))
+
+    return coeffs, mse
+
+
+def _fit_subset_gram(
+    PhiTPhi: jnp.ndarray,
+    PhiTy: jnp.ndarray,
+    yTy: float,
+    Phi: jnp.ndarray,
+    y: jnp.ndarray,
+    indices: list[int],
+    basis_names: list[str],
+    complexities: jnp.ndarray,
+    regularization: float | None = None,
+) -> SelectionResult:
+    """
+    Fit a subset model using precomputed Gram matrix.
+
+    Drop-in replacement for :func:`fit_subset` when Gram products are
+    available and no parametric basis functions are present. Coefficients
+    are solved via the k-by-k normal equations; MSE computation is
+    dtype-dependent (closed-form for float64, residual-based for float32).
+
+    Parameters
+    ----------
+    PhiTPhi : jnp.ndarray
+        Precomputed Gram matrix.
+    PhiTy : jnp.ndarray
+        Precomputed ``Phi^T @ y``.
+    yTy : float
+        Precomputed ``y^T @ y``.
+    Phi : jnp.ndarray
+        Original design matrix.
+    y : jnp.ndarray
+        Original target vector.
+    indices : list of int
+        Indices of selected basis functions.
+    basis_names : list of str
+        Names of all basis functions.
+    complexities : jnp.ndarray
+        Complexity scores for all basis functions.
+    regularization : float, optional
+        L2 regularization strength (already baked into ``PhiTPhi``).
+
+    Returns
+    -------
+    result : SelectionResult
+        Fitting result with all information criteria computed.
+    """
+    coeffs, mse = _solve_subset_gram(PhiTPhi, PhiTy, yTy, Phi, y, indices)
+
+    n = len(y)
+    k = len(indices)
+    idx_arr = jnp.array(indices)
+    complexity = int(jnp.sum(complexities[idx_arr]))
+
+    return SelectionResult(
+        coefficients=coeffs,
+        selected_indices=idx_arr,
+        selected_names=[basis_names[int(i)] for i in indices],
+        mse=mse,
+        complexity=complexity,
+        aic=compute_information_criterion(n, k, mse, "aic"),
+        bic=compute_information_criterion(n, k, mse, "bic"),
+        aicc=compute_information_criterion(n, k, mse, "aicc"),
+        n_samples=n,
+    )
+
+
 def _fit_subset_parametric(
     X: jnp.ndarray,
     Phi: jnp.ndarray,
@@ -555,6 +741,11 @@ def greedy_forward_selection(
         "_param_cache": _param_cache,
     }
 
+    # Precompute Gram matrix when no parametric basis functions are present
+    _use_gram = not (basis_library is not None and basis_library.has_parametric)
+    if _use_gram:
+        _gram = _precompute_gram(Phi, y, regularization)
+
     for _step in range(min(max_terms, len(available))):
         best_step_ic = float("inf")
         best_idx = None
@@ -562,15 +753,20 @@ def greedy_forward_selection(
 
         for idx in available:
             candidate = selected + [idx]
-            result = fit_subset(
-                Phi,
-                y,
-                candidate,
-                basis_names,
-                complexities,
-                regularization,
-                **_fs_kw,
-            )
+            if _use_gram:
+                result = _fit_subset_gram(
+                    *_gram, candidate, basis_names, complexities, regularization
+                )
+            else:
+                result = fit_subset(
+                    Phi,
+                    y,
+                    candidate,
+                    basis_names,
+                    complexities,
+                    regularization,
+                    **_fs_kw,
+                )
 
             ic_value = getattr(result, information_criterion)
             if ic_value < best_step_ic:
@@ -598,29 +794,37 @@ def greedy_forward_selection(
         # Return single-term model with constant if available
         const_idx = [i for i, name in enumerate(basis_names) if name == "1"]
         if const_idx:
-            result = fit_subset(
-                Phi,
-                y,
-                const_idx,
-                basis_names,
-                complexities,
-                regularization,
-                **_fs_kw,
-            )
+            if _use_gram:
+                result = _fit_subset_gram(
+                    *_gram, const_idx, basis_names, complexities, regularization
+                )
+            else:
+                result = fit_subset(
+                    Phi,
+                    y,
+                    const_idx,
+                    basis_names,
+                    complexities,
+                    regularization,
+                    **_fs_kw,
+                )
             results = [result]
             best_index = 0
         else:
             # Fit with first available feature
             idx = list(available)[0] if available else 0
-            result = fit_subset(
-                Phi,
-                y,
-                [idx],
-                basis_names,
-                complexities,
-                regularization,
-                **_fs_kw,
-            )
+            if _use_gram:
+                result = _fit_subset_gram(*_gram, [idx], basis_names, complexities, regularization)
+            else:
+                result = fit_subset(
+                    Phi,
+                    y,
+                    [idx],
+                    basis_names,
+                    complexities,
+                    regularization,
+                    **_fs_kw,
+                )
             results = [result]
             best_index = 0
 
@@ -699,8 +903,16 @@ def greedy_backward_elimination(
         "_param_cache": _param_cache,
     }
 
+    # Precompute Gram matrix when no parametric basis functions are present
+    _use_gram = not (basis_library is not None and basis_library.has_parametric)
+    if _use_gram:
+        _gram = _precompute_gram(Phi, y, regularization)
+
     # Initial full model
-    result = fit_subset(Phi, y, selected, basis_names, complexities, regularization, **_fs_kw)
+    if _use_gram:
+        result = _fit_subset_gram(*_gram, selected, basis_names, complexities, regularization)
+    else:
+        result = fit_subset(Phi, y, selected, basis_names, complexities, regularization, **_fs_kw)
     results.append(result)
     current_ic = getattr(result, information_criterion)
     if current_ic < best_ic:
@@ -718,9 +930,14 @@ def greedy_backward_elimination(
             if not candidate:
                 continue
 
-            result = fit_subset(
-                Phi, y, candidate, basis_names, complexities, regularization, **_fs_kw
-            )
+            if _use_gram:
+                result = _fit_subset_gram(
+                    *_gram, candidate, basis_names, complexities, regularization
+                )
+            else:
+                result = fit_subset(
+                    Phi, y, candidate, basis_names, complexities, regularization, **_fs_kw
+                )
             ic_value = getattr(result, information_criterion)
 
             if ic_value < best_step_ic:
@@ -826,21 +1043,31 @@ def exhaustive_search(
         "_param_cache": _param_cache,
     }
 
+    # Precompute Gram matrix when no parametric basis functions are present
+    _use_gram = not (basis_library is not None and basis_library.has_parametric)
+    if _use_gram:
+        _gram = _precompute_gram(Phi, y, regularization)
+
     results: list[SelectionResult] = []
     best_ic = float("inf")
     best_index = -1
 
     for k in range(1, min(max_terms, n_candidates) + 1):
         for combo in itertools.combinations(candidate_indices, k):
-            result = fit_subset(
-                Phi,
-                y,
-                list(combo),
-                basis_names,
-                complexities,
-                regularization,
-                **_fs_kw,
-            )
+            if _use_gram:
+                result = _fit_subset_gram(
+                    *_gram, list(combo), basis_names, complexities, regularization
+                )
+            else:
+                result = fit_subset(
+                    Phi,
+                    y,
+                    list(combo),
+                    basis_names,
+                    complexities,
+                    regularization,
+                    **_fs_kw,
+                )
             results.append(result)
 
             ic_value = getattr(result, information_criterion)
@@ -1010,6 +1237,11 @@ def lasso_path_selection(
         "_param_cache": _param_cache,
     }
 
+    # Precompute Gram matrix when no parametric basis functions are present
+    _use_gram = not (basis_library is not None and basis_library.has_parametric)
+    if _use_gram:
+        _gram = _precompute_gram(Phi, y, regularization)
+
     w = jnp.zeros(n_features)
 
     for alpha in alphas:
@@ -1029,15 +1261,20 @@ def lasso_path_selection(
         seen_subsets.add(subset_key)
 
         # Refit with OLS on original (unstandardized) data
-        result = fit_subset(
-            Phi,
-            y,
-            list(active),
-            basis_names,
-            complexities,
-            regularization,
-            **_fs_kw,
-        )
+        if _use_gram:
+            result = _fit_subset_gram(
+                *_gram, list(active), basis_names, complexities, regularization
+            )
+        else:
+            result = fit_subset(
+                Phi,
+                y,
+                list(active),
+                basis_names,
+                complexities,
+                regularization,
+                **_fs_kw,
+            )
         results.append(result)
 
         ic_value = getattr(result, information_criterion)

@@ -19,3 +19,9 @@ launch_buttons:
 sphinx:
   extra_extensions:
     - sphinx_copybutton
+    - sphinx.ext.autodoc
+    - sphinx.ext.napoleon
+  config:
+    autodoc_member_order: bysource
+    napoleon_numpy_docstring: true
+    napoleon_google_docstring: false

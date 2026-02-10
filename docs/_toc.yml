@@ -12,6 +12,7 @@ parts:
       - file: guides/acquisition
       - file: guides/cli_guide
       - file: guides/claude_code_skills
+      - file: guides/performance
 
   - caption: Examples
     chapters:
@@ -24,14 +25,19 @@ parts:
       - file: examples/doe_study_workflow
       - file: examples/comprehensive_tutorial
       - file: examples/constraint_enforcement
+      - file: examples/gibbs_duhem_activity
       - file: examples/langmuir_doe_active_learning
       - file: examples/model_comparison_isotherms
       - file: examples/rsm_formulation
       - file: examples/serialization_and_sharing
+      - file: examples/ode_discovery
+      - file: examples/symbolic_classification
+      - file: examples/gpu_benchmarks
+      - file: examples/cli_workflow
 
   - caption: Reference
     chapters:
-      - file: api
+      - file: api/index
 
   - caption: Background
     chapters:

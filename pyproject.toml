@@ -56,6 +56,9 @@ app = [
 qp = [
     "cvxpy>=1.3",
 ]
+gpu = [
+    "jax[cuda12]>=0.4.20",
+]
 docs = [
     "jupyter-book>=0.15,<2",
     "sphinx-copybutton",

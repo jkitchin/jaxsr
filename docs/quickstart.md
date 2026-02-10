@@ -237,5 +237,5 @@ plot_bma_weights(model)
 ## Next Steps
 
 - See the [Tutorial](examples/comprehensive_tutorial.ipynb) for application-specific tutorials
-- Read the [API Reference](api.md) for detailed documentation
+- Read the [API Reference](api/index.rst) for detailed documentation
 - Check the [Literature Review](background/literature_review.md) for background
