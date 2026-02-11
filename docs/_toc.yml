@@ -25,6 +25,7 @@ parts:
       - file: examples/doe_study_workflow
       - file: examples/comprehensive_tutorial
       - file: examples/constraint_enforcement
+      - file: examples/constrained_sinwave
       - file: examples/gibbs_duhem_activity
       - file: examples/langmuir_doe_active_learning
       - file: examples/model_comparison_isotherms
