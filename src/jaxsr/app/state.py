@@ -61,7 +61,11 @@ def auto_save(study=None, path: str | None = None) -> None:
     path = path or get_study_path()
     if study is None or path is None:
         return
-    study.save(path)
+    try:
+        study.save(path)
+    except (OSError, PermissionError) as e:
+        st.warning(f"Auto-save failed: {e}")
+        return
     st.session_state[_KEY_LAST_SAVE] = time.time()
 
 

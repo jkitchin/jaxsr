@@ -70,7 +70,7 @@ if st.button("Fit Model", type="primary"):
             )
             auto_save()
             st.success("Model fitted successfully!")
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             st.error(f"Fitting error: {e}")
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ if study.is_fitted:
     try:
         latex_str = model.to_latex()
         st.latex(latex_str)
-    except Exception:
+    except (ImportError, ValueError):
         st.code(model.expression_, language=None)
 
     # Metrics
@@ -118,9 +118,9 @@ if study.is_fitted:
         summary_rows = [r for r in result.rows if r.source in summary_sources]
 
         # Total model SS for percentage calculation
-        model_row = next((r for r in summary_rows if r.source == "Model"), None)
+        total_row = next((r for r in summary_rows if r.source == "Total"), None)
         residual_row = next((r for r in summary_rows if r.source == "Residual"), None)
-        total_ss = model_row.sum_sq if model_row and model_row.sum_sq > 0 else 1.0
+        total_ss = total_row.sum_sq if total_row and total_row.sum_sq > 0 else 1.0
 
         # Warn if residual MS is near machine precision (F-tests unreliable)
         if residual_row and residual_row.mean_sq < 1e-10:
@@ -159,7 +159,7 @@ if study.is_fitted:
                 }
             )
         st.dataframe(pd.DataFrame(anova_data), use_container_width=True, hide_index=True)
-    except Exception as e:
+    except (ValueError, RuntimeError, ImportError) as e:
         st.warning(f"Could not compute ANOVA: {e}")
 
     # Cross-validation (optional)
@@ -184,5 +184,5 @@ if study.is_fitted:
                         "Mean Train Score": cv_result["mean_train_score"],
                     }
                 )
-            except Exception as e:
+            except (ValueError, RuntimeError) as e:
                 st.error(f"Cross-validation error: {e}")

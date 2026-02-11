@@ -75,7 +75,7 @@ if uploaded is not None:
 
         except ImportError:
             st.error("Install `openpyxl` for Excel import: `pip install jaxsr[excel]`")
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             st.error(f"Error reading Excel file: {e}")
 
     elif file_name.endswith(".csv"):
@@ -114,7 +114,7 @@ if uploaded is not None:
             else:
                 missing = [c for c in expected_cols if c not in df.columns]
                 st.error(f"Missing expected factor columns: {missing}")
-        except Exception as e:
+        except (ValueError, KeyError) as e:
             st.error(f"Error reading CSV: {e}")
 
 # ---------------------------------------------------------------------------

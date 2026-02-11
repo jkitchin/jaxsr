@@ -35,10 +35,10 @@ st.subheader("Parity Plot")
 try:
     from jaxsr.plotting import plot_parity
 
-    fig_ax = plot_parity(y, y_pred)
+    ax = plot_parity(y, y_pred)
     # plot_parity returns an Axes; get its figure
-    st.pyplot(fig_ax.figure)
-except Exception as e:
+    st.pyplot(ax.figure)
+except (ValueError, ImportError) as e:
     st.warning(f"Could not create parity plot: {e}")
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ try:
 
     fig = plot_residuals(model, X, y)
     st.pyplot(fig)
-except Exception as e:
+except (ValueError, ImportError) as e:
     st.warning(f"Could not create residual plots: {e}")
 
 # ---------------------------------------------------------------------------
@@ -85,8 +85,8 @@ for start in range(0, n_factors, cols_per_row):
 # Coefficient intervals
 # ---------------------------------------------------------------------------
 st.subheader("Coefficient Intervals")
-alpha = st.slider("Confidence level (1 − α)", 0.80, 0.99, 0.95, 0.01, key="ci_alpha")
-ci_alpha = 1.0 - alpha
+confidence = st.slider("Confidence level (1 − α)", 0.80, 0.99, 0.95, 0.01, key="ci_alpha")
+ci_alpha = 1.0 - confidence
 
 try:
     intervals = model.coefficient_intervals(alpha=ci_alpha)
@@ -108,9 +108,9 @@ try:
     try:
         from jaxsr.plotting import plot_coefficient_intervals
 
-        fig_ax = plot_coefficient_intervals(model, alpha=ci_alpha)
-        st.pyplot(fig_ax.figure)
-    except Exception:
+        ax = plot_coefficient_intervals(model, alpha=ci_alpha)
+        st.pyplot(ax.figure)
+    except (ValueError, ImportError):
         # Manual forest plot fallback
         fig, ax = plt.subplots(figsize=(8, max(3, len(intervals) * 0.5)))
         names = list(intervals.keys())
@@ -130,11 +130,11 @@ try:
         ax.set_yticks(list(y_pos))
         ax.set_yticklabels(names)
         ax.set_xlabel("Coefficient Value")
-        ax.set_title(f"{int(alpha * 100)}% Confidence Intervals")
+        ax.set_title(f"{int(confidence * 100)}% Confidence Intervals")
         fig.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
-except Exception as e:
+except (ValueError, RuntimeError) as e:
     st.warning(f"Could not compute coefficient intervals: {e}")
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ st.subheader("Prediction Intervals")
 try:
     from jaxsr.plotting import plot_prediction_intervals
 
-    fig_ax = plot_prediction_intervals(model, X, y, alpha=ci_alpha)
-    st.pyplot(fig_ax.figure)
-except Exception as e:
+    ax = plot_prediction_intervals(model, X, y, alpha=ci_alpha)
+    st.pyplot(ax.figure)
+except (ValueError, ImportError) as e:
     st.warning(f"Could not create prediction interval plot: {e}")

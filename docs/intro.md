@@ -63,7 +63,7 @@ print(f"R² = {model.metrics_['r2']:.4f}")
 - [Claude Code Skills](guides/claude_code_skills.md) - AI-assisted workflows with Claude Code
 - [API Reference](api/index.rst) - Complete API documentation
 - [Literature Review](background/literature_review.md) - Background on symbolic regression
-- [Examples](examples/basic_usage.ipynb) - Worked examples for various applications
+- [Examples](../examples/basic_usage.ipynb) - Worked examples for various applications
 
 ## How It Works
 

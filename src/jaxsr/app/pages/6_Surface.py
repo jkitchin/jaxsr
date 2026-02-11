@@ -131,7 +131,7 @@ try:
                         name=f"Stationary ({ca.nature})",
                     )
                 )
-        except Exception:
+        except (ValueError, RuntimeError, ImportError):
             pass
 
         fig.update_layout(

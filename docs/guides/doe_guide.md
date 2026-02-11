@@ -254,7 +254,7 @@ def oracle(X):
     return x1**2 + x2**2 - 3*x1 - 2*x2 + np.random.randn(len(X)) * 0.2
 
 # --- Initial design ---
-X_init = latin_hypercube_sample(bounds, n_points=30, random_state=0)
+X_init = latin_hypercube_sample(30, bounds, random_state=0)
 y_init = oracle(np.array(X_init))
 
 # --- Define basis library ---
@@ -359,7 +359,7 @@ print(result.scores)   # acquisition score for each point
 Domain knowledge reduces the search space and improves model quality:
 
 ```python
-from jaxsr.constraints import Constraints
+from jaxsr import Constraints
 
 constraints = (
     Constraints()
@@ -442,6 +442,6 @@ BATCH STRATEGY
 ## Further Reading
 
 - [Acquisition function API reference](acquisition.md)
-- [Active learning example](../examples/active_learning.ipynb)
-- [Comprehensive tutorial notebook](../examples/comprehensive_tutorial.ipynb)
+- [Active learning example](../../examples/active_learning.ipynb)
+- [Comprehensive tutorial notebook](../../examples/comprehensive_tutorial.ipynb)
 - [API reference](../api/index.rst)

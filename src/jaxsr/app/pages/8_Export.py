@@ -39,7 +39,7 @@ try:
         file_name=f"{study.name}_model.tex",
         mime="text/x-tex",
     )
-except Exception as e:
+except (ValueError, ImportError) as e:
     st.warning(f"Could not generate LaTeX: {e}")
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ st.subheader("SymPy Expression")
 try:
     sympy_expr = model.to_sympy()
     st.code(str(sympy_expr), language="python")
-except Exception as e:
+except (ValueError, ImportError) as e:
     st.warning(f"Could not generate SymPy expression: {e}")
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ try:
         file_name=f"{study.name}_model.json",
         mime="application/json",
     )
-except Exception as e:
+except (ValueError, TypeError) as e:
     st.warning(f"Could not serialize model: {e}")
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ with col2:
         import tempfile
         from pathlib import Path
 
-        from jaxsr.reporting import generate_word_report  # noqa: F401
+        from jaxsr.reporting import generate_word_report
 
         if st.button("Generate Word Report", key="gen_docx"):
             with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
@@ -161,6 +161,7 @@ st.markdown("---")
 st.subheader("Python Code Snippet")
 
 code_snippet = f"""import numpy as np
+import jax.numpy as jnp
 from jaxsr import DOEStudy
 
 # Load the study
@@ -168,7 +169,7 @@ study = DOEStudy.load("{study.name}.jaxsr")
 model = study.model
 
 # Make predictions
-X_new = np.array([[...]])  # your new data
+X_new = jnp.array([[...]])  # your new data (JAX array)
 y_pred = model.predict(X_new)
 
 # Get prediction intervals
@@ -176,7 +177,7 @@ y_pred, lower, upper = model.predict_interval(X_new, alpha=0.05)
 
 # Export as a pure-Python callable (no JAX needed)
 predict_fn = model.to_callable()
-y_pred = predict_fn(X_new)
+y_pred = predict_fn(np.array([[...]]))
 """
 
 st.code(code_snippet, language="python")

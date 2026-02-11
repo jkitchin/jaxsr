@@ -77,7 +77,7 @@ if st.button("Generate Design", type="primary"):
         )
         auto_save()
         st.success(f"Generated {len(X)} design points using **{method}**.")
-    except Exception as e:
+    except (ValueError, RuntimeError) as e:
         st.error(f"Error generating design: {e}")
 
 # ---------------------------------------------------------------------------

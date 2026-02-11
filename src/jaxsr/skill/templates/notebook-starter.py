@@ -126,8 +126,8 @@ n_terms_list = [r.n_terms for r in pareto]
 mse_list = [r.mse for r in pareto]
 ax.plot(n_terms_list, mse_list, "bo-")
 ax.scatter(
-    [model._result.n_terms],
-    [model._result.mse],
+    [model.complexity_],
+    [model.metrics_["mse"]],
     color="red",
     s=100,
     zorder=5,

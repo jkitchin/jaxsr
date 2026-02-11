@@ -59,7 +59,7 @@ try:
         for w in ca.warnings:
             st.warning(w)
 
-except Exception as e:
+except (ValueError, RuntimeError, ImportError) as e:
     st.info(f"Canonical analysis not available: {e}")
     st.caption("Canonical analysis requires a quadratic (second-order) model.")
 
@@ -119,9 +119,8 @@ if st.button("Suggest", type="primary"):
                         feature_types=study.feature_types,
                         categories=study.categories,
                     )
-                    tmp_study.create_design(method="latin_hypercube", n_points=len(next_pts))
-                    # Override design points with our suggestions
-                    tmp_study._design_points = next_pts
+                    tmp_study._X_design = np.asarray(next_pts)
+                    tmp_study._observation_status = ["pending"] * len(next_pts)
 
                     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
                         generate_template(tmp_study, tmp.name)
@@ -139,5 +138,5 @@ if st.button("Suggest", type="primary"):
                     Path(tmp_path).unlink(missing_ok=True)
                 except ImportError:
                     st.info("Install `openpyxl` and `xlsxwriter` for Excel export.")
-        except Exception as e:
+        except (ValueError, RuntimeError) as e:
             st.error(f"Error suggesting experiments: {e}")

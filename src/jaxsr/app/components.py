@@ -116,6 +116,8 @@ def metric_cards(metrics: dict[str, float]) -> None:
     metrics : dict[str, float]
         Mapping of metric name to value (e.g. ``{"R²": 0.98, "MSE": 0.01}``).
     """
+    if not metrics:
+        return
     cols = st.columns(len(metrics))
     for col, (name, value) in zip(cols, metrics.items(), strict=False):
         with col:
