@@ -128,7 +128,7 @@ A promising hybrid approach combines neural differential equations with symbolic
 - JAX-native implementation via Diffrax and Equinox
 
 **Key Works:**
-- Cranmer, M., Sanchez Gonzalez, A., Battaglia, P., Xu, R., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020. [16]
+- Cranmer, M., Sanchez-Gonzalez, A., Battaglia, P., Xu, R., Cranmer, K., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020. [16]
 - Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. Diffrax documentation: https://docs.kidger.site/diffrax/examples/symbolic_regression/ [17]
 
 **Limitations:**
@@ -247,36 +247,36 @@ JAXSR fills an important gap in the symbolic regression landscape by providing a
 
 ## References
 
-[1] Koza, J.R. (1992). Genetic Programming: On the Programming of Computers by Means of Natural Selection. MIT Press.
+[1] Koza, J.R. (1992). Genetic Programming: On the Programming of Computers by Means of Natural Selection. MIT Press. ISBN: 978-0-262-11170-6. https://mitpress.mit.edu/9780262527910/genetic-programming/
 
-[2] Schmidt, M., & Lipson, H. (2009). Distilling free-form natural laws from experimental data. Science, 324(5923), 81-85.
+[2] Schmidt, M., & Lipson, H. (2009). Distilling free-form natural laws from experimental data. Science, 324(5923), 81-85. https://doi.org/10.1126/science.1165893
 
-[3] Cozad, A., Sahinidis, N. V., & Miller, D. C. (2014). Learning surrogate models for simulation-based optimization. AIChE Journal, 60(6), 2211-2227.
+[3] Cozad, A., Sahinidis, N. V., & Miller, D. C. (2014). Learning surrogate models for simulation-based optimization. AIChE Journal, 60(6), 2211-2227. https://doi.org/10.1002/aic.14418
 
-[4] Wilson, Z. T., & Sahinidis, N. V. (2017). The ALAMO approach to machine learning. Computers & Chemical Engineering, 106, 785-795.
+[4] Wilson, Z. T., & Sahinidis, N. V. (2017). The ALAMO approach to machine learning. Computers & Chemical Engineering, 106, 785-795. https://doi.org/10.1016/j.compchemeng.2017.02.010
 
-[5] Ouyang, R., Curtarolo, S., Ahmetcik, E., Scheffler, M., & Ghiringhelli, L. M. (2018). SISSO: A compressed-sensing method for identifying the best low-dimensional descriptor in an immensity of offered candidates. Physical Review Materials, 2(8), 083802.
+[5] Ouyang, R., Curtarolo, S., Ahmetcik, E., Scheffler, M., & Ghiringhelli, L. M. (2018). SISSO: A compressed-sensing method for identifying the best low-dimensional descriptor in an immensity of offered candidates. Physical Review Materials, 2(8), 083802. https://doi.org/10.1103/physrevmaterials.2.083802
 
-[6] Bartel, C. J., et al. (2019). New tolerance factor to predict the stability of perovskite oxides and halides. Science Advances, 5(2), eaav0693.
+[6] Bartel, C. J., et al. (2019). New tolerance factor to predict the stability of perovskite oxides and halides. Science Advances, 5(2), eaav0693. https://doi.org/10.1126/sciadv.aav0693
 
-[7] Cranmer, M. (2023). Interpretable Machine Learning for Science with PySR and SymbolicRegression.jl. arXiv preprint arXiv:2305.01582.
+[7] Cranmer, M. (2023). Interpretable Machine Learning for Science with PySR and SymbolicRegression.jl. arXiv preprint arXiv:2305.01582. https://arxiv.org/abs/2305.01582
 
-[8] Udrescu, S. M., & Tegmark, M. (2020). AI Feynman: A physics-inspired method for symbolic regression. Science Advances, 6(16), eaay2631.
+[8] Udrescu, S. M., & Tegmark, M. (2020). AI Feynman: A physics-inspired method for symbolic regression. Science Advances, 6(16), eaay2631. https://doi.org/10.1126/sciadv.aay2631
 
-[9] Udrescu, S. M., et al. (2020). AI Feynman 2.0: Pareto-optimal symbolic regression exploiting graph modularity. NeurIPS 2020.
+[9] Udrescu, S. M., et al. (2020). AI Feynman 2.0: Pareto-optimal symbolic regression exploiting graph modularity. NeurIPS 2020. https://arxiv.org/abs/2006.10782
 
-[10] Biggio, L., et al. (2021). Neural Symbolic Regression that Scales. ICML 2021.
+[10] Biggio, L., et al. (2021). Neural Symbolic Regression that Scales. ICML 2021. https://arxiv.org/abs/2106.06427
 
-[11] Kamienny, P. A., et al. (2022). End-to-end symbolic regression with transformers. NeurIPS 2022.
+[11] Kamienny, P. A., et al. (2022). End-to-end symbolic regression with transformers. NeurIPS 2022. https://arxiv.org/abs/2204.10532
 
-[12] Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv preprint arXiv:2106.14131.
+[12] Valipour, M., et al. (2021). SymbolicGPT: A Generative Transformer Model for Symbolic Regression. arXiv preprint arXiv:2106.14131. https://arxiv.org/abs/2106.14131
 
-[13] Brunton, S. L., Proctor, J. L., & Kutz, J. N. (2016). Discovering governing equations from data by sparse identification of nonlinear dynamics. PNAS, 113(15), 3932-3937.
+[13] Brunton, S. L., Proctor, J. L., & Kutz, J. N. (2016). Discovering governing equations from data by sparse identification of nonlinear dynamics. PNAS, 113(15), 3932-3937. https://doi.org/10.1073/pnas.1517384113
 
-[14] Champion, K., et al. (2019). Data-driven discovery of coordinates and governing equations. PNAS, 116(45), 22445-22451.
+[14] Champion, K., et al. (2019). Data-driven discovery of coordinates and governing equations. PNAS, 116(45), 22445-22451. https://doi.org/10.1073/pnas.1906995116
 
-[15] Muthyala, M. R., Sorourifar, F., Peng, Y., & Paulson, J. A. (2025). SyMANTIC: An Efficient Symbolic Regression Method for Interpretable and Parsimonious Model Discovery in Science and Beyond. arXiv preprint arXiv:2502.03367.
+[15] Muthyala, M. R., Sorourifar, F., Peng, Y., & Paulson, J. A. (2025). SyMANTIC: An Efficient Symbolic Regression Method for Interpretable and Parsimonious Model Discovery in Science and Beyond. arXiv preprint arXiv:2502.03367. https://arxiv.org/abs/2502.03367
 
-[16] Cranmer, M., Sanchez Gonzalez, A., Battaglia, P., Xu, R., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020.
+[16] Cranmer, M., Sanchez-Gonzalez, A., Battaglia, P., Xu, R., Cranmer, K., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020. https://arxiv.org/abs/2006.11287
 
-[17] Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. Diffrax: https://docs.kidger.site/diffrax/
+[17] Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. https://doi.org/10.5287/ora-r5kybrozr. Diffrax: https://docs.kidger.site/diffrax/
