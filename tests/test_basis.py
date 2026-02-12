@@ -248,3 +248,87 @@ class TestBasisLibrary:
 
         np.testing.assert_almost_equal(float(Phi[0, 0]), 2.0)
         assert jnp.isnan(Phi[1, 0])
+
+    def test_repr(self):
+        """Test string representation shows basis functions."""
+        library = (
+            BasisLibrary(n_features=2, feature_names=["x", "y"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+        )
+        repr_str = repr(library)
+
+        # Check header information
+        assert "BasisLibrary" in repr_str
+        assert "n_features=2" in repr_str
+        assert "n_basis=5" in repr_str
+
+        # Check basis functions are listed
+        assert "Basis functions:" in repr_str
+        assert "1" in repr_str  # constant
+        assert "x" in repr_str  # linear
+        assert "y" in repr_str  # linear
+
+    def test_repr_truncation(self):
+        """Test that repr truncates long lists of basis functions."""
+        library = BasisLibrary(n_features=3).build_default(max_poly_degree=3)
+        # This should have many basis functions
+
+        # Test with small max_display
+        repr_str = library.__repr__(max_display=5)
+        assert "... and" in repr_str
+        assert "more" in repr_str
+
+        # Count displayed functions (should be 5 + header + truncation message)
+        lines = repr_str.split("\n")
+        function_lines = [line for line in lines if line.strip().startswith("[")]
+        assert len(function_lines) == 5
+
+    def test_repr_html(self):
+        """Test HTML representation for Jupyter notebooks."""
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_constant().add_linear()
+        html = library._repr_html_()
+
+        # Check HTML structure
+        assert "<table" in html
+        assert "<thead>" in html
+        assert "<tbody>" in html
+        assert "BasisLibrary" in html
+
+        # Check content
+        assert "2 features" in html
+        assert "3 basis functions" in html
+        assert "x, y" in html  # feature names
+
+    def test_repr_html_truncation(self):
+        """Test HTML repr truncates correctly."""
+        library = BasisLibrary(n_features=3).build_default(max_poly_degree=3)
+
+        html = library._repr_html_(max_display=5)
+        assert "... and" in html
+        assert "more basis functions" in html
+
+    def test_repr_markdown(self):
+        """Test markdown representation."""
+        library = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_constant().add_linear()
+        md = library._repr_markdown_()
+
+        # Check markdown structure
+        assert "**BasisLibrary**" in md
+        assert "2 features" in md
+        assert "3 basis functions" in md
+        assert "| Index | Basis Function |" in md  # table header
+
+        # Check content
+        assert "`1`" in md  # constant
+        assert "`x`" in md  # linear
+        assert "`y`" in md  # linear
+
+    def test_repr_markdown_truncation(self):
+        """Test markdown repr truncates correctly."""
+        library = BasisLibrary(n_features=3).build_default(max_poly_degree=3)
+
+        md = library._repr_markdown_(max_display=5)
+        assert "and" in md.lower()
+        assert "more" in md.lower()

@@ -526,7 +526,7 @@ class BasisLibrary:
             # Reference encoding: drop the first category
             for cat_val in cats[1:]:
                 for cj in cont_features:
-                    name = f"I({self.feature_names[ci]}={cat_val})" f"*{self.feature_names[cj]}"
+                    name = f"I({self.feature_names[ci]}={cat_val})*{self.feature_names[cj]}"
                     self.basis_functions.append(
                         BasisFunction(
                             name=name,
@@ -1282,12 +1282,122 @@ class BasisLibrary:
         """Number of basis functions in the library."""
         return len(self.basis_functions)
 
-    def __repr__(self) -> str:
-        return (
+    def __repr__(self, max_display: int = 50) -> str:
+        """
+        Rich representation showing basis functions.
+
+        Parameters
+        ----------
+        max_display : int
+            Maximum number of basis functions to display before truncating.
+        """
+        n_basis = len(self)
+        header = (
             f"BasisLibrary(n_features={self.n_features}, "
-            f"n_basis={len(self)}, "
+            f"n_basis={n_basis}, "
             f"feature_names={self.feature_names})"
         )
+
+        if n_basis == 0:
+            return header
+
+        lines = [header, "\nBasis functions:"]
+
+        # Show up to max_display functions
+        display_count = min(n_basis, max_display)
+        for i in range(display_count):
+            bf = self.basis_functions[i]
+            lines.append(f"  [{i:4d}] {bf.name:40s} (complexity={bf.complexity})")
+
+        # Show truncation message if needed
+        if n_basis > max_display:
+            lines.append(f"  ... and {n_basis - max_display} more")
+
+        return "\n".join(lines)
+
+    def _repr_html_(self, max_display: int = 50) -> str:
+        """
+        HTML representation for Jupyter notebooks.
+
+        Parameters
+        ----------
+        max_display : int
+            Maximum number of basis functions to display before truncating.
+        """
+        n_basis = len(self)
+        display_count = min(n_basis, max_display)
+
+        html = [
+            "<div style='margin: 10px 0;'>",
+            f"<strong>BasisLibrary</strong>: {self.n_features} features, {n_basis} basis functions",
+            f"<br><em>Features:</em> {', '.join(self.feature_names)}",
+            "</div>",
+            "<table style='border-collapse: collapse; width: 100%; max-width: 800px;'>",
+            "<thead>",
+            "<tr style='background-color: #f0f0f0; border-bottom: 2px solid #333;'>",
+            "<th style='padding: 8px; text-align: left;'>Index</th>",
+            "<th style='padding: 8px; text-align: left;'>Basis Function</th>",
+            "<th style='padding: 8px; text-align: center;'>Complexity</th>",
+            "<th style='padding: 8px; text-align: left;'>Type</th>",
+            "</tr>",
+            "</thead>",
+            "<tbody>",
+        ]
+
+        for i in range(display_count):
+            bf = self.basis_functions[i]
+            # Alternate row colors
+            bg_color = "#ffffff" if i % 2 == 0 else "#f9f9f9"
+            html.append(
+                f"<tr style='background-color: {bg_color}; border-bottom: 1px solid #ddd;'>"
+            )
+            html.append(f"<td style='padding: 6px; font-family: monospace;'>{i}</td>")
+            html.append(f"<td style='padding: 6px; font-family: monospace;'>{bf.name}</td>")
+            html.append(f"<td style='padding: 6px; text-align: center;'>{bf.complexity}</td>")
+            html.append(f"<td style='padding: 6px;'>{bf.func_type}</td>")
+            html.append("</tr>")
+
+        if n_basis > max_display:
+            html.append(
+                f"<tr style='background-color: #fffacd; font-style: italic;'>"
+                f"<td colspan='4' style='padding: 8px; text-align: center;'>"
+                f"... and {n_basis - max_display} more basis functions"
+                f"</td></tr>"
+            )
+
+        html.append("</tbody>")
+        html.append("</table>")
+
+        return "".join(html)
+
+    def _repr_markdown_(self, max_display: int = 50) -> str:
+        """
+        Markdown representation for rich display environments.
+
+        Parameters
+        ----------
+        max_display : int
+            Maximum number of basis functions to display before truncating.
+        """
+        n_basis = len(self)
+        display_count = min(n_basis, max_display)
+
+        lines = [
+            f"**BasisLibrary**: {self.n_features} features, {n_basis} basis functions",
+            f"*Features:* {', '.join(self.feature_names)}",
+            "",
+            "| Index | Basis Function | Complexity | Type |",
+            "|------:|:---------------|:----------:|:-----|",
+        ]
+
+        for i in range(display_count):
+            bf = self.basis_functions[i]
+            lines.append(f"| {i} | `{bf.name}` | {bf.complexity} | {bf.func_type} |")
+
+        if n_basis > max_display:
+            lines.append(f"| ... | *and {n_basis - max_display} more* | | |")
+
+        return "\n".join(lines)
 
     def summary(self) -> str:
         """Return a summary of the library contents."""
