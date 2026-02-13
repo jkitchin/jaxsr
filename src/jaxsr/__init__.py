@@ -9,7 +9,7 @@ Inspired by ALAMO (Automated Learning of Algebraic Models for Optimization).
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "John Kitchin"
 
 # Active Learning & Acquisition Functions

@@ -1,6 +1,6 @@
 [project]
 name = "jaxsr"
-version = "0.1.0"
+version = "0.1.1"
 description = "JAX-based Symbolic Regression - Discover interpretable algebraic expressions from data"
 readme = "README.md"
 license = {text = "MIT"}
