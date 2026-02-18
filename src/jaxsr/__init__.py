@@ -69,7 +69,7 @@ from .metrics import (
     cross_validate_classification,
     format_comparison_table,
 )
-from .regressor import SymbolicRegressor, fit_symbolic
+from .regressor import MultiOutputSymbolicRegressor, SymbolicRegressor, fit_symbolic
 
 # Response Surface Methodology
 from .rsm import (
@@ -193,6 +193,7 @@ __all__ = [
     "Constraints",
     "ConstraintType",
     "DOEStudy",
+    "MultiOutputSymbolicRegressor",
     "SymbolicRegressor",
     "fit_symbolic",
     # Dynamics / ODE Discovery

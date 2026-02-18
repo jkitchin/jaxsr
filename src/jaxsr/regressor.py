@@ -39,6 +39,40 @@ from .uncertainty import (
 )
 
 # =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _clone_estimator(est: SymbolicRegressor) -> SymbolicRegressor:
+    """
+    Clone a ``SymbolicRegressor`` by copying all constructor kwargs.
+
+    Parameters
+    ----------
+    est : SymbolicRegressor
+        Estimator to clone.
+
+    Returns
+    -------
+    clone : SymbolicRegressor
+        Unfitted copy with the same configuration.
+    """
+    return SymbolicRegressor(
+        basis_library=est.basis_library,
+        max_terms=est.max_terms,
+        strategy=est.strategy,
+        information_criterion=est.information_criterion,
+        cv_folds=est.cv_folds,
+        regularization=est.regularization,
+        constraints=est.constraints,
+        random_state=est.random_state,
+        param_optimizer=est.param_optimizer,
+        param_optimization_budget=est.param_optimization_budget,
+        constraint_enforcement=est.constraint_enforcement,
+    )
+
+
+# =============================================================================
 # Main Regressor Class
 # =============================================================================
 
@@ -1021,18 +1055,18 @@ class SymbolicRegressor:
 
         return predict_numpy
 
-    def save(self, filepath: str) -> None:
+    def _state_dict(self) -> dict:
         """
-        Save model to JSON file.
+        Return a JSON-serialisable dictionary of the fitted model state.
 
-        Parameters
-        ----------
-        filepath : str
-            Path to save the model.
+        Returns
+        -------
+        data : dict
+            Dictionary containing config, basis_library, result, and
+            constraints.
         """
         self._check_is_fitted()
-
-        data = {
+        return {
             "config": {
                 "max_terms": self.max_terms,
                 "strategy": self.strategy,
@@ -1049,47 +1083,36 @@ class SymbolicRegressor:
             "constraints": self.constraints.to_dict() if self.constraints else None,
         }
 
-        with open(filepath, "w") as f:
-            json.dump(data, f, indent=2)
-
     @classmethod
-    def load(cls, filepath: str) -> SymbolicRegressor:
+    def _from_dict(cls, data: dict) -> SymbolicRegressor:
         """
-        Load model from JSON file.
+        Reconstruct a fitted ``SymbolicRegressor`` from a state dictionary.
 
         Parameters
         ----------
-        filepath : str
-            Path to the model file.
+        data : dict
+            Dictionary produced by :meth:`_state_dict`.
 
         Returns
         -------
         model : SymbolicRegressor
-            Loaded model.
+            Reconstructed fitted model.
         """
-        with open(filepath) as f:
-            data = json.load(f)
-
-        # Reconstruct basis library
         basis_library = BasisLibrary.from_dict(data["basis_library"])
 
-        # Reconstruct constraints
         constraints = None
         if data.get("constraints"):
             constraints = Constraints.from_dict(data["constraints"])
 
-        # Ensure backward compatibility for saves without constraint_enforcement
         config = data["config"]
         config.setdefault("constraint_enforcement", "penalty")
 
-        # Create model
         model = cls(
             basis_library=basis_library,
             constraints=constraints,
             **config,
         )
 
-        # Reconstruct result
         result_data = data["result"]
         parametric_params = result_data.get("parametric_params")
         if parametric_params is not None:
@@ -1109,6 +1132,37 @@ class SymbolicRegressor:
 
         model._is_fitted = True
         return model
+
+    def save(self, filepath: str) -> None:
+        """
+        Save model to JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to save the model.
+        """
+        with open(filepath, "w") as f:
+            json.dump(self._state_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str) -> SymbolicRegressor:
+        """
+        Load model from JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the model file.
+
+        Returns
+        -------
+        model : SymbolicRegressor
+            Loaded model.
+        """
+        with open(filepath) as f:
+            data = json.load(f)
+        return cls._from_dict(data)
 
     def summary(self) -> str:
         """
@@ -1158,6 +1212,322 @@ class SymbolicRegressor:
             f"SymbolicRegressor(max_terms={self.max_terms}, "
             f"strategy='{self.strategy}', {status})"
         )
+
+
+# =============================================================================
+# Multi-Output Wrapper
+# =============================================================================
+
+
+class MultiOutputSymbolicRegressor:
+    """
+    Multi-output symbolic regression via per-column fitting.
+
+    Wraps a ``SymbolicRegressor`` template and clones it once per output
+    column, discovering a separate algebraic expression for each target.
+
+    Parameters
+    ----------
+    estimator : SymbolicRegressor
+        Template estimator whose configuration is cloned for every output.
+    target_names : list of str, optional
+        Human-readable names for each output column. If ``None``, defaults
+        to ``["y0", "y1", ...]``.
+
+    Attributes
+    ----------
+    estimators_ : list of SymbolicRegressor
+        Fitted estimators (one per output column).
+    expressions_ : list of str
+        Discovered expressions (one per output column).
+    n_outputs_ : int
+        Number of output columns.
+    target_names_ : list of str
+        Resolved target names.
+
+    Examples
+    --------
+    >>> from jaxsr import BasisLibrary, SymbolicRegressor, MultiOutputSymbolicRegressor
+    >>> lib = BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(2)
+    >>> template = SymbolicRegressor(basis_library=lib, max_terms=4)
+    >>> mo = MultiOutputSymbolicRegressor(template)
+    >>> mo.fit(X, Y)  # Y has shape (n, m)
+    >>> Y_pred = mo.predict(X)  # shape (n, m)
+    """
+
+    def __init__(
+        self,
+        estimator: SymbolicRegressor,
+        target_names: list[str] | None = None,
+    ):
+        self.estimator = estimator
+        self.target_names = target_names
+
+        # Fitted state
+        self._estimators: list[SymbolicRegressor] | None = None
+        self._target_names: list[str] | None = None
+        self._is_fitted = False
+
+    # -----------------------------------------------------------------
+    # Properties
+    # -----------------------------------------------------------------
+
+    @property
+    def estimators_(self) -> list[SymbolicRegressor]:
+        """Fitted per-output estimators."""
+        self._check_is_fitted()
+        return self._estimators
+
+    @property
+    def expressions_(self) -> list[str]:
+        """Discovered expressions (one per output)."""
+        self._check_is_fitted()
+        return [est.expression_ for est in self._estimators]
+
+    @property
+    def n_outputs_(self) -> int:
+        """Number of output columns."""
+        self._check_is_fitted()
+        return len(self._estimators)
+
+    @property
+    def target_names_(self) -> list[str]:
+        """Resolved target names."""
+        self._check_is_fitted()
+        return self._target_names
+
+    def _check_is_fitted(self):
+        """Check if model is fitted."""
+        if not self._is_fitted:
+            raise RuntimeError("Model not fitted. Call fit() first.")
+
+    # -----------------------------------------------------------------
+    # Core methods
+    # -----------------------------------------------------------------
+
+    def fit(
+        self,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+    ) -> MultiOutputSymbolicRegressor:
+        """
+        Fit one symbolic regressor per output column.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples, n_outputs)
+            Target matrix.  Must be 2-D; for single-output problems use
+            ``SymbolicRegressor`` directly.
+
+        Returns
+        -------
+        self : MultiOutputSymbolicRegressor
+            Fitted model.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` is not 2-D, if shapes are inconsistent, or if
+            ``target_names`` length does not match the number of columns.
+        """
+        X = jnp.atleast_2d(jnp.asarray(X))
+        y = jnp.asarray(y)
+
+        if y.ndim != 2:
+            raise ValueError(
+                f"y must be 2-D for MultiOutputSymbolicRegressor (got ndim={y.ndim}). "
+                "Use SymbolicRegressor for single-output problems."
+            )
+
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"X and y must have the same number of samples. "
+                f"Got X: {X.shape[0]}, y: {y.shape[0]}"
+            )
+
+        n_outputs = y.shape[1]
+
+        if self.target_names is not None and len(self.target_names) != n_outputs:
+            raise ValueError(
+                f"target_names has {len(self.target_names)} entries but y has "
+                f"{n_outputs} columns."
+            )
+
+        if self.estimator.basis_library is None:
+            raise ValueError("The template estimator must have a basis_library set.")
+
+        self._target_names = (
+            list(self.target_names)
+            if self.target_names is not None
+            else [f"y{i}" for i in range(n_outputs)]
+        )
+
+        self._estimators = []
+        for j in range(n_outputs):
+            est = _clone_estimator(self.estimator)
+            est.fit(X, y[:, j])
+            self._estimators.append(est)
+
+        self._is_fitted = True
+        return self
+
+    def predict(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Predict all outputs.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Samples to predict.
+
+        Returns
+        -------
+        y_pred : jnp.ndarray of shape (n_samples, n_outputs)
+            Predicted values.
+        """
+        self._check_is_fitted()
+        X = jnp.atleast_2d(jnp.asarray(X))
+        preds = [est.predict(X) for est in self._estimators]
+        return jnp.column_stack(preds)
+
+    def score(self, X: jnp.ndarray, y: jnp.ndarray) -> float:
+        """
+        Mean R² across all outputs (sklearn convention).
+
+        Parameters
+        ----------
+        X : array-like
+            Test samples.
+        y : array-like of shape (n_samples, n_outputs)
+            True values.
+
+        Returns
+        -------
+        score : float
+            Mean R² across outputs.
+        """
+        self._check_is_fitted()
+        y = jnp.asarray(y)
+        scores = [est.score(X, y[:, j]) for j, est in enumerate(self._estimators)]
+        return float(np.mean(scores))
+
+    # -----------------------------------------------------------------
+    # Export methods
+    # -----------------------------------------------------------------
+
+    def to_sympy(self) -> list:
+        """
+        Convert each output's expression to SymPy.
+
+        Returns
+        -------
+        exprs : list of sympy.Expr
+            One SymPy expression per output.
+        """
+        self._check_is_fitted()
+        return [est.to_sympy() for est in self._estimators]
+
+    def to_latex(self) -> list[str]:
+        """
+        Convert each output's expression to LaTeX.
+
+        Returns
+        -------
+        latex_strs : list of str
+            One LaTeX string per output.
+        """
+        self._check_is_fitted()
+        return [est.to_latex() for est in self._estimators]
+
+    def to_callable(self) -> Callable[[np.ndarray], np.ndarray]:
+        """
+        Return a pure NumPy callable that predicts all outputs.
+
+        Returns
+        -------
+        func : callable
+            Function ``(n, d) -> (n, m)`` using NumPy only.
+        """
+        self._check_is_fitted()
+        callables = [est.to_callable() for est in self._estimators]
+
+        def predict_all(X: np.ndarray) -> np.ndarray:
+            return np.column_stack([fn(X) for fn in callables])
+
+        return predict_all
+
+    def summary(self) -> str:
+        """
+        Return a combined summary of all per-output models.
+
+        Returns
+        -------
+        summary : str
+            Concatenated summaries.
+        """
+        self._check_is_fitted()
+        parts = []
+        for name, est in zip(self._target_names, self._estimators, strict=False):
+            parts.append(f"--- Output: {name} ---")
+            parts.append(est.summary())
+            parts.append("")
+        return "\n".join(parts)
+
+    # -----------------------------------------------------------------
+    # Serialisation
+    # -----------------------------------------------------------------
+
+    def save(self, filepath: str) -> None:
+        """
+        Save multi-output model to JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to save the model.
+        """
+        self._check_is_fitted()
+        data = {
+            "type": "MultiOutputSymbolicRegressor",
+            "target_names": self._target_names,
+            "estimators": [est._state_dict() for est in self._estimators],
+        }
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str) -> MultiOutputSymbolicRegressor:
+        """
+        Load multi-output model from JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to the model file.
+
+        Returns
+        -------
+        model : MultiOutputSymbolicRegressor
+            Loaded model.
+        """
+        with open(filepath) as f:
+            data = json.load(f)
+
+        estimators = [SymbolicRegressor._from_dict(d) for d in data["estimators"]]
+        target_names = data["target_names"]
+
+        model = cls(estimator=estimators[0], target_names=target_names)
+        model._estimators = estimators
+        model._target_names = target_names
+        model._is_fitted = True
+        return model
+
+    def __repr__(self) -> str:
+        status = "fitted" if self._is_fitted else "not fitted"
+        n_out = len(self._estimators) if self._is_fitted else "?"
+        return f"MultiOutputSymbolicRegressor(n_outputs={n_out}, {status})"
 
 
 # =============================================================================

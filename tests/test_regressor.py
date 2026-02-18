@@ -4,7 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jaxsr import BasisLibrary, Constraints, SymbolicRegressor, fit_symbolic
+from jaxsr import (
+    BasisLibrary,
+    Constraints,
+    MultiOutputSymbolicRegressor,
+    SymbolicRegressor,
+    cross_validate,
+    fit_symbolic,
+)
 
 
 class TestSymbolicRegressor:
@@ -415,3 +422,154 @@ class TestConstrainedRegressor:
         assert np.all(
             second_diffs >= -1e-2
         ), f"Regressor not convex: min second diff = {second_diffs.min()}"
+
+
+class TestMultiOutputSymbolicRegressor:
+    """Tests for MultiOutputSymbolicRegressor class."""
+
+    @pytest.fixture
+    def multi_data(self):
+        """Generate simple 2-output test data."""
+        np.random.seed(42)
+        X = np.random.randn(50, 2)
+        y0 = 2.0 * X[:, 0] + 1.0
+        y1 = -1.5 * X[:, 1] ** 2 + 0.5 * X[:, 0]
+        Y = np.column_stack([y0, y1])
+        return jnp.array(X), jnp.array(Y)
+
+    @pytest.fixture
+    def library(self):
+        """Create test basis library."""
+        return (
+            BasisLibrary(n_features=2, feature_names=["x", "y"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+        )
+
+    @pytest.fixture
+    def template(self, library):
+        """Create template estimator."""
+        return SymbolicRegressor(basis_library=library, max_terms=3)
+
+    def test_fit_2d_y(self, multi_data, template):
+        """Fit succeeds and creates correct number of estimators."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        assert mo._is_fitted
+        assert len(mo.estimators_) == 2
+
+    def test_predict_shape(self, multi_data, template):
+        """Output shape is (n, m)."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        Y_pred = mo.predict(X)
+        assert Y_pred.shape == Y.shape
+
+    def test_score_returns_mean_r2(self, multi_data, template):
+        """Score returns a float in valid range."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        s = mo.score(X, Y)
+        assert isinstance(s, float)
+        assert s > 0.5
+
+    def test_expressions_list(self, multi_data, template):
+        """Expressions list has correct length and all strings."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        exprs = mo.expressions_
+        assert len(exprs) == 2
+        assert all(isinstance(e, str) for e in exprs)
+
+    def test_target_names_default(self, multi_data, template):
+        """Default target names are y0, y1, ..."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        assert mo.target_names_ == ["y0", "y1"]
+
+    def test_target_names_custom(self, multi_data, template):
+        """Custom target names are preserved."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template, target_names=["temp", "pressure"])
+        mo.fit(X, Y)
+        assert mo.target_names_ == ["temp", "pressure"]
+
+    def test_target_names_length_mismatch(self, multi_data, template):
+        """Raises ValueError when target_names length mismatches."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template, target_names=["a"])
+        with pytest.raises(ValueError, match="target_names"):
+            mo.fit(X, Y)
+
+    def test_1d_y_raises(self, multi_data, template):
+        """Raises ValueError for 1-D y."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        with pytest.raises(ValueError, match="2-D"):
+            mo.fit(X, Y[:, 0])
+
+    def test_unfitted_raises(self, template):
+        """Raises RuntimeError when accessing fitted attributes before fit."""
+        mo = MultiOutputSymbolicRegressor(template)
+        with pytest.raises(RuntimeError, match="not fitted"):
+            _ = mo.estimators_
+        with pytest.raises(RuntimeError, match="not fitted"):
+            mo.predict(jnp.ones((5, 2)))
+
+    def test_to_sympy(self, multi_data, template):
+        """to_sympy returns a list of expressions."""
+        pytest.importorskip("sympy")
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        exprs = mo.to_sympy()
+        assert len(exprs) == 2
+
+    def test_to_latex(self, multi_data, template):
+        """to_latex returns a list of strings."""
+        pytest.importorskip("sympy")
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        latex_strs = mo.to_latex()
+        assert len(latex_strs) == 2
+        assert all(isinstance(s, str) for s in latex_strs)
+
+    def test_to_callable(self, multi_data, template):
+        """to_callable returns a function producing (n, m) NumPy output."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        mo.fit(X, Y)
+        fn = mo.to_callable()
+        Y_pred = fn(np.array(X))
+        assert isinstance(Y_pred, np.ndarray)
+        assert Y_pred.shape == (X.shape[0], 2)
+
+    def test_save_load_roundtrip(self, multi_data, template, tmp_path):
+        """Save and load produce the same predictions."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template, target_names=["a", "b"])
+        mo.fit(X, Y)
+
+        filepath = tmp_path / "multi_model.json"
+        mo.save(str(filepath))
+
+        loaded = MultiOutputSymbolicRegressor.load(str(filepath))
+        Y_orig = mo.predict(X)
+        Y_loaded = loaded.predict(X)
+        np.testing.assert_array_almost_equal(Y_orig, Y_loaded)
+        assert loaded.target_names_ == ["a", "b"]
+
+    def test_cross_validate_compatible(self, multi_data, template):
+        """cross_validate works with MultiOutputSymbolicRegressor."""
+        X, Y = multi_data
+        mo = MultiOutputSymbolicRegressor(template)
+        result = cross_validate(mo, X, Y, cv=3, scoring="neg_mse")
+        assert "mean_test_score" in result
+        assert len(result["test_scores"]) == 3

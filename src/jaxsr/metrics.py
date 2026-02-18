@@ -299,6 +299,11 @@ def cross_validate(
         - "mean_test_score": mean test score
         - "std_test_score": std of test scores
     """
+    # Detect multi-output models and delegate appropriately
+    from .regressor import MultiOutputSymbolicRegressor, _clone_estimator
+
+    is_multi = isinstance(model, MultiOutputSymbolicRegressor)
+
     n_samples = X.shape[0]
     rng = np.random.RandomState(random_state)
     indices = rng.permutation(n_samples)
@@ -333,16 +338,13 @@ def cross_validate(
         y_train, y_test = y[train_idx], y[test_idx]
 
         # Clone and fit model
-        model_clone = model.__class__(
-            basis_library=model.basis_library,
-            max_terms=model.max_terms,
-            strategy=model.strategy,
-            information_criterion=model.information_criterion,
-            cv_folds=model.cv_folds,
-            regularization=model.regularization,
-            constraints=model.constraints,
-            random_state=model.random_state,
-        )
+        if is_multi:
+            model_clone = MultiOutputSymbolicRegressor(
+                estimator=_clone_estimator(model.estimator),
+                target_names=model.target_names,
+            )
+        else:
+            model_clone = _clone_estimator(model)
         model_clone.fit(X_train, y_train)
 
         y_pred_test = model_clone.predict(X_test)
