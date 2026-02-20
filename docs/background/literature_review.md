@@ -225,6 +225,16 @@ JAXSR takes an approach most similar to ALAMO but with several key differences:
 
 3. **No Neural Network Integration**: Unlike AI Feynman or transformer methods, JAXSR doesn't leverage neural networks for search guidance.
 
+## Applications of Symbolic Regression in Chemical Sciences
+
+Symbolic regression and related data-driven approaches have found impactful applications in chemical kinetics and reaction network discovery, where interpretable mathematical models are essential.
+
+- **Wilson, Z. T. & Sahinidis, N. V. (2019).** Automated learning of chemical reaction networks. *Computers & Chemical Engineering*, 127, 88–98. [18] — Extends the ALAMO framework to automatically learn chemical reaction network structures and rate expressions from kinetic data, demonstrating that surrogate-model-based symbolic regression can recover interpretable reaction mechanisms from simulation data.
+
+- **Wu, Q., Avanesian, T., Qu, X., & Van Dam, H. (2022).** PolyODENet: Deriving mass-action rate equations from incomplete transient kinetics data. *Journal of Chemical Physics*, 157(16), 164801. [19] — Combines neural ODEs with physical constraints (mass conservation, mass-action kinetics) to derive rate equations from incomplete transient kinetics data, including the ability to predict concentration profiles of unmeasurable intermediate species and reveal hidden reaction mechanisms.
+
+- **Palma Banos, M., Kress, J. D., Hernandez, R., & Craven, G. T. (2025).** Stoichiometrically-informed symbolic regression for extracting chemical reaction mechanisms from data. *arXiv preprint arXiv:2510.20655*. [20] — Introduces SISR, a method that couples differential optimization with genetic search over a symbolic space to discover reaction pathways and rate constants from concentration time-series data, with demonstrated robustness to noise on both linear and nonlinear reaction systems.
+
 ## Future Directions
 
 Based on the literature, several directions could enhance JAXSR:
@@ -280,3 +290,9 @@ JAXSR fills an important gap in the symbolic regression landscape by providing a
 [16] Cranmer, M., Sanchez-Gonzalez, A., Battaglia, P., Xu, R., Cranmer, K., Spergel, D., & Ho, S. (2020). Discovering Symbolic Models from Deep Learning with Inductive Biases. NeurIPS 2020. https://arxiv.org/abs/2006.11287
 
 [17] Kidger, P. (2021). On Neural Differential Equations. PhD Thesis, University of Oxford. https://doi.org/10.5287/ora-r5kybrozr. Diffrax: https://docs.kidger.site/diffrax/
+
+[18] Wilson, Z. T., & Sahinidis, N. V. (2019). Automated learning of chemical reaction networks. Computers & Chemical Engineering, 127, 88–98. https://doi.org/10.1016/j.compchemeng.2019.05.020
+
+[19] Wu, Q., Avanesian, T., Qu, X., & Van Dam, H. (2022). PolyODENet: Deriving mass-action rate equations from incomplete transient kinetics data. Journal of Chemical Physics, 157(16), 164801. https://doi.org/10.1063/5.0110313
+
+[20] Palma Banos, M., Kress, J. D., Hernandez, R., & Craven, G. T. (2025). Stoichiometrically-informed symbolic regression for extracting chemical reaction mechanisms from data. arXiv preprint arXiv:2510.20655. https://arxiv.org/abs/2510.20655
