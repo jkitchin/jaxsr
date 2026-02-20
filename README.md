@@ -7,7 +7,7 @@
 
 ![img](jaxsr-image.png)
 
-JAXSR is a fully open-source symbolic regression library built on JAX that discovers interpretable algebraic expressions from data. Inspired by ALAMO (Automated Learning of Algebraic Models for Optimization), it uses sparse optimization techniques with JAX for automatic differentiation, JIT compilation, and GPU acceleration.
+JAXSR is a fully open-source symbolic regression library built on JAX that discovers interpretable algebraic expressions from data. It uses sparse optimization techniques with JAX for automatic differentiation, JIT compilation, and GPU acceleration.
 
 ## Features
 
