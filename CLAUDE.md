@@ -121,6 +121,10 @@ review — incorrect examples teach users wrong patterns.
 | `discrete_dims` | `list[int]` | `dict[int, list]` — maps dimension index to allowed values |
 | ANOVA `result.rows` | Using all rows for % calc | Filter `{"Model", "Residual", "Total"}` — they are summary rows |
 | `information_criterion` | `"cv"` | Only `"aic"`, `"aicc"`, `"bic"` are supported |
+| `model.get_params()` | Returns `dict` of all constructor params | Accessing non-constructor attributes |
+| `model.set_params(**kw)` | Sets constructor params, returns `self` | Passing non-constructor param names (raises `ValueError`) |
+| `mo.set_params(estimator__max_terms=8)` | Double-underscore for nested params | `mo.set_params(max_terms=8)` — wrong level |
+| sklearn `n_jobs` | Always `n_jobs=1` | `n_jobs=-1` conflicts with JAX parallelism |
 
 **Process:**
 1. For each file, extract every JAXSR API call
@@ -178,6 +182,7 @@ Map which JAXSR features have guide/template/notebook coverage.
 - Active learning (`guides/active-learning.md`)
 - RSM (`guides/rsm.md`)
 - Known-model fitting (`guides/known-model-fitting.md`)
+- Scikit-learn integration (`guides/sklearn-integration.md`)
 - CLI reference (`guides/cli.md`)
 
 **Gaps to fill:**

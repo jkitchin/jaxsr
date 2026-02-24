@@ -122,11 +122,19 @@ Use `hard=True` for strict enforcement; `hard=False` (default) for soft penalty.
 
 ---
 
+### "How do I use JAXSR with scikit-learn?"
+
+See `guides/sklearn-integration.md` for cross-validation, hyperparameter tuning,
+pipelines, and model comparison using sklearn tools.
+
 ## Quick Reference: Installation
 
 ```bash
 # Core library
 pip install jaxsr
+
+# With sklearn integration (cross_val_score, GridSearchCV, Pipeline)
+pip install "jaxsr[sklearn]"
 
 # With CLI support
 pip install "jaxsr[cli]"
@@ -245,6 +253,38 @@ jaxsr report my_study.jaxsr -o report.docx
 jaxsr status my_study.jaxsr
 ```
 
+### Scikit-learn Integration
+
+```python
+# JAXSR estimators work with sklearn's clone, cross_val_score, GridSearchCV, Pipeline
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+# Cross-validation
+scores = cross_val_score(model, X, y, cv=5, scoring="r2")
+
+# Hyperparameter tuning
+grid = GridSearchCV(model, {"max_terms": [3, 5, 7]}, cv=3, scoring="r2", n_jobs=1)
+grid.fit(X, y)
+
+# Pipeline
+pipe = Pipeline([("scaler", StandardScaler()), ("sr", model)])
+pipe.fit(X, y)
+
+# get_params / set_params protocol
+model.get_params()                                # all constructor params
+model.set_params(max_terms=7, strategy="exhaustive")  # modify params
+
+# Nested params for MultiOutputSymbolicRegressor
+mo.set_params(estimator__max_terms=3)
+```
+
+**Key points:**
+- `scikit-learn` is an optional dependency: `pip install jaxsr[sklearn]`
+- Always use `n_jobs=1` with sklearn tools — JAX handles parallelism internally
+- `BasisLibrary` is not a sklearn transformer; configure it before creating the model
+
 ## Decision Trees
 
 ### "Which basis functions should I use?"
@@ -309,3 +349,5 @@ Ready-to-use scripts and notebook starters are in `templates/`:
 6. **Stale metrics after refit.** After applying constraints, metrics are automatically recalculated. Do not copy metrics from a previous result.
 7. **Python control flow in JIT.** If writing custom basis functions with `@jit`, use `jnp.where` instead of `if/else`.
 8. **Calling `float()` on JAX arrays inside JIT.** Use `.item()` outside JIT or keep values as JAX arrays.
+9. **Using `n_jobs=-1` with sklearn tools.** JAX handles parallelism internally. Always use `n_jobs=1` with `GridSearchCV`, `cross_val_score`, etc.
+10. **Treating `BasisLibrary` as a sklearn transformer.** It is not a transformer; configure it before creating the estimator. It cannot be included as a `Pipeline` step.

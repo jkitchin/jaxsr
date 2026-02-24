@@ -14,6 +14,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from ._compat import _SklearnCompatMixin
 from .basis import BasisLibrary
 from .constraints import Constraints, fit_constrained_ols
 from .metrics import compute_information_criterion
@@ -43,33 +44,21 @@ from .uncertainty import (
 # =============================================================================
 
 
-def _clone_estimator(est: SymbolicRegressor) -> SymbolicRegressor:
+def _clone_estimator(est):
     """
-    Clone a ``SymbolicRegressor`` by copying all constructor kwargs.
+    Clone an estimator by copying all constructor kwargs.
 
     Parameters
     ----------
-    est : SymbolicRegressor
-        Estimator to clone.
+    est : estimator
+        Estimator to clone. Must implement ``get_params(deep=False)``.
 
     Returns
     -------
-    clone : SymbolicRegressor
+    clone : estimator
         Unfitted copy with the same configuration.
     """
-    return SymbolicRegressor(
-        basis_library=est.basis_library,
-        max_terms=est.max_terms,
-        strategy=est.strategy,
-        information_criterion=est.information_criterion,
-        cv_folds=est.cv_folds,
-        regularization=est.regularization,
-        constraints=est.constraints,
-        random_state=est.random_state,
-        param_optimizer=est.param_optimizer,
-        param_optimization_budget=est.param_optimization_budget,
-        constraint_enforcement=est.constraint_enforcement,
-    )
+    return type(est)(**est.get_params(deep=False))
 
 
 # =============================================================================
@@ -77,7 +66,7 @@ def _clone_estimator(est: SymbolicRegressor) -> SymbolicRegressor:
 # =============================================================================
 
 
-class SymbolicRegressor:
+class SymbolicRegressor(_SklearnCompatMixin):
     """
     JAX-accelerated symbolic regression using sparse selection.
 
@@ -1219,7 +1208,7 @@ class SymbolicRegressor:
 # =============================================================================
 
 
-class MultiOutputSymbolicRegressor:
+class MultiOutputSymbolicRegressor(_SklearnCompatMixin):
     """
     Multi-output symbolic regression via per-column fitting.
 

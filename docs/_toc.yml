@@ -13,6 +13,7 @@ parts:
       - file: guides/cli_guide
       - file: guides/claude_code_skills
       - file: guides/performance
+      - file: guides/sklearn-integration
 
   - caption: Examples
     chapters:

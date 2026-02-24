@@ -18,7 +18,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **Adaptive Sampling**: Intelligently suggest new data points to improve model quality
 - **JAX-Accelerated**: JIT compilation and GPU support for fast computation
 - **Symbolic Classification**: Discover interpretable logistic models for binary and multiclass problems via IRLS + sparse selection
-- **Scikit-learn Compatible**: Familiar `fit`/`predict` interface
+- **Scikit-learn Compatible**: Full estimator protocol (`get_params`/`set_params`/`clone`) — works with `cross_val_score`, `GridSearchCV`, `Pipeline`
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
 
 ## Installation
@@ -302,6 +302,7 @@ for packaging).
 | `guides/active-learning.md` | Acquisition functions and adaptive sampling |
 | `guides/rsm.md` | Response Surface Methodology designs and analysis |
 | `guides/known-model-fitting.md` | Fitting known model forms (Langmuir, Arrhenius, etc.) |
+| `guides/sklearn-integration.md` | Using JAXSR with sklearn (cross_val_score, GridSearchCV, Pipeline) |
 | `guides/cli.md` | CLI reference for code-free DOE workflows |
 
 **Templates** (ready-to-run starter scripts in `templates/`):

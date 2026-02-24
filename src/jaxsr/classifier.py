@@ -20,6 +20,7 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from ._compat import _SklearnCompatMixin
 from .basis import BasisLibrary
 from .constraints import Constraints
 from .metrics import (
@@ -40,7 +41,7 @@ from .uncertainty import (
 )
 
 
-class SymbolicClassifier:
+class SymbolicClassifier(_SklearnCompatMixin):
     """
     JAX-accelerated symbolic classification using sparse selection.
 

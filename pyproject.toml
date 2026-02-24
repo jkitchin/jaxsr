@@ -40,6 +40,10 @@ dev = [
     "black",
     "ruff",
     "mypy",
+    "scikit-learn>=1.2",
+]
+sklearn = [
+    "scikit-learn>=1.2",
 ]
 cli = [
     "click>=8.0",
@@ -65,7 +69,7 @@ docs = [
     "jupyter-book>=0.15,<2",
     "sphinx-copybutton",
 ]
-all = ["jaxsr[dev,docs,cli,excel,reports,app,qp]"]
+all = ["jaxsr[dev,docs,cli,excel,reports,app,qp,sklearn]"]
 
 [project.scripts]
 jaxsr = "jaxsr.cli:main"
