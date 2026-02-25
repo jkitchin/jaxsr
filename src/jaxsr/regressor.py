@@ -44,6 +44,36 @@ from .uncertainty import (
 # =============================================================================
 
 
+def _resolve_category_value(cat_val_str: str, feat_idx: int, categories: dict | None) -> float:
+    """Resolve a category value string to its numeric index.
+
+    Parameters
+    ----------
+    cat_val_str : str
+        Category value as it appears in a basis function name (e.g. ``"Pd"``
+        or ``"2"``).
+    feat_idx : int
+        Feature column index.
+    categories : dict or None
+        Mapping from feature index to list of category names.
+
+    Returns
+    -------
+    float
+        Numeric encoding of the category (its position in the category list).
+    """
+    try:
+        return float(cat_val_str)
+    except ValueError:
+        if categories and feat_idx in categories:
+            cats = categories[feat_idx]
+            if cat_val_str in cats:
+                return float(cats.index(cat_val_str))
+        raise ValueError(
+            f"Cannot resolve category value '{cat_val_str}' for feature {feat_idx}"
+        ) from None
+
+
 def _clone_estimator(est):
     """
     Clone an estimator by copying all constructor kwargs.
@@ -817,23 +847,39 @@ class SymbolicRegressor(_SklearnCompatMixin):
         if name in symbols:
             return symbols[name]
 
-        # Handle categorical interaction: I(color=2)*temperature
+        # Handle categorical interaction: I(catalyst=Pd)*temperature
         if name.startswith("I(") and ")*" in name:
             indicator_part, cont_part = name.split(")*", 1)
-            inner = indicator_part[2:]  # "color=2"
+            inner = indicator_part[2:]  # "catalyst=Pd"
             feat_name, cat_val_str = inner.split("=", 1)
             x = symbols.get(feat_name, sympy.Symbol(feat_name))
-            cat_val = float(cat_val_str)
+            cat_val = _resolve_category_value(
+                cat_val_str,
+                (
+                    self.basis_library.feature_names.index(feat_name)
+                    if feat_name in self.basis_library.feature_names
+                    else -1
+                ),
+                self.basis_library.categories,
+            )
             indicator = sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
             cont_sym = symbols.get(cont_part, sympy.Symbol(cont_part))
             return indicator * cont_sym
 
-        # Handle indicator: I(color=2)
+        # Handle indicator: I(catalyst=Pd)
         if name.startswith("I(") and name.endswith(")") and "=" in name:
-            inner = name[2:-1]  # "color=2"
+            inner = name[2:-1]  # "catalyst=Pd"
             feat_name, cat_val_str = inner.split("=", 1)
             x = symbols.get(feat_name, sympy.Symbol(feat_name))
-            cat_val = float(cat_val_str)
+            cat_val = _resolve_category_value(
+                cat_val_str,
+                (
+                    self.basis_library.feature_names.index(feat_name)
+                    if feat_name in self.basis_library.feature_names
+                    else -1
+                ),
+                self.basis_library.categories,
+            )
             return sympy.Piecewise((1, sympy.Eq(x, cat_val)), (0, True))
 
         # Handle powers: x^2, x^0.8, x^(1/3), etc.
@@ -914,7 +960,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         expr = self.to_sympy()
         return sympy.latex(expr)
 
-    def to_callable(self) -> Callable[[np.ndarray], np.ndarray]:
+    def to_callable(self) -> Callable[[np.ndarray], np.ndarray]:  # noqa: C901
         """
         Convert to pure Python/NumPy callable (no JAX dependency).
 
@@ -953,6 +999,26 @@ class SymbolicRegressor(_SklearnCompatMixin):
                     else:
                         power = float(power_str)
                     term = X[:, idx] ** power
+                elif name.startswith("I(") and ")*" in name:
+                    # Categorical interaction: I(catalyst=Pd)*temperature
+                    indicator_part, cont_part = name.split(")*", 1)
+                    inner = indicator_part[2:]  # "catalyst=Pd"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    cat_idx = feature_names.index(feat_name)
+                    cat_val = _resolve_category_value(
+                        cat_val_str, cat_idx, self.basis_library.categories
+                    )
+                    cont_idx = feature_names.index(cont_part)
+                    term = (X[:, cat_idx] == cat_val).astype(float) * X[:, cont_idx]
+                elif name.startswith("I(") and name.endswith(")") and "=" in name:
+                    # Indicator: I(catalyst=Pd)
+                    inner = name[2:-1]  # "catalyst=Pd"
+                    feat_name, cat_val_str = inner.split("=", 1)
+                    idx = feature_names.index(feat_name)
+                    cat_val = _resolve_category_value(
+                        cat_val_str, idx, self.basis_library.categories
+                    )
+                    term = (X[:, idx] == cat_val).astype(float)
                 elif "*" in name and "/" not in name:
                     parts = name.split("*")
                     term = np.ones(n_samples)
@@ -1015,22 +1081,6 @@ class SymbolicRegressor(_SklearnCompatMixin):
                     inner = name[7:-1]
                     idx = feature_names.index(inner)
                     term = X[:, idx] ** 2
-                elif name.startswith("I(") and ")*" in name:
-                    # Categorical interaction: I(color=2)*temperature
-                    indicator_part, cont_part = name.split(")*", 1)
-                    inner = indicator_part[2:]  # "color=2"
-                    feat_name, cat_val_str = inner.split("=", 1)
-                    cat_idx = feature_names.index(feat_name)
-                    cat_val = float(cat_val_str)
-                    cont_idx = feature_names.index(cont_part)
-                    term = (X[:, cat_idx] == cat_val).astype(float) * X[:, cont_idx]
-                elif name.startswith("I(") and name.endswith(")") and "=" in name:
-                    # Indicator: I(color=2)
-                    inner = name[2:-1]  # "color=2"
-                    feat_name, cat_val_str = inner.split("=", 1)
-                    idx = feature_names.index(feat_name)
-                    cat_val = float(cat_val_str)
-                    term = (X[:, idx] == cat_val).astype(float)
                 elif name.startswith("1/"):
                     inner = name[2:]
                     idx = feature_names.index(inner)

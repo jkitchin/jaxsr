@@ -474,20 +474,25 @@ class BasisLibrary:
 
             cats = self.categories[i]
             # Reference encoding: drop the first category
-            for cat_val in cats[1:]:
+            for cat_idx, cat_val in enumerate(cats[1:], start=1):
                 name = f"I({self.feature_names[i]}={cat_val})"
+                # Compare with numeric index (categories are encoded as 0, 1, 2, ...)
                 self.basis_functions.append(
                     BasisFunction(
                         name=name,
                         func=partial(
                             lambda X, idx, val: (X[:, idx] == val).astype(jnp.float32),
                             idx=i,
-                            val=cat_val,
+                            val=cat_idx,
                         ),
                         complexity=1,
                         feature_indices=(i,),
                         func_type="indicator",
-                        func_config={"feature_index": i, "category_value": cat_val},
+                        func_config={
+                            "feature_index": i,
+                            "category_value": cat_val,
+                            "category_index": cat_idx,
+                        },
                     )
                 )
 
@@ -524,9 +529,10 @@ class BasisLibrary:
         for ci in cat_features:
             cats = self.categories[ci]
             # Reference encoding: drop the first category
-            for cat_val in cats[1:]:
+            for cat_idx, cat_val in enumerate(cats[1:], start=1):
                 for cj in cont_features:
                     name = f"I({self.feature_names[ci]}={cat_val})*{self.feature_names[cj]}"
+                    # Compare with numeric index (categories are encoded as 0, 1, 2, ...)
                     self.basis_functions.append(
                         BasisFunction(
                             name=name,
@@ -535,7 +541,7 @@ class BasisLibrary:
                                     (X[:, ci] == val).astype(jnp.float32) * X[:, cj]
                                 ),
                                 ci=ci,
-                                val=cat_val,
+                                val=cat_idx,
                                 cj=cj,
                             ),
                             complexity=2,
@@ -544,6 +550,7 @@ class BasisLibrary:
                             func_config={
                                 "categorical_index": ci,
                                 "category_value": cat_val,
+                                "category_index": cat_idx,
                                 "continuous_index": cj,
                             },
                         )
@@ -1525,14 +1532,20 @@ class BasisLibrary:
                 )
             elif func_type == "indicator":
                 i = fc["feature_index"]
-                cat_val = fc["category_value"]
+                # Use numeric index for comparison (categories encoded as 0, 1, 2, ...)
+                cat_idx = fc.get("category_index")
+                if cat_idx is None:
+                    # Backward compat: derive index from categories list
+                    cat_val = fc["category_value"]
+                    cats = library.categories[i] if library.categories else []
+                    cat_idx = cats.index(cat_val) if cat_val in cats else cat_val
                 library.basis_functions.append(
                     BasisFunction(
                         name=bf_config["name"],
                         func=partial(
                             lambda X, idx, val: (X[:, idx] == val).astype(jnp.float32),
                             idx=i,
-                            val=cat_val,
+                            val=cat_idx,
                         ),
                         complexity=bf_config["complexity"],
                         feature_indices=(i,),
@@ -1542,8 +1555,14 @@ class BasisLibrary:
                 )
             elif func_type == "categorical_interaction":
                 ci = fc["categorical_index"]
-                cat_val = fc["category_value"]
                 cj = fc["continuous_index"]
+                # Use numeric index for comparison (categories encoded as 0, 1, 2, ...)
+                cat_idx = fc.get("category_index")
+                if cat_idx is None:
+                    # Backward compat: derive index from categories list
+                    cat_val = fc["category_value"]
+                    cats = library.categories[ci] if library.categories else []
+                    cat_idx = cats.index(cat_val) if cat_val in cats else cat_val
                 library.basis_functions.append(
                     BasisFunction(
                         name=bf_config["name"],
@@ -1552,7 +1571,7 @@ class BasisLibrary:
                                 (X[:, ci] == val).astype(jnp.float32) * X[:, cj]
                             ),
                             ci=ci,
-                            val=cat_val,
+                            val=cat_idx,
                             cj=cj,
                         ),
                         complexity=bf_config["complexity"],

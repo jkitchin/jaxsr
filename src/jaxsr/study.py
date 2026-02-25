@@ -630,7 +630,11 @@ class DOEStudy:
 
         from .sampling import AdaptiveSampler
 
-        discrete_dims = self.categories if self.categories else None
+        discrete_dims = None
+        if self.categories:
+            discrete_dims = {
+                idx: list(range(len(levels))) for idx, levels in self.categories.items()
+            }
 
         sampler = AdaptiveSampler(
             model=self._model,
