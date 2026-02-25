@@ -83,6 +83,7 @@ class TestGetParams:
             "param_optimizer",
             "param_optimization_budget",
             "constraint_enforcement",
+            "constraint_selection_weight",
         }
         assert set(params.keys()) == expected_keys
 
