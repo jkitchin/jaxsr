@@ -685,6 +685,7 @@ def greedy_forward_selection(
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
+    constraint_scorer=None,
 ) -> SelectionPath:
     """
     Greedy forward stepwise selection.
@@ -769,6 +770,8 @@ def greedy_forward_selection(
                 )
 
             ic_value = getattr(result, information_criterion)
+            if constraint_scorer is not None:
+                ic_value = ic_value + constraint_scorer(result, candidate)
             if ic_value < best_step_ic:
                 best_step_ic = ic_value
                 best_idx = idx
@@ -854,6 +857,7 @@ def greedy_backward_elimination(
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
+    constraint_scorer=None,
 ) -> SelectionPath:
     """
     Greedy backward elimination.
@@ -915,6 +919,8 @@ def greedy_backward_elimination(
         result = fit_subset(Phi, y, selected, basis_names, complexities, regularization, **_fs_kw)
     results.append(result)
     current_ic = getattr(result, information_criterion)
+    if constraint_scorer is not None:
+        current_ic = current_ic + constraint_scorer(result, list(selected))
     if current_ic < best_ic:
         best_ic = current_ic
         best_index = 0
@@ -939,6 +945,8 @@ def greedy_backward_elimination(
                     Phi, y, candidate, basis_names, complexities, regularization, **_fs_kw
                 )
             ic_value = getattr(result, information_criterion)
+            if constraint_scorer is not None:
+                ic_value = ic_value + constraint_scorer(result, candidate)
 
             if ic_value < best_step_ic:
                 best_step_ic = ic_value
@@ -983,6 +991,7 @@ def exhaustive_search(
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
+    constraint_scorer=None,
 ) -> SelectionPath:
     """
     Exhaustive search over all combinations.
@@ -1071,6 +1080,8 @@ def exhaustive_search(
             results.append(result)
 
             ic_value = getattr(result, information_criterion)
+            if constraint_scorer is not None:
+                ic_value = ic_value + constraint_scorer(result, list(combo))
             if ic_value < best_ic:
                 best_ic = ic_value
                 best_index = len(results) - 1
@@ -1169,6 +1180,7 @@ def lasso_path_selection(
     basis_library=None,
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
+    constraint_scorer=None,
 ) -> SelectionPath:
     """
     LASSO path screening for variable selection.
@@ -1278,6 +1290,8 @@ def lasso_path_selection(
         results.append(result)
 
         ic_value = getattr(result, information_criterion)
+        if constraint_scorer is not None:
+            ic_value = ic_value + constraint_scorer(result, list(active))
         if ic_value < best_ic:
             best_ic = ic_value
             best_index = len(results) - 1
@@ -1296,6 +1310,7 @@ def lasso_path_selection(
             basis_library=basis_library,
             param_optimizer=param_optimizer,
             param_optimization_budget=param_optimization_budget,
+            constraint_scorer=constraint_scorer,
         )
 
     return SelectionPath(

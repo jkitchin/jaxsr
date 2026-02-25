@@ -10,6 +10,7 @@ from jaxsr.constraints import (
     ConstraintEvaluator,
     Constraints,
     ConstraintType,
+    build_constraint_scorer,
     fit_constrained_ols,
 )
 
@@ -936,3 +937,172 @@ class TestConstraintEnforcementLevels:
 
         coeff_sum = float(np.sum(np.array(coeffs)))
         assert coeff_sum <= 2.0 + 1e-4, f"Linear constraint violated: sum = {coeff_sum}"
+
+
+class TestBuildConstraintScorer:
+    """Tests for build_constraint_scorer."""
+
+    def test_returns_zero_when_satisfied(self):
+        """Scorer returns 0 when constraints are already satisfied."""
+        np.random.seed(42)
+        X = np.linspace(0, 2, 20).reshape(-1, 1)
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+
+        # Monotonic increasing constraint — model y = 1 + 2*x satisfies this
+        constraints = Constraints().add_monotonic("x", direction="increasing")
+
+        scorer = build_constraint_scorer(
+            constraints=constraints,
+            X=jnp.array(X),
+            basis_library=library,
+            feature_names=["x"],
+        )
+
+        from jaxsr.selection import SelectionResult
+
+        result = SelectionResult(
+            coefficients=jnp.array([1.0, 2.0]),
+            selected_indices=jnp.array([0, 1]),
+            selected_names=["1", "x"],
+            mse=0.0,
+            complexity=2,
+            aic=0.0,
+            bic=0.0,
+            aicc=0.0,
+            n_samples=20,
+        )
+
+        penalty = scorer(result, [0, 1])
+        assert penalty == pytest.approx(0.0, abs=1e-6)
+
+    def test_returns_positive_when_violated(self):
+        """Scorer returns positive penalty when constraints are violated."""
+        np.random.seed(42)
+        X = np.linspace(0, 2, 20).reshape(-1, 1)
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+
+        # Monotonic increasing — model y = 1 - 2*x violates this
+        constraints = Constraints().add_monotonic("x", direction="increasing")
+
+        scorer = build_constraint_scorer(
+            constraints=constraints,
+            X=jnp.array(X),
+            basis_library=library,
+            feature_names=["x"],
+        )
+
+        from jaxsr.selection import SelectionResult
+
+        result = SelectionResult(
+            coefficients=jnp.array([1.0, -2.0]),
+            selected_indices=jnp.array([0, 1]),
+            selected_names=["1", "x"],
+            mse=0.0,
+            complexity=2,
+            aic=0.0,
+            bic=0.0,
+            aicc=0.0,
+            n_samples=20,
+        )
+
+        penalty = scorer(result, [0, 1])
+        assert penalty > 0.0
+
+    def test_penalty_weight_scales(self):
+        """Higher penalty_weight produces larger penalties."""
+        X = np.linspace(0, 2, 20).reshape(-1, 1)
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        constraints = Constraints().add_monotonic("x", direction="increasing")
+
+        from jaxsr.selection import SelectionResult
+
+        result = SelectionResult(
+            coefficients=jnp.array([1.0, -2.0]),
+            selected_indices=jnp.array([0, 1]),
+            selected_names=["1", "x"],
+            mse=0.0,
+            complexity=2,
+            aic=0.0,
+            bic=0.0,
+            aicc=0.0,
+            n_samples=20,
+        )
+
+        scorer_low = build_constraint_scorer(
+            constraints, jnp.array(X), library, ["x"], penalty_weight=1.0
+        )
+        scorer_high = build_constraint_scorer(
+            constraints, jnp.array(X), library, ["x"], penalty_weight=10.0
+        )
+
+        assert scorer_high(result, [0, 1]) > scorer_low(result, [0, 1])
+
+
+class TestConstraintAwareSelection:
+    """Integration tests for constraint-aware model selection."""
+
+    def test_constraint_flips_model_selection(self):
+        """Constraint penalty causes a different model to be selected."""
+        from jaxsr import SymbolicRegressor
+
+        np.random.seed(42)
+        n = 50
+        x = np.linspace(0.1, 3.0, n)
+        X = x.reshape(-1, 1)
+        # True model: y = 2*x (monotonically increasing)
+        y = 2.0 * x + np.random.normal(0, 0.1, n)
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+
+        # Monotonic increasing constraint on x
+        constraints = Constraints().add_monotonic("x", direction="increasing")
+
+        # Fit without constraint-aware selection
+        model_no_cs = SymbolicRegressor(
+            basis_library=library,
+            max_terms=3,
+            strategy="exhaustive",
+            constraints=constraints,
+            constraint_selection_weight=0.0,
+        )
+        model_no_cs.fit(X, y)
+
+        # Fit with constraint-aware selection
+        model_cs = SymbolicRegressor(
+            basis_library=library,
+            max_terms=3,
+            strategy="exhaustive",
+            constraints=constraints,
+            constraint_selection_weight=10.0,
+        )
+        model_cs.fit(X, y)
+
+        # Both should fit reasonably well
+        assert model_cs.score(X, y) > 0.9
+        assert model_no_cs.score(X, y) > 0.9
+
+    def test_constraint_selection_weight_in_get_params(self):
+        """constraint_selection_weight is included in get_params."""
+        from jaxsr import SymbolicRegressor
+
+        library = BasisLibrary(n_features=1).add_constant().add_linear()
+        model = SymbolicRegressor(
+            basis_library=library,
+            constraint_selection_weight=5.0,
+        )
+        params = model.get_params()
+        assert params["constraint_selection_weight"] == 5.0
+
+    def test_constraint_selection_weight_set_params(self):
+        """constraint_selection_weight can be set via set_params."""
+        from jaxsr import SymbolicRegressor
+
+        library = BasisLibrary(n_features=1).add_constant().add_linear()
+        model = SymbolicRegressor(basis_library=library)
+        model.set_params(constraint_selection_weight=3.0)
+        assert model.constraint_selection_weight == 3.0

@@ -16,7 +16,7 @@ import numpy as np
 
 from ._compat import _SklearnCompatMixin
 from .basis import BasisLibrary
-from .constraints import Constraints, fit_constrained_ols
+from .constraints import Constraints, build_constraint_scorer, fit_constrained_ols
 from .metrics import compute_information_criterion
 from .selection import (
     SelectionPath,
@@ -93,6 +93,12 @@ class SymbolicRegressor(_SklearnCompatMixin):
         Physical constraints to enforce.
     random_state : int, optional
         Random seed for reproducibility.
+    constraint_selection_weight : float
+        Weight for constraint penalty during model selection.  When > 0,
+        a penalty proportional to constraint violations is added to the
+        information criterion during term selection, biasing selection
+        towards models that better satisfy constraints.  Default 0.0
+        (no constraint-aware selection).
 
     Attributes
     ----------
@@ -136,6 +142,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         param_optimizer: str = "scipy",
         param_optimization_budget: int = 50,
         constraint_enforcement: str = "penalty",
+        constraint_selection_weight: float = 0.0,
     ):
         if constraint_enforcement not in ("penalty", "constrained", "exact"):
             raise ValueError(
@@ -153,6 +160,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         self.param_optimizer = param_optimizer
         self.param_optimization_budget = param_optimization_budget
         self.constraint_enforcement = constraint_enforcement
+        self.constraint_selection_weight = constraint_selection_weight
 
         # Fitted attributes
         self._result: SelectionResult | None = None
@@ -286,6 +294,17 @@ class SymbolicRegressor(_SklearnCompatMixin):
                 basis_library=self.basis_library,
                 param_optimizer=self.param_optimizer,
                 param_optimization_budget=self.param_optimization_budget,
+            )
+
+        # Build constraint scorer for constraint-aware model selection
+        if self.constraints is not None and self.constraint_selection_weight > 0:
+            extra_kw["constraint_scorer"] = build_constraint_scorer(
+                constraints=self.constraints,
+                X=X,
+                basis_library=self.basis_library,
+                feature_names=self.basis_library.feature_names,
+                penalty_weight=self.constraint_selection_weight,
+                hard_penalty_weight=self.constraint_selection_weight * 1000.0,
             )
 
         self._selection_path = select_features(

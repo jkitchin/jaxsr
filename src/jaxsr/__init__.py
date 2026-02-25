@@ -38,7 +38,7 @@ from .basis import BasisFunction, BasisLibrary
 
 # Classification
 from .classifier import SymbolicClassifier, fit_symbolic_classification
-from .constraints import Constraint, Constraints, ConstraintType
+from .constraints import Constraint, Constraints, ConstraintType, build_constraint_scorer
 from .dynamics import DynamicsResult, discover_dynamics, estimate_derivatives
 
 # Metrics
@@ -192,6 +192,7 @@ __all__ = [
     "Constraint",
     "Constraints",
     "ConstraintType",
+    "build_constraint_scorer",
     "DOEStudy",
     "MultiOutputSymbolicRegressor",
     "SymbolicRegressor",

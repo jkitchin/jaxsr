@@ -1168,6 +1168,21 @@ def _precompute_constraint_data(
             entry["A"] = jnp.array(constraint.params["A"])
             entry["b"] = jnp.array(constraint.params["b"])
 
+        elif ctype == ConstraintType.CUSTOM:
+            entry["type"] = "custom"
+            entry["fn"] = constraint.params["fn"]
+            entry["X"] = X_jax
+            entry["Phi"] = _eval_phi(X_jax)
+            # Store mapping info so we can pad coefficients to full library size.
+            # This lets user penalty functions use library.evaluate() @ coefficients.
+            if selected_indices is not None and basis_library is not None:
+                n_full = len(basis_library.names)
+                entry["selected_indices"] = jnp.array(selected_indices)
+                entry["n_full"] = n_full
+            else:
+                entry["selected_indices"] = None
+                entry["n_full"] = None
+
         else:
             continue
 
@@ -1270,6 +1285,18 @@ def _compute_jax_penalty(
         elif ctype == "linear":
             violations = jnp.maximum(entry["A"] @ coeffs - entry["b"], 0)
             total = total + weight * jnp.sum(violations**2)
+
+        elif ctype == "custom":
+            y_pred = entry["Phi"] @ coeffs
+            # Pad coefficients to full library size so user penalty functions
+            # can use library.evaluate(X) @ coefficients consistently.
+            if entry["selected_indices"] is not None:
+                full_coeffs = jnp.zeros(entry["n_full"])
+                full_coeffs = full_coeffs.at[entry["selected_indices"]].set(coeffs)
+            else:
+                full_coeffs = coeffs
+            penalty = entry["fn"](full_coeffs, entry["X"], y_pred)
+            total = total + weight * penalty
 
     return total
 
@@ -2046,3 +2073,62 @@ def fit_constrained_ols(
             scipy_bounds=scipy_bounds,
             constraint_data=constraint_data,
         )
+
+
+def build_constraint_scorer(
+    constraints: Constraints,
+    X: jnp.ndarray,
+    basis_library: Any,
+    feature_names: list[str],
+    penalty_weight: float = 1.0,
+    hard_penalty_weight: float = 1000.0,
+) -> Callable:
+    """
+    Build a callable that scores constraint violations for a candidate model.
+
+    The returned scorer can be passed to selection strategies via the
+    ``constraint_scorer`` keyword argument.  During model selection each
+    candidate's information criterion is augmented by the penalty returned
+    by the scorer, biasing selection towards models that can better satisfy
+    the constraints.
+
+    Parameters
+    ----------
+    constraints : Constraints
+        Physical constraints to evaluate.
+    X : jnp.ndarray
+        Training data used for constraint evaluation (shape ``(n, d)``).
+    basis_library : BasisLibrary
+        Full basis library (needed for ``evaluate_subset``).
+    feature_names : list of str
+        Names of input features (e.g. ``["x1", "x2"]``).
+    penalty_weight : float
+        Weight applied to soft constraint penalties.
+    hard_penalty_weight : float
+        Weight applied to hard constraint penalties.
+
+    Returns
+    -------
+    scorer : callable
+        ``scorer(result, indices) -> float`` where *result* is a
+        ``SelectionResult`` and *indices* is the list of selected basis
+        function indices.  Returns 0.0 when there are no violations.
+    """
+    if not isinstance(X, jnp.ndarray):
+        X = jnp.asarray(X)
+
+    def scorer(result, indices):
+        evaluator = ConstraintEvaluator(constraints, result.selected_names, feature_names)
+        constraint_data = _precompute_constraint_data(
+            evaluator, X, basis_library, indices, Phi=None
+        )
+        penalty = _compute_jax_penalty(
+            evaluator,
+            result.coefficients,
+            constraint_data,
+            penalty_weight,
+            hard_penalty_weight,
+        )
+        return float(penalty)
+
+    return scorer
