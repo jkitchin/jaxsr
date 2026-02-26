@@ -1,8 +1,8 @@
 VENV := .venv
 UV := uv
 PYTHON := $(VENV)/bin/python
-NOTEBOOKS := $(shell find ./examples ./docs -name '*.ipynb' -not -name 'gpu_benchmarks.ipynb' -not -path './.ipynb_checkpoints/*' -not -path './.venv/*' -not -path './docs/_build/*')
-GPU_NOTEBOOK := examples/gpu_benchmarks.ipynb
+NOTEBOOKS := $(shell find ./docs/examples -name '*.ipynb' -not -name 'gpu_benchmarks.ipynb' -not -path './.ipynb_checkpoints/*' -not -path './docs/_build/*')
+GPU_NOTEBOOK := docs/examples/gpu_benchmarks.ipynb
 NB_STAMP_DIR := .nb_stamps
 NB_STAMPS := $(patsubst %.ipynb,$(NB_STAMP_DIR)/%.stamp,$(NOTEBOOKS))
 
@@ -29,8 +29,8 @@ lint:
 	$(PYTHON) -m ruff check src/ tests/
 
 format:
-	$(PYTHON) -m black src/ tests/ examples/
-	$(PYTHON) -m ruff check --fix src/ tests/ examples/
+	$(PYTHON) -m black src/ tests/ docs/examples/
+	$(PYTHON) -m ruff check --fix src/ tests/ docs/examples/
 
 check: lint test
 

@@ -221,8 +221,8 @@ Every code block in guides must either:
 **Always run these two commands before committing:**
 
 ```bash
-black src/ tests/ examples/
-ruff check --fix src/ tests/ examples/
+black src/ tests/ docs/examples/
+ruff check --fix src/ tests/ docs/examples/
 ```
 
 Then verify they pass in check mode (what CI runs):

@@ -442,6 +442,6 @@ BATCH STRATEGY
 ## Further Reading
 
 - [Acquisition function API reference](acquisition.md)
-- [Active learning example](../../examples/active_learning.ipynb)
-- [Comprehensive tutorial notebook](../../examples/comprehensive_tutorial.ipynb)
+- [Active learning example](../examples/active_learning.ipynb)
+- [Comprehensive tutorial notebook](../examples/comprehensive_tutorial.ipynb)
 - [API reference](../api/index.rst)

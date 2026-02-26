@@ -44,3 +44,4 @@ parts:
   - caption: Background
     chapters:
       - file: background/literature_review
+      - file: background/comparison-alamo-sisso-jaxsr

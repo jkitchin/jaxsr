@@ -325,7 +325,7 @@ in the documentation for more details.
 
 ## Examples
 
-See the `examples/` directory for complete worked examples:
+See the `docs/examples/` directory for complete worked examples:
 
 - `basic_usage.py`: Simple polynomial fitting
 - `uncertainty_quantification.py`: Prediction intervals, BMA, conformal, bootstrap

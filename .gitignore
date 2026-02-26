@@ -12,6 +12,8 @@ htmlcov/
 .ipynb_checkpoints/
 docs/_build/
 .nb_stamps/
+archive/
 *.json
 !pyproject.toml
+!*.ipynb
 
