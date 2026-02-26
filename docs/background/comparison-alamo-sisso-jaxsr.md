@@ -56,12 +56,12 @@ approximation, not truly L0 optimal for the joint problem.
 
 JAXSR offers four selection strategies with different optimality trade-offs:
 
-| Strategy | Algorithm | Optimality |
-|---|---|---|
-| `exhaustive` | Enumerate all subsets up to `max_terms` | **Globally optimal** (for given library and IC) |
-| `greedy_forward` | Iteratively add the best-improving term | Approximate (greedy) |
-| `greedy_backward` | Iteratively remove the least-useful term | Approximate (greedy) |
-| `lasso_path` | L1 screening followed by OLS refit on active sets | Heuristic |
+| Strategy          | Algorithm                                         | Optimality                                      |
+|-------------------|---------------------------------------------------|-------------------------------------------------|
+| `exhaustive`      | Enumerate all subsets up to `max_terms`           | **Globally optimal** (for given library and IC) |
+| `greedy_forward`  | Iteratively add the best-improving term           | Approximate (greedy)                            |
+| `greedy_backward` | Iteratively remove the least-useful term          | Approximate (greedy)                            |
+| `lasso_path`      | L1 screening followed by OLS refit on active sets | Heuristic                                       |
 
 Key design decisions:
 
@@ -78,15 +78,15 @@ Key design decisions:
 
 ## Side-by-Side Comparison
 
-| Aspect | ALAMO | SISSO | JAXSR |
-|---|---|---|---|
-| Selection mechanism | MIQP + branch-and-bound | SIS + L0 exhaustive | IC-based greedy / exhaustive / LASSO |
-| Global optimality | Yes (via solver) | Yes within screened set | Yes only with `exhaustive` strategy |
-| Scalability | ~50--100 basis functions | Millions (via SIS filtering) | ~20 exhaustive, ~1000+ with LASSO/greedy |
-| Sparsity control | Big-M + binary variables | L0 norm directly | Information criteria (AIC/BIC/AICc) |
-| External solver needed | Yes (BARON/GAMS) | No | No |
-| Adaptive sampling | Yes (built-in) | No | Yes (via `ActiveLearner`) |
-| Coefficient fitting | QP (within MIQP) | OLS on selected subset | OLS or ridge (closed-form) |
+| Aspect                 | ALAMO                    | SISSO                        | JAXSR                                    |
+|------------------------|--------------------------|------------------------------|------------------------------------------|
+| Selection mechanism    | MIQP + branch-and-bound  | SIS + L0 exhaustive          | IC-based greedy / exhaustive / LASSO     |
+| Global optimality      | Yes (via solver)         | Yes within screened set      | Yes only with `exhaustive` strategy      |
+| Scalability            | ~50--100 basis functions | Millions (via SIS filtering) | ~20 exhaustive, ~1000+ with LASSO/greedy |
+| Sparsity control       | Big-M + binary variables | L0 norm directly             | Information criteria (AIC/BIC/AICc)      |
+| External solver needed | Yes (BARON/GAMS)         | No                           | No                                       |
+| Adaptive sampling      | Yes (built-in)           | No                           | Yes (via `ActiveLearner`)                |
+| Coefficient fitting    | QP (within MIQP)         | OLS on selected subset       | OLS or ridge (closed-form)               |
 
 ## Practical Implications
 
