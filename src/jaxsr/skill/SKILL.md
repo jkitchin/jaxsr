@@ -398,6 +398,7 @@ Ready-to-use scripts and notebook starters are in `templates/`:
 | Template | Use Case |
 |----------|----------|
 | `basic-regression.py` | Discover an equation from X, y data |
+| `additive-regression.py` | Boosting-style additive SR: robust/quantile losses, bootstrap UQ, backfitting, recursive expansion |
 | `constrained-model.py` | Add physical constraints to model |
 | `doe-study.py` | Full DOE workflow from design to report |
 | `uncertainty-analysis.py` | Compare all UQ methods |
