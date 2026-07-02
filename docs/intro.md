@@ -14,6 +14,7 @@ Key features:
 - **Multiple Selection Strategies**: Choose from greedy, exhaustive, or LASSO-based methods
 - **Uncertainty Quantification**: Prediction intervals, Bayesian Model Averaging, conformal prediction, and bootstrap methods
 - **Physical Constraints**: Incorporate domain knowledge through constraints
+- **Additive Symbolic Regression**: Boosting-style ensembles of small symbolic expressions (`jaxsr.additive`)
 - **JAX-Powered**: GPU acceleration, JIT compilation, automatic differentiation
 - **Scikit-learn Compatible**: Familiar fit/predict interface
 

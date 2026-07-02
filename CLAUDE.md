@@ -184,6 +184,7 @@ Map which JAXSR features have guide/template/notebook coverage.
 - Known-model fitting (`guides/known-model-fitting.md`)
 - Scikit-learn integration (`guides/sklearn-integration.md`)
 - CLI reference (`guides/cli.md`)
+- Additive symbolic regression (`guides/additive.md`)
 
 **Gaps to fill:**
 - Metrics comparison guide (when to use R² vs AIC vs cross-validation)

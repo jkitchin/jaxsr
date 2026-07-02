@@ -12,6 +12,7 @@ as ``SymbolicRegressor``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import warnings
 from collections.abc import Callable
@@ -26,6 +27,7 @@ from .constraints import Constraints
 from .metrics import (
     compute_accuracy,
     compute_all_classification_metrics,
+    compute_classification_ic,
     compute_log_loss,
 )
 from .selection import (
@@ -262,16 +264,23 @@ class SymbolicClassifier(_SklearnCompatMixin):
         self._X_train = X
         self._y_train = y
 
-        # Evaluate basis functions
+        # Evaluate basis functions.  A basis non-finite on the training data
+        # must never remain selected: predict re-evaluates each basis from
+        # scratch, so it would return NaN.  Zero the whole invalid column (it
+        # then contributes nothing to the fitted logits), and drop any that
+        # still get selected afterwards (an exact operation -- the column was
+        # zero during fitting).
         Phi = self.basis_library.evaluate(X)
         invalid_mask = ~jnp.all(jnp.isfinite(Phi), axis=0)
-        if jnp.any(invalid_mask):
+        has_invalid = bool(jnp.any(invalid_mask))
+        if has_invalid:
             n_invalid = int(jnp.sum(invalid_mask))
             warnings.warn(
-                f"Removing {n_invalid} basis functions with non-finite values",
+                f"Excluding {n_invalid} basis function(s) with non-finite values on the "
+                f"training data; they will not be selected.",
                 stacklevel=2,
             )
-            Phi = jnp.where(jnp.isfinite(Phi), Phi, 0)
+            Phi = jnp.where(invalid_mask, 0.0, Phi)
 
         if len(classes) == 2:
             self._is_binary = True
@@ -280,8 +289,54 @@ class SymbolicClassifier(_SklearnCompatMixin):
             self._is_binary = False
             self._fit_multiclass(Phi, y, classes)
 
+        if has_invalid:
+            self._drop_nonfinite_terms(invalid_mask)
+
         self._is_fitted = True
         return self
+
+    def _drop_nonfinite_terms(self, invalid_mask: jnp.ndarray):
+        """
+        Remove selected terms whose basis is non-finite on the training data.
+
+        The removed columns were zeroed during fitting, so they contributed
+        nothing to the training logits; dropping them (and their coefficients)
+        leaves predictions on in-domain data unchanged while guaranteeing
+        :meth:`predict` stays finite.  Information criteria are recomputed from
+        the unchanged negative log-likelihood.
+
+        Parameters
+        ----------
+        invalid_mask : jnp.ndarray of bool
+            Per-column mask; True marks a basis non-finite on the training data.
+        """
+        invalid = np.asarray(invalid_mask)
+
+        def clean(result: ClassificationResult) -> ClassificationResult:
+            idx = [int(i) for i in np.asarray(result.selected_indices)]
+            keep_pos = [p for p, i in enumerate(idx) if not invalid[i]]
+            if len(keep_pos) == len(idx):
+                return result
+            keep = [idx[p] for p in keep_pos]
+            coeffs = np.asarray(result.coefficients)
+            n, k = result.n_samples, len(keep)
+            nll = result.neg_log_likelihood
+            return dataclasses.replace(
+                result,
+                coefficients=jnp.asarray(coeffs[keep_pos]),
+                selected_indices=jnp.asarray(keep),
+                selected_names=[result.selected_names[p] for p in keep_pos],
+                complexity=int(sum(self.basis_library.complexities[i] for i in keep)),
+                aic=compute_classification_ic(n, k, nll, "aic"),
+                bic=compute_classification_ic(n, k, nll, "bic"),
+                aicc=compute_classification_ic(n, k, nll, "aicc"),
+            )
+
+        if self._is_binary:
+            self._result = clean(self._result)
+        else:
+            self._ovr_results = [clean(r) for r in self._ovr_results]
+            self._result = self._ovr_results[0]
 
     def _fit_binary(
         self,

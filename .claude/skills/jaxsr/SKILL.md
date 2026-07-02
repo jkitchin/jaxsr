@@ -227,6 +227,67 @@ next_pts = study.suggest_next(n_points=5, strategy="uncertainty")
 study.save("catalyst.jaxsr")
 ```
 
+### Additive (Boosting-Style) Symbolic Regression
+
+Use when the signal is a sum of several simple effects and you want many small
+interpretable terms instead of one large expression. Fits `f(x) = c + Σ_k η_k ·
+g_k(x)` by stagewise residual fitting (analogous to gradient boosting with
+symbolic weak learners). Reuses `fit_symbolic` for each term.
+
+```python
+from jaxsr.additive import StagewiseSymbolicRegressor
+
+model = StagewiseSymbolicRegressor(
+    n_terms=10,            # number of boosting stages (terms)
+    learning_rate=0.2,     # shrinkage (used when refit_coefficients=False)
+    max_complexity=4,      # max basis terms per stage — keep small
+    refit_coefficients=True,   # re-solve all linear weights by OLS each stage
+    early_stopping=False,      # stop on a validation split when it stops improving
+    validation_fraction=0.2,
+)
+model.fit(X, y)
+
+print(model)                 # pretty structural summary
+model.expressions_           # per-term expression strings
+model.intercept_, model.coefficients_
+model.predict(X_new)
+model.to_expression()        # single combined SymPy expression
+model.save("additive.json")  # JSON round-trip (models are NOT picklable)
+loaded = StagewiseSymbolicRegressor.load("additive.json")
+```
+
+Notes:
+- Prefer `refit_coefficients=True` for accuracy with squared error; keep
+  `max_complexity` small (2–4) to favour many simple terms.
+- **Robust / quantile regression:** set `loss` to `"absolute_error"`,
+  `"huber"`, or `"quantile"` (or an instance like `QuantileLoss(0.9)` /
+  `HuberLoss(delta=2.0)`). These are fit by gradient boosting with a per-stage
+  line search; use `refit_coefficients=False` (OLS refit only applies to
+  squared error and is auto-disabled with a warning otherwise). Fit several
+  quantiles to build prediction intervals.
+- **Structural uncertainty:** `bootstrap_additive(model, X, y, n_bootstrap=...)`
+  refits on resamples and returns `["inclusion_probabilities"]` (how often each
+  basis is selected — a posterior-inclusion-probability proxy) and `["models"]`;
+  pass those to `bootstrap_predict_additive(models, X_new)` for an ensemble
+  prediction interval. Diffuse probabilities (~0.5) flag that the data don't
+  determine one expression (common with collinear features).
+- `include_transcendental`/`include_ratios` are off by default; if enabled, a
+  stage that would produce non-finite predictions falls back to a finite basis.
+- **Compositional discovery (experimental):** `RecursiveSymbolicRegressor`
+  grows the basis library along the residual (composing unary funcs, products,
+  ratios of discovered terms) to reach compositions a flat library misses
+  (e.g. `exp(x0*x1)`). Deterministic FFX-style search; competitive with GP on
+  simple targets but won't match PySR/Operon on hard ones. Not serialisable
+  (composed bases are closures).
+- `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised
+  across sweeps, warm-started from stagewise; squared error only) is available.
+  It is never worse than stagewise+refit on training and helps specifically
+  when `max_complexity` is small (single-basis terms) and features are
+  collinear — where greedy forward selection gets stuck and re-discovery
+  escapes it. With larger per-term budgets it matches stagewise+refit, so
+  prefer `StagewiseSymbolicRegressor` there. A Bayesian (BART/iBART) variant is
+  future work.
+
 ## Quick Reference: CLI
 
 ```bash
@@ -325,6 +386,11 @@ See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.
 
+### "One expression isn't enough / the signal is a sum of many effects"
+
+See `guides/additive.md` for boosting-style additive symbolic regression
+(`StagewiseSymbolicRegressor`): fit residuals stagewise into many small terms.
+
 ## Templates
 
 Ready-to-use scripts and notebook starters are in `templates/`:
@@ -332,6 +398,7 @@ Ready-to-use scripts and notebook starters are in `templates/`:
 | Template | Use Case |
 |----------|----------|
 | `basic-regression.py` | Discover an equation from X, y data |
+| `additive-regression.py` | Boosting-style additive SR: robust/quantile losses, bootstrap UQ, backfitting, recursive expansion |
 | `constrained-model.py` | Add physical constraints to model |
 | `doe-study.py` | Full DOE workflow from design to report |
 | `uncertainty-analysis.py` | Compare all UQ methods |

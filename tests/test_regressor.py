@@ -573,3 +573,89 @@ class TestMultiOutputSymbolicRegressor:
         result = cross_validate(mo, X, Y, cv=3, scoring="neg_mse")
         assert "mean_test_score" in result
         assert len(result["test_scores"]) == 3
+
+
+class TestNonFiniteBasisExclusion:
+    """A basis that is non-finite on the training data must never be selected."""
+
+    def test_invalid_basis_excluded_and_predict_finite(self):
+        """log/sqrt over sign-spanning data are excluded; predict stays finite."""
+        rng = np.random.default_rng(0)
+        X_train = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        X_test = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        y = 2 * X_train[:, 0] + 0.5 * X_train[:, 1] ** 2
+
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_transcendental(funcs=["log", "sqrt", "exp"])
+        )
+        with pytest.warns(UserWarning, match="non-finite"):
+            model = SymbolicRegressor(basis_library=library, max_terms=5).fit(X_train, y)
+
+        # No basis that is NaN on negative inputs should have been selected.
+        assert not any(("log" in name or "sqrt" in name) for name in model.selected_features_)
+        # Predictions on fresh (also sign-spanning) data are finite.
+        preds = np.array(model.predict(X_test))
+        assert np.all(np.isfinite(preds))
+        assert model.score(X_train, y) > 0.99
+
+
+class TestNegligibleTermPruning:
+    """Terms that contribute negligibly are pruned, keeping predict finite."""
+
+    def test_out_of_domain_pole_term_pruned(self):
+        """A spurious pole-bearing term (exp(x0/x1)) is pruned; predict finite."""
+        rng = np.random.default_rng(0)
+        X_train = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        X_test = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        y = jnp.exp(X_train[:, 0] * X_train[:, 1])
+
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_interactions()
+            .add_compositions(["exp"], ["product", "ratio"])
+        )
+        model = SymbolicRegressor(basis_library=library, max_terms=6).fit(X_train, y)
+
+        preds = np.array(model.predict(X_test))
+        assert np.all(np.isfinite(preds))
+        assert "exp(x0/x1)" not in model.selected_features_
+        assert "exp(x0*x1)" in model.selected_features_
+
+    def test_prune_disabled_keeps_terms(self):
+        """prune_tol=0 disables pruning (restores prior behavior)."""
+        rng = np.random.default_rng(0)
+        X = jnp.array(rng.uniform(-2, 2, size=(200, 2)))
+        y = jnp.exp(X[:, 0] * X[:, 1])
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_interactions()
+            .add_compositions(["exp"], ["product", "ratio"])
+        )
+        pruned = SymbolicRegressor(basis_library=library, max_terms=6, prune_tol=1e-6).fit(X, y)
+        kept = SymbolicRegressor(basis_library=library, max_terms=6, prune_tol=0.0).fit(X, y)
+        assert len(kept.selected_features_) >= len(pruned.selected_features_)
+
+    def test_pruning_preserves_real_terms(self):
+        """A genuine multi-term model is not pruned."""
+        rng = np.random.default_rng(1)
+        X = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        y = 2.5 * X[:, 0] + 1.2 * X[:, 0] * X[:, 1] - 0.8 * X[:, 1] ** 2
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_interactions(max_order=2)
+        )
+        model = SymbolicRegressor(basis_library=library, max_terms=5).fit(X, y)
+        assert len(model.selected_features_) >= 3
+        assert model.score(X, y) > 0.99

@@ -853,3 +853,52 @@ class TestSigmoid:
         assert float(result[0]) < 0.01
         assert abs(float(result[1]) - 0.5) < 1e-7
         assert float(result[2]) > 0.99
+
+
+class TestClassifierNonFiniteBasis:
+    """Non-finite-on-training bases must not make predict_proba return NaN."""
+
+    def test_invalid_basis_excluded_binary(self):
+        """log/sqrt over sign-spanning data are dropped; probabilities finite."""
+        rng = np.random.default_rng(0)
+        X_train = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        X_test = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        y = jnp.array(
+            (np.array(X_train[:, 0]) + 0.5 * np.array(X_train[:, 1]) ** 2 > 0).astype(float)
+        )
+
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_transcendental(funcs=["log", "sqrt", "exp"])
+        )
+        with pytest.warns(UserWarning, match="non-finite"):
+            clf = SymbolicClassifier(basis_library=library, max_terms=5).fit(X_train, y)
+
+        assert not any(("log" in n or "sqrt" in n) for n in clf.selected_features_)
+        proba = np.array(clf.predict_proba(X_test))
+        assert np.all(np.isfinite(proba))
+        assert clf.score(X_train, y) > 0.8
+
+    def test_invalid_basis_excluded_multiclass(self):
+        """Multiclass (OVR) predictions stay finite with invalid bases present."""
+        rng = np.random.default_rng(1)
+        X_train = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        X_test = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+        y = jnp.array(np.digitize(np.array(X_train[:, 0]), [-0.7, 0.7]).astype(float))
+
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_transcendental(funcs=["log", "sqrt"])
+        )
+        with pytest.warns(UserWarning, match="non-finite"):
+            clf = SymbolicClassifier(basis_library=library, max_terms=5).fit(X_train, y)
+
+        proba = np.array(clf.predict_proba(X_test))
+        assert np.all(np.isfinite(proba))
+        assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-5)

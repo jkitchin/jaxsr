@@ -8,6 +8,7 @@ parts:
 
   - caption: Guides
     chapters:
+      - file: guides/additive-symbolic-regression
       - file: guides/doe_guide
       - file: guides/acquisition
       - file: guides/cli_guide
@@ -18,6 +19,7 @@ parts:
   - caption: Examples
     chapters:
       - file: examples/basic_usage
+      - file: examples/additive_symbolic_regression
       - file: examples/chemical_kinetics
       - file: examples/heat_transfer
       - file: examples/uncertainty_quantification
