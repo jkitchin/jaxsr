@@ -130,6 +130,14 @@ class SymbolicRegressor(_SklearnCompatMixin):
         information criterion during term selection, biasing selection
         towards models that better satisfy constraints.  Default 0.0
         (no constraint-aware selection).
+    prune_tol : float
+        After fitting, drop any selected term whose contribution to the fit
+        (``|coef| * ||basis||`` on the training data) is smaller than
+        ``prune_tol`` times the largest term's contribution, then refit.  This
+        removes numerically negligible terms and prevents a spuriously selected
+        basis that diverges out of the training domain (e.g. ``exp(x0/x1)`` near
+        ``x1 = 0``) from making ``predict`` non-finite.  Set to 0 to disable.
+        Default 1e-6.
 
     Attributes
     ----------
@@ -174,6 +182,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         param_optimization_budget: int = 50,
         constraint_enforcement: str = "penalty",
         constraint_selection_weight: float = 0.0,
+        prune_tol: float = 1e-6,
     ):
         if constraint_enforcement not in ("penalty", "constrained", "exact"):
             raise ValueError(
@@ -192,6 +201,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         self.param_optimization_budget = param_optimization_budget
         self.constraint_enforcement = constraint_enforcement
         self.constraint_selection_weight = constraint_selection_weight
+        self.prune_tol = prune_tol
 
         # Fitted attributes
         self._result: SelectionResult | None = None
@@ -360,10 +370,21 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
         self._result = self._selection_path.best
 
-        # Drop any non-finite-on-training basis that slipped into the model so
-        # that predict() can never return NaN because of it.
-        if has_invalid:
-            self._drop_nonfinite_terms(Phi, y, invalid_mask)
+        # Post-selection cleanups operate on ordinary (non-parametric) terms
+        # via OLS.  Parametric bases carry their own refit/resolution machinery
+        # and their contribution is only meaningful after their internal
+        # parameters are optimised, so skip these steps for parametric libraries.
+        if not self.basis_library.has_parametric:
+            # Drop any non-finite-on-training basis that slipped into the model
+            # so predict() can never return NaN because of it.
+            if has_invalid:
+                self._drop_nonfinite_terms(Phi, y, invalid_mask)
+
+            # Drop numerically negligible terms (also removes spuriously
+            # selected bases that would diverge out of the training domain at
+            # predict time).
+            if self.prune_tol and self.prune_tol > 0:
+                self._prune_negligible_terms(Phi, y)
 
         # Apply constraints if specified
         if self.constraints is not None:
@@ -410,6 +431,65 @@ class SymbolicRegressor(_SklearnCompatMixin):
             if not keep:
                 return
 
+        self._result = self._refit_subset(keep, Phi, y)
+
+    def _prune_negligible_terms(self, Phi: jnp.ndarray, y: jnp.ndarray):
+        """
+        Drop selected terms whose contribution to the fit is negligible.
+
+        A term with a near-zero coefficient can still make :meth:`predict`
+        non-finite if its basis diverges out of the training domain (e.g.
+        ``exp(x0/x1)`` near ``x1 = 0``).  Terms contributing less than
+        ``prune_tol`` times the largest term's contribution are removed and the
+        remainder refit.
+
+        Parameters
+        ----------
+        Phi : jnp.ndarray
+            Design matrix (invalid columns already zeroed).
+        y : jnp.ndarray
+            Target values.
+        """
+        indices = [int(i) for i in np.asarray(self._result.selected_indices)]
+        if len(indices) <= 1:
+            return
+
+        coeffs = np.asarray(self._result.coefficients)
+        Phi_sub = np.asarray(Phi[:, jnp.asarray(indices)])
+        contribution = np.abs(coeffs) * np.linalg.norm(Phi_sub, axis=0)
+        max_contribution = float(contribution.max())
+        if max_contribution <= 0:
+            return
+
+        keep = [
+            idx
+            for idx, contrib in zip(indices, contribution, strict=False)
+            if contrib >= self.prune_tol * max_contribution
+        ]
+        if len(keep) == len(indices):
+            return  # nothing negligible
+
+        self._result = self._refit_subset(keep, Phi, y)
+
+    def _refit_subset(self, keep: list[int], Phi: jnp.ndarray, y: jnp.ndarray) -> SelectionResult:
+        """
+        Refit ordinary least squares on a subset of basis columns.
+
+        Parameters
+        ----------
+        keep : list of int
+            Library indices of the terms to retain.
+        Phi : jnp.ndarray
+            Design matrix.
+        y : jnp.ndarray
+            Target values.
+
+        Returns
+        -------
+        SelectionResult
+            Result for the retained terms with recomputed MSE and information
+            criteria.
+        """
         keep_arr = jnp.asarray(keep)
         coeffs, mse = fit_ols(Phi[:, keep_arr], y)
         names = [self.basis_library.names[i] for i in keep]
@@ -421,7 +501,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             parametric_params = {i: parametric_params[i] for i in keep if i in parametric_params}
             parametric_params = parametric_params or None
 
-        self._result = SelectionResult(
+        return SelectionResult(
             coefficients=coeffs,
             selected_indices=keep_arr,
             selected_names=names,
@@ -1207,6 +1287,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
                 "param_optimizer": self.param_optimizer,
                 "param_optimization_budget": self.param_optimization_budget,
                 "constraint_enforcement": self.constraint_enforcement,
+                "prune_tol": self.prune_tol,
             },
             "basis_library": self.basis_library.to_dict(),
             "result": self._result.to_dict(),
@@ -1236,6 +1317,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
         config = data["config"]
         config.setdefault("constraint_enforcement", "penalty")
+        config.setdefault("prune_tol", 1e-6)
 
         model = cls(
             basis_library=basis_library,

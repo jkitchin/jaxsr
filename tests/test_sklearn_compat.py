@@ -84,6 +84,7 @@ class TestGetParams:
             "param_optimization_budget",
             "constraint_enforcement",
             "constraint_selection_weight",
+            "prune_tol",
         }
         assert set(params.keys()) == expected_keys
 
