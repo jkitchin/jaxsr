@@ -12,8 +12,8 @@ StagewiseSymbolicRegressor
     Boosting-style regressor that fits each new symbolic term to the current
     residual and freezes it.  This is the first-milestone workhorse.
 BackfittingSymbolicRegressor
-    Scaffold for a future BART/iBART-style regressor that revises terms in
-    place (not yet implemented).
+    GAM-style regressor that revises terms in place across sweeps (warm-started
+    from a stagewise fit); squared-error only.
 AdditiveSymbolicModel
     Plain container for a fitted additive model.
 Loss, SquaredError, AbsoluteError, HuberLoss, QuantileLoss, get_loss

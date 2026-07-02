@@ -19,7 +19,7 @@ The submodule lives in `jaxsr.additive`.
 |----------|--------------|--------|
 | **Single-expression** (`jaxsr.SymbolicRegressor`) | Fits one sparse expression over a fixed basis library. | Available |
 | **Stagewise additive** (`jaxsr.additive.StagewiseSymbolicRegressor`) | Repeatedly fits a small expression to the *residual* and adds it to the ensemble. Old terms are **frozen**. | Available |
-| **Backfitting additive** (`jaxsr.additive.BackfittingSymbolicRegressor`) | Maintains a fixed set of terms and **revises** each one in place across sweeps (BART/iBART-style). | Scaffold / planned |
+| **Backfitting additive** (`jaxsr.additive.BackfittingSymbolicRegressor`) | Maintains a fixed set of terms and **revises** each one in place across sweeps (GAM-style). | Available (squared error); Bayesian variant planned |
 
 The key distinction between the two additive variants:
 
@@ -169,17 +169,40 @@ median for absolute/Huber, and the empirical quantile for quantile loss.
 Add further losses (Poisson, logistic, ...) by subclassing `Loss` and
 registering them in `jaxsr.additive.losses._LOSSES`.
 
-## Backfitting (planned)
+## Backfitting (GAM-style)
 
-`BackfittingSymbolicRegressor` is currently a documented scaffold that raises
-`NotImplementedError`. The planned sweep is:
+`BackfittingSymbolicRegressor` maintains a **fixed** number of terms and
+*revises* each one across sweeps, instead of freezing them. Each sweep removes a
+term, re-discovers its expression on the partial residual, and puts it back:
+
+```python
+from jaxsr.additive import BackfittingSymbolicRegressor
+
+model = BackfittingSymbolicRegressor(n_terms=4, n_sweeps=6, max_complexity=3)
+model.fit(X, y)   # warm-started from a stagewise fit, then refined by sweeps
+```
 
 ```
-for term j in 1..m:
-    partial_residual = y - (intercept + sum_{i != j} coef_i * g_i(X))
-    re-discover / refit term j on partial_residual
-    reinsert term j
-(repeat sweeps until convergence)
+for sweep in 1..n_sweeps:
+    for term j:
+        partial_residual = y - intercept - sum_{i != j} coef_i * g_i(X)
+        g_j = fit_symbolic(X, partial_residual, ...)   # re-discover structure
+    intercept, coef = OLS refit over all terms
+(stop when the training loss stops improving by `tol`)
 ```
 
-Use `StagewiseSymbolicRegressor` for additive symbolic regression today.
+It is warm-started from a stagewise fit and currently supports **squared error
+only**. Structure re-discovery makes the sweep a heuristic (no monotonicity
+guarantee), so the best-loss iterate is kept.
+
+**When to use it — and an honest caveat.** In benchmarks, deterministic
+backfitting *matches* `StagewiseSymbolicRegressor(refit_coefficients=True)` for
+squared error rather than beating it: because each term is linear in its basis
+functions and the coefficients are refit jointly by least squares, the fit over
+the *union* of discovered bases is largely independent of how those bases are
+partitioned across terms. So reach for backfitting when you specifically want a
+**fixed-size, revisable (GAM-style) decomposition** — otherwise prefer the
+stagewise regressor. Its main forward-looking value is as the foundation for a
+future **Bayesian backfitting** variant (BART/iBART-style), which would sample a
+*posterior over symbolic structure* — genuinely beyond point-estimate SR — using
+the same partial-residual sweep with conjugate marginal likelihoods.

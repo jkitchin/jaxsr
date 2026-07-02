@@ -297,14 +297,70 @@ def test_save_load_roundtrip(tmp_path):
     assert loaded.n_terms_ == model.n_terms_
 
 
-def test_backfitting_scaffold_raises():
-    """The backfitting scaffold raises NotImplementedError on fit."""
+def test_backfitting_fit_and_recover():
+    """Backfitting fits, predicts the right shape, and recovers a simple target."""
     from jaxsr.additive import BackfittingSymbolicRegressor
 
-    X, y = _additive_data(n=40)
-    model = BackfittingSymbolicRegressor()
+    X, y = _additive_data(n=300, noise=0.05, seed=1)
+    model = BackfittingSymbolicRegressor(n_terms=3, n_sweeps=5, max_complexity=3).fit(X, y)
+
+    assert model._is_fitted
+    assert model.predict(X).shape == y.shape
+    assert model.n_terms_ == 3
+    assert model.score(X, y) > 0.99
+    # A per-sweep training-loss history is recorded (sweep 0 = warm start).
+    assert len(model.training_history_) >= 2
+    assert all("train_loss" in h for h in model.training_history_)
+
+
+def test_backfitting_matches_stagewise_on_squared_error():
+    """For squared error, backfitting is competitive with stagewise+refit."""
+    from jaxsr.additive import BackfittingSymbolicRegressor, StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=300, noise=0.1, seed=2)
+    cfg = {"n_terms": 4, "max_complexity": 3}
+    sw = StagewiseSymbolicRegressor(refit_coefficients=True, **cfg).fit(X, y)
+    bf = BackfittingSymbolicRegressor(n_sweeps=6, **cfg).fit(X, y)
+    # Backfitting should not be materially worse than stagewise+refit.
+    assert bf.score(X, y) >= sw.score(X, y) - 0.02
+
+
+def test_backfitting_nonsquared_loss_not_implemented():
+    """Backfitting only supports squared error for now."""
+    from jaxsr.additive import BackfittingSymbolicRegressor
+
+    X, y = _additive_data(n=60)
     with pytest.raises(NotImplementedError):
-        model.fit(X, y)
+        BackfittingSymbolicRegressor(loss="huber").fit(X, y)
+
+
+def test_backfitting_invalid_params_and_inputs():
+    """Backfitting validates parameters and inputs."""
+    from jaxsr.additive import BackfittingSymbolicRegressor
+
+    X, y = _additive_data(n=60)
+    with pytest.raises(ValueError):
+        BackfittingSymbolicRegressor(n_terms=0).fit(X, y)
+    with pytest.raises(ValueError):
+        BackfittingSymbolicRegressor(n_sweeps=0).fit(X, y)
+    with pytest.raises(ValueError, match="non-finite"):
+        BackfittingSymbolicRegressor().fit(X, y.at[0].set(jnp.nan))
+
+
+def test_backfitting_save_load_roundtrip(tmp_path):
+    """Backfitting models round-trip through save/load."""
+    from jaxsr.additive import BackfittingSymbolicRegressor
+
+    X, y = _additive_data(n=150, noise=0.05, seed=3)
+    model = BackfittingSymbolicRegressor(n_terms=3, n_sweeps=4, max_complexity=3).fit(X, y)
+
+    path = tmp_path / "backfit_model.json"
+    model.save(str(path))
+    loaded = BackfittingSymbolicRegressor.load(str(path))
+
+    assert np.allclose(np.array(model.predict(X)), np.array(loaded.predict(X)), atol=1e-6)
+    assert loaded.n_terms_ == model.n_terms_
+    assert loaded.expressions_ == model.expressions_
 
 
 def test_get_loss_and_squared_error():

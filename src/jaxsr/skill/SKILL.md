@@ -267,8 +267,12 @@ Notes:
   quantiles to build prediction intervals.
 - `include_transcendental`/`include_ratios` are off by default; if enabled, a
   stage that would produce non-finite predictions falls back to a finite basis.
-- `BackfittingSymbolicRegressor` (BART/iBART-style, revises terms rather than
-  freezing them) is scaffolded but not yet implemented.
+- `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised
+  across sweeps, warm-started from stagewise; squared error only) is available.
+  For squared error it typically *matches* stagewise+refit rather than beating
+  it, so prefer `StagewiseSymbolicRegressor` unless you specifically want a
+  fixed-size revisable decomposition. A Bayesian (BART/iBART) variant is future
+  work.
 
 ## Quick Reference: CLI
 
