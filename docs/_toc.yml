@@ -8,6 +8,7 @@ parts:
 
   - caption: Guides
     chapters:
+      - file: guides/additive-symbolic-regression
       - file: guides/doe_guide
       - file: guides/acquisition
       - file: guides/cli_guide
