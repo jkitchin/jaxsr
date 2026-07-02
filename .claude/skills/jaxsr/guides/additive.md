@@ -48,7 +48,9 @@ That distinction decides whether it is the right tool:
   parameterized, so no fixed library enumerates them in advance. For that,
   reach for a genetic-programming or neural symbolic-regression tool (PySR,
   Operon, AI-Feynman), which *search* the space of expressions instead of
-  selecting from a fixed dictionary.
+  selecting from a fixed dictionary — or try the experimental
+  [`RecursiveSymbolicRegressor`](#recursive-basis-expansion-experimental), which
+  grows compositions along the residual and partially lifts this ceiling.
 
 The limit is one of **discovery, not representation**: the linear-in-basis model
 fits any of those targets perfectly the moment the exact term is in the library
@@ -288,3 +290,43 @@ value is as the foundation for a future **Bayesian backfitting** variant
 (BART/iBART-style), which would sample a *posterior over symbolic structure* —
 genuinely beyond point-estimate SR — using the same partial-residual sweep with
 conjugate marginal likelihoods.
+
+## Recursive basis expansion (experimental)
+
+The [Scope](#scope-what-this-is-and-isnt-good-for) section notes that a fixed
+library cannot *discover* compositional forms like `x0*sin(x1)` or `exp(x0*x1)`.
+`RecursiveSymbolicRegressor` is an experimental step past that ceiling. Instead
+of enumerating a huge composition space up front (which explodes
+combinatorially), it **grows the library lazily along the residual**:
+
+1. Fit a sparse model over the current library; take the residual.
+2. Compose the currently useful terms (selected terms + features) with a small
+   operator set (unary functions, products, ratios) — one new layer.
+3. Screen: drop non-finite candidates, deduplicate, keep the top few by
+   correlation with the residual.
+4. Add the survivors and refit. Repeat. The effective composition depth is the
+   number of rounds, because a term found in one round feeds the next.
+
+```python
+from jaxsr.additive import RecursiveSymbolicRegressor
+
+model = RecursiveSymbolicRegressor(n_expansions=3, max_terms=6, beam_width=25)
+model.fit(X, y)
+print(model.expression_)        # e.g. recovers "exp((x0)*(x1))" exactly
+print(model.history_)           # library size / n_terms / train R^2 per round
+```
+
+This is essentially Fast Function Extraction (FFX) / symbolic feature
+construction — a deterministic, bounded cousin of genetic programming. On simple
+compositional targets it substantially beats a flat library (e.g. `exp(x0*x1)`:
+R² 1.00 vs 0.70) and is competitive with a strong GP engine (matched Operon on
+`x0*sin(x1)` in our tests).
+
+**Caveats.** It re-enters search-based territory: cost grows with `beam_width`,
+`n_expansions`, and feature count, and it will not match a mature GP (PySR,
+Operon) on hard, high-dimensional, or deeply nested targets. The result is an
+ordinary `SymbolicRegressor` over the grown library (so predict/`expression_`/
+scoring and the base regressor's non-finite-basis guard and negligible-term
+pruning all apply), but the composed bases are Python closures, so the fitted
+model is **not** serialisable via `save`/`load`, and `to_sympy` may not parse
+deeply nested term names.

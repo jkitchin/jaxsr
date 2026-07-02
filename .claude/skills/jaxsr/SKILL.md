@@ -273,6 +273,12 @@ Notes:
   determine one expression (common with collinear features).
 - `include_transcendental`/`include_ratios` are off by default; if enabled, a
   stage that would produce non-finite predictions falls back to a finite basis.
+- **Compositional discovery (experimental):** `RecursiveSymbolicRegressor`
+  grows the basis library along the residual (composing unary funcs, products,
+  ratios of discovered terms) to reach compositions a flat library misses
+  (e.g. `exp(x0*x1)`). Deterministic FFX-style search; competitive with GP on
+  simple targets but won't match PySR/Operon on hard ones. Not serialisable
+  (composed bases are closures).
 - `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised
   across sweeps, warm-started from stagewise; squared error only) is available.
   It is never worse than stagewise+refit on training and helps specifically

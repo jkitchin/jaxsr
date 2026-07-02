@@ -652,3 +652,63 @@ def test_refit_ols_zero_terms():
     intercept, coefs = refit_ols(jnp.zeros((3, 0)), y)
     assert intercept == pytest.approx(3.0)
     assert coefs.shape == (0,)
+
+
+def test_recursive_recovers_composition_flat_library_misses():
+    """Recursive expansion reaches exp(x0*x1), which a flat library cannot."""
+    from jaxsr import fit_symbolic
+    from jaxsr.additive import RecursiveSymbolicRegressor
+
+    X = np.asarray(np.random.default_rng(0).uniform(-2, 2, size=(300, 2)))
+    y = np.exp(X[:, 0] * X[:, 1])
+    Xtr, ytr, Xte, yte = X[:150], y[:150], X[150:], y[150:]
+
+    rec = RecursiveSymbolicRegressor(n_expansions=3, max_terms=6, beam_width=20).fit(Xtr, ytr)
+    flat = fit_symbolic(jnp.array(Xtr), jnp.array(ytr), max_terms=6, include_transcendental=True)
+
+    def r2(yt, p):
+        yt, p = np.asarray(yt, float), np.asarray(p, float)
+        return 1 - np.sum((yt - p) ** 2) / np.sum((yt - yt.mean()) ** 2)
+
+    rec_r2 = r2(yte, rec.predict(Xte))
+    assert rec_r2 > 0.95
+    assert rec_r2 > r2(yte, flat.predict(jnp.array(Xte))) + 0.1
+    assert np.all(np.isfinite(np.array(rec.predict(Xte))))
+
+
+def test_recursive_history_and_growth():
+    """The library grows across rounds and history is recorded."""
+    from jaxsr.additive import RecursiveSymbolicRegressor
+
+    X, y = _additive_data(n=200, noise=0.05, seed=1)
+    rec = RecursiveSymbolicRegressor(n_expansions=2, max_terms=5, beam_width=15).fit(X, y)
+    assert rec.model_ is not None
+    assert rec.library_size_ >= 3
+    assert len(rec.history_) >= 1
+    assert rec.predict(X).shape == y.shape
+    assert isinstance(rec.expression_, str)
+
+
+def test_recursive_zero_expansions_is_flat():
+    """n_expansions=0 fits only the seed library (no composition)."""
+    from jaxsr.additive import RecursiveSymbolicRegressor
+
+    X, y = _additive_data(n=150, noise=0.05, seed=2)
+    rec = RecursiveSymbolicRegressor(n_expansions=0, base_degree=2, max_terms=5).fit(X, y)
+    assert len(rec.history_) == 1
+    assert rec.score(X, y) > 0.9
+
+
+def test_recursive_validation():
+    """Invalid recursive parameters are rejected."""
+    from jaxsr.additive import RecursiveSymbolicRegressor
+
+    X, y = _additive_data(n=40)
+    with pytest.raises(ValueError):
+        RecursiveSymbolicRegressor(n_expansions=-1).fit(X, y)
+    with pytest.raises(ValueError):
+        RecursiveSymbolicRegressor(unary_ops=("tan",)).fit(X, y)
+    with pytest.raises(ValueError):
+        RecursiveSymbolicRegressor(binary_ops=("pow",)).fit(X, y)
+    with pytest.raises(RuntimeError):
+        RecursiveSymbolicRegressor().predict(np.zeros((3, 2)))

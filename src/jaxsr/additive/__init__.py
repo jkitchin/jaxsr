@@ -41,6 +41,7 @@ from .losses import (
     get_loss,
     loss_from_config,
 )
+from .recursive import RecursiveSymbolicRegressor
 from .stagewise import StagewiseSymbolicRegressor
 from .uncertainty import bootstrap_additive, bootstrap_predict_additive
 
@@ -51,6 +52,7 @@ __all__ = [
     "HuberLoss",
     "Loss",
     "QuantileLoss",
+    "RecursiveSymbolicRegressor",
     "SquaredError",
     "StagewiseSymbolicRegressor",
     "additive_predict",

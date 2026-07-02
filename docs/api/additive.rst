@@ -34,6 +34,11 @@ symbolic expressions, ``f(x) = c + sum_k eta_k * g_k(x)``.
    :undoc-members:
    :show-inheritance:
 
+.. automodule:: jaxsr.additive.recursive
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. automodule:: jaxsr.additive.base
    :members:
    :undoc-members:

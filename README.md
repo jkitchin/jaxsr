@@ -317,6 +317,11 @@ q90 = StagewiseSymbolicRegressor(loss=QuantileLoss(0.9), learning_rate=0.5,
                                  refit_coefficients=False).fit(X, y)
 ```
 
+An experimental `RecursiveSymbolicRegressor` grows the basis library along the
+residual (composing unary functions, products, and ratios of discovered terms),
+partially lifting the fixed-library ceiling — it can recover compositional
+targets like `exp(x0*x1)` that a flat library misses.
+
 Available losses: `"squared_error"` (default), `"absolute_error"`, `"huber"`,
 `"quantile"`. A `BackfittingSymbolicRegressor` (GAM-style, where a fixed set of
 terms is revised rather than frozen) is also available for squared error. It is
