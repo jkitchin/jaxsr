@@ -311,10 +311,11 @@ q90 = StagewiseSymbolicRegressor(loss=QuantileLoss(0.9), learning_rate=0.5,
 
 Available losses: `"squared_error"` (default), `"absolute_error"`, `"huber"`,
 `"quantile"`. A `BackfittingSymbolicRegressor` (GAM-style, where a fixed set of
-terms is revised rather than frozen) is also available for squared error; for
-squared error it typically matches stagewise+refit, and is the foundation for a
-future Bayesian (BART/iBART-style) variant. See
-`docs/guides/additive-symbolic-regression.md`.
+terms is revised rather than frozen) is also available for squared error. It is
+never worse than stagewise+refit on training and genuinely helps when per-term
+complexity is small and features are collinear (where greedy selection gets
+stuck); it is also the foundation for a future Bayesian (BART/iBART-style)
+variant. See `docs/guides/additive-symbolic-regression.md`.
 
 ## Visualization
 

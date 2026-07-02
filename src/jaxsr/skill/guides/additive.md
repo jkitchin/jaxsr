@@ -195,14 +195,27 @@ It is warm-started from a stagewise fit and currently supports **squared error
 only**. Structure re-discovery makes the sweep a heuristic (no monotonicity
 guarantee), so the best-loss iterate is kept.
 
-**When to use it — and an honest caveat.** In benchmarks, deterministic
-backfitting *matches* `StagewiseSymbolicRegressor(refit_coefficients=True)` for
-squared error rather than beating it: because each term is linear in its basis
-functions and the coefficients are refit jointly by least squares, the fit over
-the *union* of discovered bases is largely independent of how those bases are
-partitioned across terms. So reach for backfitting when you specifically want a
-**fixed-size, revisable (GAM-style) decomposition** — otherwise prefer the
-stagewise regressor. Its main forward-looking value is as the foundation for a
-future **Bayesian backfitting** variant (BART/iBART-style), which would sample a
-*posterior over symbolic structure* — genuinely beyond point-estimate SR — using
-the same partial-residual sweep with conjugate marginal likelihoods.
+**When does it actually help?** Backfitting starts from the stagewise+refit fit
+and keeps the best-loss iterate, so **it is never worse than
+`StagewiseSymbolicRegressor(refit_coefficients=True)` on the training data** —
+the only question is whether the sweeps improve on it. That hinges entirely on
+whether re-discovery changes the *set* of selected basis functions:
+
+- **Generous per-term budget** (`max_complexity` ≥ 2–3): greedy usually already
+  finds a sufficient basis set, so the joint least-squares refit makes the two
+  essentially identical. Backfitting adds nothing here — prefer the stagewise
+  regressor.
+- **Small per-term budget and collinear features** (`max_complexity=1`, the
+  GAM-style single-basis regime): greedy forward selection can lock into a
+  *suboptimal* basis set that a single forward pass cannot undo. Backfitting's
+  coordinate-descent re-discovery escapes it, changing the basis union and
+  improving the fit — we have measured up to roughly **+0.04 train / +0.06 test
+  R²** in this regime, with no downside in the cases where it does not help.
+
+So reach for backfitting when you want **small, revisable single-basis terms
+over correlated features** (or a fixed-size GAM-style decomposition); use the
+stagewise regressor for larger per-term expressions. Its other forward-looking
+value is as the foundation for a future **Bayesian backfitting** variant
+(BART/iBART-style), which would sample a *posterior over symbolic structure* —
+genuinely beyond point-estimate SR — using the same partial-residual sweep with
+conjugate marginal likelihoods.

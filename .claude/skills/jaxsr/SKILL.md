@@ -269,10 +269,12 @@ Notes:
   stage that would produce non-finite predictions falls back to a finite basis.
 - `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised
   across sweeps, warm-started from stagewise; squared error only) is available.
-  For squared error it typically *matches* stagewise+refit rather than beating
-  it, so prefer `StagewiseSymbolicRegressor` unless you specifically want a
-  fixed-size revisable decomposition. A Bayesian (BART/iBART) variant is future
-  work.
+  It is never worse than stagewise+refit on training and helps specifically
+  when `max_complexity` is small (single-basis terms) and features are
+  collinear — where greedy forward selection gets stuck and re-discovery
+  escapes it. With larger per-term budgets it matches stagewise+refit, so
+  prefer `StagewiseSymbolicRegressor` there. A Bayesian (BART/iBART) variant is
+  future work.
 
 ## Quick Reference: CLI
 

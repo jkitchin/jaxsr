@@ -313,16 +313,36 @@ def test_backfitting_fit_and_recover():
     assert all("train_loss" in h for h in model.training_history_)
 
 
-def test_backfitting_matches_stagewise_on_squared_error():
-    """For squared error, backfitting is competitive with stagewise+refit."""
+def test_backfitting_never_worse_than_warm_start():
+    """Backfitting starts from stagewise+refit and keeps the best iterate, so
+    its training fit is never worse than stagewise+refit's."""
     from jaxsr.additive import BackfittingSymbolicRegressor, StagewiseSymbolicRegressor
 
     X, y = _additive_data(n=300, noise=0.1, seed=2)
     cfg = {"n_terms": 4, "max_complexity": 3}
     sw = StagewiseSymbolicRegressor(refit_coefficients=True, **cfg).fit(X, y)
     bf = BackfittingSymbolicRegressor(n_sweeps=6, **cfg).fit(X, y)
-    # Backfitting should not be materially worse than stagewise+refit.
-    assert bf.score(X, y) >= sw.score(X, y) - 0.02
+    assert bf.score(X, y) >= sw.score(X, y) - 1e-6
+
+
+def test_backfitting_helps_with_collinear_single_basis_terms():
+    """With single-basis terms and collinear features, greedy selection can get
+    stuck; backfitting re-discovery escapes it and is at least as good."""
+    from jaxsr.additive import BackfittingSymbolicRegressor, StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(0)
+    x0 = rng.normal(0, 1, 500)
+    x1 = 0.9 * x0 + 0.1 * rng.normal(0, 1, 500)
+    x2 = 0.8 * x0 + 0.2 * rng.normal(0, 1, 500)
+    X = jnp.array(np.column_stack([x0, x1, x2]))
+    y = jnp.array(x0 - x1 + 0.5 * x2 + rng.normal(0, 0.1, 500))
+
+    cfg = {"n_terms": 3, "max_complexity": 1}
+    sw = StagewiseSymbolicRegressor(refit_coefficients=True, **cfg).fit(X, y)
+    bf = BackfittingSymbolicRegressor(n_sweeps=10, **cfg).fit(X, y)
+    # Backfitting is never worse, and in this stuck-greedy regime it improves.
+    assert bf.score(X, y) >= sw.score(X, y) - 1e-6
+    assert bf.score(X, y) > 0.9
 
 
 def test_backfitting_nonsquared_loss_not_implemented():
