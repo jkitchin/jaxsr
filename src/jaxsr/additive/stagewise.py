@@ -293,8 +293,8 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         Raises
         ------
         ValueError
-            If parameters are invalid or ``X`` and ``y`` have mismatched
-            sample counts.
+            If parameters are invalid, ``X`` and ``y`` have mismatched sample
+            counts, or ``X``/``y`` contain non-finite values.
         """
         self._validate_params()
 
@@ -305,6 +305,10 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
                 f"X and y must have the same number of samples. "
                 f"Got X: {X.shape[0]}, y: {y.shape[0]}."
             )
+        if not bool(jnp.all(jnp.isfinite(X))):
+            raise ValueError("X contains non-finite values (NaN or inf).")
+        if not bool(jnp.all(jnp.isfinite(y))):
+            raise ValueError("y contains non-finite values (NaN or inf).")
 
         n_features = X.shape[1]
         feature_names = self.feature_names or [f"x{i}" for i in range(n_features)]

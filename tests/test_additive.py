@@ -196,6 +196,66 @@ def test_invalid_params_raise():
         StagewiseSymbolicRegressor(learning_rate=0.0).fit(X, y)
 
 
+def test_non_finite_inputs_raise():
+    """Non-finite X or y are rejected rather than silently producing NaN."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=40)
+
+    y_nan = y.at[0].set(jnp.nan)
+    with pytest.raises(ValueError, match="non-finite"):
+        StagewiseSymbolicRegressor(n_terms=2, max_complexity=2).fit(X, y_nan)
+
+    X_inf = X.at[0, 0].set(jnp.inf)
+    with pytest.raises(ValueError, match="non-finite"):
+        StagewiseSymbolicRegressor(n_terms=2, max_complexity=2).fit(X_inf, y)
+
+
+def test_predict_feature_count_mismatch_raises():
+    """predict rejects inputs with the wrong number of features."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=50, seed=1)
+    model = StagewiseSymbolicRegressor(n_terms=2, max_complexity=2).fit(X, y)
+
+    with pytest.raises(ValueError, match="features"):
+        model.predict(np.zeros((5, 5)))
+    with pytest.raises(ValueError, match="features"):
+        model.predict(np.zeros((5, 1)))
+
+
+def test_single_feature_and_tiny_sample():
+    """The model handles a single feature and very small sample sizes."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(3)
+    X = jnp.array(rng.uniform(-2, 2, size=(60, 1)))
+    y = 2.0 * X[:, 0]
+    model = StagewiseSymbolicRegressor(n_terms=3, max_complexity=2).fit(X, y)
+    assert model.score(X, y) > 0.99
+
+    X_small, y_small = _additive_data(n=3)
+    model2 = StagewiseSymbolicRegressor(n_terms=2, max_complexity=2).fit(X_small, y_small)
+    assert model2.predict(X_small).shape == (3,)
+
+
+def test_determinism_with_random_state():
+    """Two fits with the same random_state produce identical predictions."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=80, noise=0.05, seed=2)
+    kw = {
+        "n_terms": 5,
+        "max_complexity": 3,
+        "early_stopping": True,
+        "validation_fraction": 0.25,
+        "random_state": 42,
+    }
+    a = StagewiseSymbolicRegressor(**kw).fit(X, y)
+    b = StagewiseSymbolicRegressor(**kw).fit(X, y)
+    assert np.allclose(np.array(a.predict(X)), np.array(b.predict(X)))
+
+
 def test_backfitting_scaffold_raises():
     """The backfitting scaffold raises NotImplementedError on fit."""
     from jaxsr.additive import BackfittingSymbolicRegressor

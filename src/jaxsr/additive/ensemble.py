@@ -108,7 +108,19 @@ class AdditiveSymbolicModel:
         -------
         jnp.ndarray of shape (n_samples,)
             Predicted values.
+
+        Raises
+        ------
+        ValueError
+            If ``X`` has a different number of features than the model was
+            fit with.
         """
+        X = jnp.atleast_2d(jnp.asarray(X))
+        n_expected = len(self.feature_names)
+        if X.shape[1] != n_expected:
+            raise ValueError(
+                f"X has {X.shape[1]} features but the model was fit with {n_expected}."
+            )
         return additive_predict(X, self.intercept, self.terms, self.coefficients)
 
     @property
