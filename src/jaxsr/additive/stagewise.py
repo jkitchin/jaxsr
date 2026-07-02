@@ -19,6 +19,7 @@ instead revise terms in place.
 from __future__ import annotations
 
 import json
+import warnings
 
 import jax.numpy as jnp
 import numpy as np
@@ -244,9 +245,18 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         Returns
         -------
         SymbolicRegressor
-            A fitted symbolic regressor representing ``g_k``.
+            A fitted symbolic regressor representing ``g_k`` that produces
+            finite predictions on the training data.
+
+        Notes
+        -----
+        A transcendental or ratio basis (e.g. ``log``/``sqrt``/``1/x``) can be
+        invalid on part of the data domain and yield non-finite predictions
+        even though it was selectable during fitting.  If that happens, the
+        stage is refit without transcendental and ratio bases so the ensemble
+        never contains a NaN-producing term.
         """
-        return fit_symbolic(
+        term = fit_symbolic(
             X,
             residual,
             feature_names=feature_names,
@@ -257,6 +267,26 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
             strategy=self.strategy,
             information_criterion=self.information_criterion,
         )
+        uses_risky_basis = self.include_transcendental or self.include_ratios
+        if uses_risky_basis and not bool(jnp.all(jnp.isfinite(term.predict(X)))):
+            warnings.warn(
+                "A fitted term produced non-finite predictions on the training "
+                "data (a transcendental/ratio basis is invalid on this domain); "
+                "refitting this stage without transcendental and ratio bases.",
+                stacklevel=2,
+            )
+            term = fit_symbolic(
+                X,
+                residual,
+                feature_names=feature_names,
+                max_terms=self.max_complexity,
+                max_poly_degree=self.max_poly_degree,
+                include_transcendental=False,
+                include_ratios=False,
+                strategy=self.strategy,
+                information_criterion=self.information_criterion,
+            )
+        return term
 
     def _train_val_split(
         self, X: jnp.ndarray, y: jnp.ndarray

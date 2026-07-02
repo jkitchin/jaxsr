@@ -239,6 +239,27 @@ def test_single_feature_and_tiny_sample():
     assert model2.predict(X_small).shape == (3,)
 
 
+def test_transcendental_terms_stay_finite():
+    """Transcendental bases invalid on the domain must not yield NaN models.
+
+    A ``log``/``sqrt``/``1/x`` basis can be selected yet produce NaN on data
+    with the wrong sign; the stage must fall back to a finite basis so the
+    ensemble never predicts NaN.
+    """
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(6)
+    X = jnp.array(rng.uniform(-1.5, 1.5, size=(300, 2)))
+    y = jnp.exp(0.5 * X[:, 0]) + X[:, 1]
+    model = StagewiseSymbolicRegressor(
+        n_terms=5, max_complexity=3, include_transcendental=True, include_ratios=True
+    ).fit(X, y)
+
+    preds = np.array(model.predict(X))
+    assert np.all(np.isfinite(preds)), "model produced non-finite predictions"
+    assert model.score(X, y) > 0.9
+
+
 def test_determinism_with_random_state():
     """Two fits with the same random_state produce identical predictions."""
     from jaxsr.additive import StagewiseSymbolicRegressor
