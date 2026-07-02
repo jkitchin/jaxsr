@@ -227,6 +227,43 @@ next_pts = study.suggest_next(n_points=5, strategy="uncertainty")
 study.save("catalyst.jaxsr")
 ```
 
+### Additive (Boosting-Style) Symbolic Regression
+
+Use when the signal is a sum of several simple effects and you want many small
+interpretable terms instead of one large expression. Fits `f(x) = c + Σ_k η_k ·
+g_k(x)` by stagewise residual fitting (analogous to gradient boosting with
+symbolic weak learners). Reuses `fit_symbolic` for each term.
+
+```python
+from jaxsr.additive import StagewiseSymbolicRegressor
+
+model = StagewiseSymbolicRegressor(
+    n_terms=10,            # number of boosting stages (terms)
+    learning_rate=0.2,     # shrinkage (used when refit_coefficients=False)
+    max_complexity=4,      # max basis terms per stage — keep small
+    refit_coefficients=True,   # re-solve all linear weights by OLS each stage
+    early_stopping=False,      # stop on a validation split when it stops improving
+    validation_fraction=0.2,
+)
+model.fit(X, y)
+
+print(model)                 # pretty structural summary
+model.expressions_           # per-term expression strings
+model.intercept_, model.coefficients_
+model.predict(X_new)
+model.to_expression()        # single combined SymPy expression
+model.save("additive.json")  # JSON round-trip (models are NOT picklable)
+loaded = StagewiseSymbolicRegressor.load("additive.json")
+```
+
+Notes:
+- Prefer `refit_coefficients=True` for accuracy; keep `max_complexity` small
+  (2–4) to favour many simple terms.
+- `include_transcendental`/`include_ratios` are off by default; if enabled, a
+  stage that would produce non-finite predictions falls back to a finite basis.
+- `BackfittingSymbolicRegressor` (BART/iBART-style, revises terms rather than
+  freezing them) is scaffolded but not yet implemented.
+
 ## Quick Reference: CLI
 
 ```bash
@@ -324,6 +361,11 @@ See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 ### "How do I set up active learning?"
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.
+
+### "One expression isn't enough / the signal is a sum of many effects"
+
+See `guides/additive.md` for boosting-style additive symbolic regression
+(`StagewiseSymbolicRegressor`): fit residuals stagewise into many small terms.
 
 ## Templates
 

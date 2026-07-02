@@ -19,6 +19,7 @@ parts:
   - caption: Examples
     chapters:
       - file: examples/basic_usage
+      - file: examples/additive_symbolic_regression
       - file: examples/chemical_kinetics
       - file: examples/heat_transfer
       - file: examples/uncertainty_quantification

@@ -21,6 +21,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **Adaptive Sampling**: Intelligently suggest new data points to improve model quality
 - **JAX-Accelerated**: JIT compilation and GPU support for fast computation
 - **Symbolic Classification**: Discover interpretable logistic models for binary and multiclass problems via IRLS + sparse selection
+- **Additive Symbolic Regression**: Boosting-style ensembles of small symbolic expressions — fit residuals stagewise for many simple, interpretable terms (`jaxsr.additive`)
 - **Scikit-learn Compatible**: Full estimator protocol (`get_params`/`set_params`/`clone`) — works with `cross_val_score`, `GridSearchCV`, `Pipeline`
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
 
@@ -253,6 +254,47 @@ y_pred = clf.predict(jnp.array(X))
 
 Multiclass problems are handled automatically via one-vs-rest (OVR), giving each class its own interpretable expression. The classifier also supports coefficient intervals, conformal prediction sets, SymPy/LaTeX export, and save/load.
 
+## Additive Symbolic Regression
+
+`jaxsr.additive` fits a model as a sum of small symbolic expressions,
+`f(x) = c + Σ_k η_k · g_k(x)` — analogous to gradient boosting, but each weak
+learner is an interpretable symbolic expression rather than a decision tree.
+`StagewiseSymbolicRegressor` repeatedly fits a small expression to the current
+residual and (optionally) refits all linear coefficients by least squares:
+
+```python
+import numpy as np
+from jaxsr.additive import StagewiseSymbolicRegressor
+
+# Additive target: y = 2*x0 + 0.5*x1^2 + noise
+rng = np.random.default_rng(0)
+X = rng.uniform(-2, 2, size=(200, 2))
+y = 2.0 * X[:, 0] + 0.5 * X[:, 1] ** 2 + 0.1 * rng.normal(size=200)
+
+model = StagewiseSymbolicRegressor(
+    n_terms=5,
+    learning_rate=0.2,
+    max_complexity=6,
+    refit_coefficients=True,
+    early_stopping=False,
+)
+model.fit(X, y)
+
+print(model)                 # pretty structural summary of the ensemble
+print(model.expressions_)    # per-term expression strings
+print(model.intercept_, model.coefficients_)
+y_pred = model.predict(X)
+combined = model.to_expression()   # single combined SymPy expression
+model.save("additive_model.json")  # JSON round-trip (models are not picklable)
+```
+
+Prefer this over a single large expression when the signal is a sum of several
+simple effects: keep `max_complexity` small and let the ensemble accumulate many
+interpretable terms. Early stopping on a validation split guards against
+overfitting on noisy data. A `BackfittingSymbolicRegressor` (BART/iBART-style,
+where terms are revised rather than frozen) is scaffolded for future work. See
+`docs/guides/additive-symbolic-regression.md`.
+
 ## Visualization
 
 ```python
@@ -334,6 +376,9 @@ See the `docs/examples/` directory for complete worked examples:
 - `uncertainty_quantification.py`: Prediction intervals, BMA, conformal, bootstrap
 - `chemical_kinetics.py`: Discovering rate laws from kinetic data
 - `heat_transfer.py`: Heat transfer correlations
+
+The `examples/` directory also has a standalone script,
+`additive_symbolic_regression.py`, for boosting-style additive models.
 
 ## API Reference
 

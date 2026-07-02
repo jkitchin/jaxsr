@@ -17,3 +17,4 @@ Full API documentation generated from source docstrings.
    rsm
    plotting
    classifier
+   additive
