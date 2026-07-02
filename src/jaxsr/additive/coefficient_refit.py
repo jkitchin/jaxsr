@@ -64,11 +64,16 @@ def refit_ols(Phi: jnp.ndarray, y: jnp.ndarray) -> tuple[float, jnp.ndarray]:
     if n_terms == 0:
         return float(jnp.mean(y)), jnp.zeros((0,))
 
-    # Augment with an intercept column and solve via lstsq (SVD-based,
-    # minimum-norm solution for rank-deficient systems -- never inv()).
-    A = jnp.concatenate([jnp.ones((n_samples, 1)), Phi], axis=1)
-    solution, _, _, _ = jnp.linalg.lstsq(A, y, rcond=None)
+    # Fit the intercept by centering rather than augmenting Phi with a
+    # column of ones.  Augmentation mixes an O(1) ones-column with the term
+    # columns, whose scale is arbitrary (it tracks the scale of y); when the
+    # terms are tiny (e.g. y ~ 1e-6) that disparity makes the system severely
+    # ill-conditioned in float32 and lstsq returns garbage.  Centering keeps
+    # the design matrix on a single scale and is the standard, stable way to
+    # estimate an intercept.  Still SVD-based via lstsq -- never inv().
+    Phi_mean = jnp.mean(Phi, axis=0)
+    y_mean = jnp.mean(y)
+    coefficients, _, _, _ = jnp.linalg.lstsq(Phi - Phi_mean, y - y_mean, rcond=None)
 
-    intercept = float(solution[0])
-    coefficients = solution[1:]
+    intercept = float(y_mean - Phi_mean @ coefficients)
     return intercept, coefficients

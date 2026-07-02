@@ -324,6 +324,31 @@ def test_get_loss_and_squared_error():
         get_loss("not_a_loss")
 
 
+def test_scale_equivariance_and_tiny_targets():
+    """Predictions scale with y, and tiny-magnitude targets still fit.
+
+    Guards against float32 ill-conditioning in the coefficient refit: fitting
+    an intercept by augmenting with a ones-column fails when the term columns
+    are tiny (y ~ 1e-6); centering keeps the fit stable at any scale.
+    """
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(17)
+    X = jnp.array(rng.uniform(-2, 2, size=(300, 2)))
+    y = 2.0 * X[:, 0] + 0.5 * X[:, 1] ** 2 + jnp.array(rng.normal(0, 0.1, 300))
+
+    base = StagewiseSymbolicRegressor(n_terms=5, max_complexity=4).fit(X, y)
+    pbase = np.array(base.predict(X))
+
+    scaled = StagewiseSymbolicRegressor(n_terms=5, max_complexity=4).fit(X, 3.7 * y)
+    rel = np.max(np.abs(np.array(scaled.predict(X)) - 3.7 * pbase)) / (np.max(np.abs(pbase)) + 1e-9)
+    assert rel < 1e-3, f"scale-equivariance broken: rel={rel:.2e}"
+
+    for factor in (1e-6, 1e6):
+        m = StagewiseSymbolicRegressor(n_terms=5, max_complexity=4).fit(X, factor * y)
+        assert m.score(X, factor * y) > 0.98, f"failed at scale {factor:g}"
+
+
 def test_refit_ols_zero_terms():
     """refit_ols with no columns returns the mean and empty coefficients."""
     from jaxsr.additive import refit_ols
