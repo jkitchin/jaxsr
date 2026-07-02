@@ -16,8 +16,10 @@ BackfittingSymbolicRegressor
     place (not yet implemented).
 AdditiveSymbolicModel
     Plain container for a fitted additive model.
-Loss, SquaredError, get_loss
-    Loss abstraction and registry (hooks for future gradient-boosting losses).
+Loss, SquaredError, AbsoluteError, HuberLoss, QuantileLoss, get_loss
+    Loss abstraction and registry. Squared error is the default; absolute
+    error, Huber, and quantile (pinball) losses enable robust and quantile
+    regression via gradient boosting.
 refit_ols
     Least-squares refit of intercept and per-term coefficients.
 """
@@ -27,16 +29,28 @@ from __future__ import annotations
 from .backfitting import BackfittingSymbolicRegressor
 from .coefficient_refit import refit_ols
 from .ensemble import AdditiveSymbolicModel, additive_predict
-from .losses import Loss, SquaredError, get_loss
+from .losses import (
+    AbsoluteError,
+    HuberLoss,
+    Loss,
+    QuantileLoss,
+    SquaredError,
+    get_loss,
+    loss_from_config,
+)
 from .stagewise import StagewiseSymbolicRegressor
 
 __all__ = [
+    "AbsoluteError",
     "AdditiveSymbolicModel",
     "BackfittingSymbolicRegressor",
+    "HuberLoss",
     "Loss",
+    "QuantileLoss",
     "SquaredError",
     "StagewiseSymbolicRegressor",
     "additive_predict",
     "get_loss",
+    "loss_from_config",
     "refit_ols",
 ]

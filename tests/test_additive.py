@@ -324,6 +324,136 @@ def test_get_loss_and_squared_error():
         get_loss("not_a_loss")
 
 
+def test_loss_registry_and_parameters():
+    """All registered losses resolve; parameterized losses validate inputs."""
+    from jaxsr.additive import (
+        AbsoluteError,
+        HuberLoss,
+        QuantileLoss,
+        SquaredError,
+        get_loss,
+    )
+
+    assert isinstance(get_loss("squared_error"), SquaredError)
+    assert isinstance(get_loss("absolute_error"), AbsoluteError)
+    assert isinstance(get_loss("huber"), HuberLoss)
+    assert isinstance(get_loss("quantile"), QuantileLoss)
+    # instances pass through unchanged
+    q = QuantileLoss(0.9)
+    assert get_loss(q) is q
+
+    with pytest.raises(ValueError):
+        HuberLoss(delta=0.0)
+    with pytest.raises(ValueError):
+        QuantileLoss(quantile=0.0)
+    with pytest.raises(ValueError):
+        QuantileLoss(quantile=1.0)
+
+
+def test_loss_gradients_and_initial_predictions():
+    """Loss initial predictions and pseudo-residuals are correct."""
+    from jaxsr.additive import AbsoluteError, HuberLoss, QuantileLoss
+
+    y = jnp.array([1.0, 2.0, 3.0, 100.0])  # last is an outlier
+
+    mae = AbsoluteError()
+    assert mae.initial_prediction(y) == pytest.approx(2.5)  # median
+    grad = np.array(mae.negative_gradient(y, jnp.full(4, 2.5)))
+    assert np.allclose(grad, [-1.0, -1.0, 1.0, 1.0])  # sign(y - pred)
+
+    huber = HuberLoss(delta=1.0)
+    r = np.array(huber.negative_gradient(jnp.array([0.0, 0.0]), jnp.array([-0.5, -5.0])))
+    assert r[0] == pytest.approx(0.5)  # within delta -> raw residual
+    assert r[1] == pytest.approx(1.0)  # beyond delta -> clipped to delta
+
+    q = QuantileLoss(0.9)
+    assert q.initial_prediction(jnp.arange(0.0, 101.0)) == pytest.approx(90.0, abs=1.0)
+    g = np.array(q.negative_gradient(jnp.array([1.0, -1.0]), jnp.array([0.0, 0.0])))
+    assert g[0] == pytest.approx(0.9)  # y > pred
+    assert g[1] == pytest.approx(-0.1)  # y < pred  (q - 1)
+
+
+def test_huber_and_absolute_error_robust_to_outliers():
+    """Robust losses recover the clean signal far better under contamination."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(1)
+    X = jnp.array(rng.uniform(-2, 2, size=(500, 2)))
+    clean = 2.0 * X[:, 0] + 0.5 * X[:, 1] ** 2
+    y = np.array(clean) + rng.normal(0, 0.1, 500)
+    idx = rng.choice(500, 40, replace=False)
+    y[idx] += 30.0  # heavy one-sided outliers
+    y = jnp.array(y)
+
+    kw = {
+        "n_terms": 8,
+        "max_complexity": 4,
+        "learning_rate": 0.5,
+        "refit_coefficients": False,
+    }
+
+    def mae_vs_clean(loss):
+        m = StagewiseSymbolicRegressor(loss=loss, **kw).fit(X, y)
+        return float(np.mean(np.abs(np.array(m.predict(X)) - np.array(clean))))
+
+    squared = mae_vs_clean("squared_error")
+    huber = mae_vs_clean("huber")
+    absolute = mae_vs_clean("absolute_error")
+
+    assert huber < squared
+    assert absolute < squared
+
+
+def test_quantile_coverage():
+    """Quantile regression yields approximately calibrated coverage."""
+    from jaxsr.additive import QuantileLoss, StagewiseSymbolicRegressor
+
+    rng = np.random.default_rng(2)
+    X = jnp.array(rng.uniform(-2, 2, size=(500, 2)))
+    y = 2.0 * X[:, 0] + 0.5 * X[:, 1] ** 2 + jnp.array(rng.normal(0, 1.0, 500))
+
+    for target in (0.1, 0.9):
+        m = StagewiseSymbolicRegressor(
+            n_terms=10,
+            max_complexity=3,
+            learning_rate=0.5,
+            loss=QuantileLoss(target),
+            refit_coefficients=False,
+        ).fit(X, y)
+        coverage = float(np.mean(np.array(y) <= np.array(m.predict(X))))
+        assert abs(coverage - target) < 0.06, f"q={target}: coverage {coverage:.3f}"
+
+
+def test_refit_with_nonsquared_loss_warns_and_fits():
+    """refit_coefficients=True with a non-squared loss warns and still fits."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=200, noise=0.1, seed=3)
+    with pytest.warns(UserWarning, match="least squares"):
+        model = StagewiseSymbolicRegressor(
+            n_terms=4, max_complexity=3, loss="huber", refit_coefficients=True
+        ).fit(X, y)
+    assert np.all(np.isfinite(np.array(model.predict(X))))
+
+
+def test_save_load_preserves_parameterized_loss(tmp_path):
+    """save/load round-trips a quantile loss with its parameter."""
+    from jaxsr.additive import QuantileLoss, StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=150, noise=0.2, seed=5)
+    model = StagewiseSymbolicRegressor(
+        n_terms=4, max_complexity=3, loss=QuantileLoss(0.75), refit_coefficients=False
+    ).fit(X, y)
+
+    path = tmp_path / "quantile_model.json"
+    model.save(str(path))
+    loaded = StagewiseSymbolicRegressor.load(str(path))
+
+    assert isinstance(loaded.loss, QuantileLoss)
+    assert loaded.loss.quantile == pytest.approx(0.75)
+    assert np.allclose(np.array(model.predict(X)), np.array(loaded.predict(X)), atol=1e-6)
+
+
 def test_scale_equivariance_and_tiny_targets():
     """Predictions scale with y, and tiny-magnitude targets still fit.
 

@@ -257,8 +257,14 @@ loaded = StagewiseSymbolicRegressor.load("additive.json")
 ```
 
 Notes:
-- Prefer `refit_coefficients=True` for accuracy; keep `max_complexity` small
-  (2–4) to favour many simple terms.
+- Prefer `refit_coefficients=True` for accuracy with squared error; keep
+  `max_complexity` small (2–4) to favour many simple terms.
+- **Robust / quantile regression:** set `loss` to `"absolute_error"`,
+  `"huber"`, or `"quantile"` (or an instance like `QuantileLoss(0.9)` /
+  `HuberLoss(delta=2.0)`). These are fit by gradient boosting with a per-stage
+  line search; use `refit_coefficients=False` (OLS refit only applies to
+  squared error and is auto-disabled with a warning otherwise). Fit several
+  quantiles to build prediction intervals.
 - `include_transcendental`/`include_ratios` are off by default; if enabled, a
   stage that would produce non-finite predictions falls back to a finite basis.
 - `BackfittingSymbolicRegressor` (BART/iBART-style, revises terms rather than

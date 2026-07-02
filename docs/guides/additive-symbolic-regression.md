@@ -85,7 +85,7 @@ StagewiseSymbolicRegressor(
 | `learning_rate` | Shrinkage on each stage when `refit_coefficients=False`. |
 | `max_complexity` | Complexity budget per term (max basis terms). Keep small to favour many simple terms. |
 | `refit_coefficients` | Re-solve all linear weights by OLS after each stage. |
-| `loss` | Loss function. Currently only `"squared_error"`. |
+| `loss` | `"squared_error"` (default), `"absolute_error"`, `"huber"`, `"quantile"`, or a `Loss` instance. See [Losses](#losses-robust-and-quantile-regression). |
 | `early_stopping` | Hold out a validation split and stop when it stops improving. |
 | `validation_fraction`, `patience`, `min_delta` | Early-stopping controls. |
 | `max_poly_degree`, `include_transcendental`, `include_ratios` | Which basis functions each term may use. |
@@ -131,13 +131,43 @@ out. After each stage the validation loss is recorded; training stops once it
 fails to improve by at least `min_delta` for `patience` consecutive stages, and
 the model rolls back to the best iteration.
 
-## Losses (extensibility)
+## Losses: robust and quantile regression
 
-The loss abstraction in `jaxsr.additive.losses` is designed for future gradient
-boosting: each weak learner fits the negative gradient `-dL/dy_pred`. Only
-`SquaredError` (whose pseudo-residual is the ordinary residual `y - y_pred`) is
-implemented today. Additional losses (absolute error, Huber, Poisson, logistic,
-quantile) can be added by subclassing `Loss` and registering them.
+This is where additive symbolic regression goes beyond ordinary least-squares
+symbolic regression. Each weak learner fits the negative gradient `-dL/dy_pred`
+(gradient boosting), so you can target losses that OLS selection cannot:
+
+| `loss` | Class | Use when |
+|--------|-------|----------|
+| `"squared_error"` (default) | `SquaredError` | Standard regression |
+| `"absolute_error"` | `AbsoluteError` | Outliers present (fits the median) |
+| `"huber"` | `HuberLoss(delta=1.35)` | Outliers, but keep efficiency near zero |
+| `"quantile"` | `QuantileLoss(quantile=0.5)` | Quantiles / prediction intervals / asymmetric cost |
+
+Pass a name for defaults, or an instance to customise:
+
+```python
+from jaxsr.additive import StagewiseSymbolicRegressor, QuantileLoss, HuberLoss
+
+# Robust regression: heavy outliers barely move the fit
+robust = StagewiseSymbolicRegressor(loss="huber", learning_rate=0.5).fit(X, y)
+
+# 90th-percentile regression (build intervals by fitting several quantiles)
+q90 = StagewiseSymbolicRegressor(loss=QuantileLoss(0.9), learning_rate=0.5).fit(X, y)
+```
+
+**How non-squared losses are fit.** Each stage fits a symbolic term to the
+negative gradient, then a **line search** picks the step size that minimises the
+loss (`learning_rate` shrinks that step). Because the ordinary least-squares
+coefficient refit targets squared error, `refit_coefficients=True` is ignored for
+non-squared losses (a warning is issued) and gradient boosting is used instead —
+so set `refit_coefficients=False` explicitly for robust/quantile models.
+
+The optimal constant initialisation adapts to the loss: mean for squared error,
+median for absolute/Huber, and the empirical quantile for quantile loss.
+
+Add further losses (Poisson, logistic, ...) by subclassing `Loss` and
+registering them in `jaxsr.additive.losses._LOSSES`.
 
 ## Backfitting (planned)
 

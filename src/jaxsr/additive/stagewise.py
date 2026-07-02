@@ -23,12 +23,13 @@ import warnings
 
 import jax.numpy as jnp
 import numpy as np
+from scipy.optimize import minimize_scalar
 
 from .._compat import _SklearnCompatMixin
 from ..regressor import SymbolicRegressor, fit_symbolic
 from .coefficient_refit import refit_ols
 from .ensemble import AdditiveSymbolicModel, additive_predict
-from .losses import get_loss
+from .losses import Loss, SquaredError, get_loss, loss_from_config
 
 
 class StagewiseSymbolicRegressor(_SklearnCompatMixin):
@@ -56,10 +57,17 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
     refit_coefficients : bool
         If True, after each new term is added, re-solve the intercept and all
         per-term coefficients by ordinary least squares over the discovered
-        symbolic features.  If False, use fixed learning-rate-scaled stagewise
-        weights.
-    loss : str
-        Loss function name.  Currently only ``"squared_error"`` is supported.
+        symbolic features.  If False, use learning-rate-scaled stagewise
+        weights.  OLS refit targets squared error, so it is only applied for
+        ``loss="squared_error"``; with any other loss it is ignored (a warning
+        is issued) and gradient boosting with a per-stage line search is used.
+    loss : str or Loss
+        Loss function.  One of ``"squared_error"``, ``"absolute_error"``,
+        ``"huber"``, ``"quantile"``, or a :class:`~jaxsr.additive.Loss`
+        instance for custom parameters (e.g. ``QuantileLoss(0.9)`` or
+        ``HuberLoss(delta=2.0)``).  Non-squared losses are fit by gradient
+        boosting: each term fits the negative gradient and its step size is
+        chosen by a line search that minimises the loss.
     early_stopping : bool
         If True, hold out a validation split and stop adding terms once the
         validation loss stops improving.
@@ -306,6 +314,48 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         train_idx = jnp.asarray(perm[n_val:])
         return X[train_idx], y[train_idx], X[val_idx], y[val_idx]
 
+    @staticmethod
+    def _line_search_step(
+        loss_fn: Loss,
+        y: jnp.ndarray,
+        base_pred: jnp.ndarray,
+        direction: jnp.ndarray,
+    ) -> float:
+        """
+        Find the step size that minimises the loss along a term's direction.
+
+        Solves ``argmin_gamma loss(y, base_pred + gamma * direction)`` for the
+        newly added term (gradient-boosting line search).  All supported losses
+        are convex in ``gamma``, so a 1-D scalar minimisation suffices.
+
+        Parameters
+        ----------
+        loss_fn : Loss
+            Loss to minimise.
+        y : jnp.ndarray
+            Target values.
+        base_pred : jnp.ndarray
+            Current ensemble prediction.
+        direction : jnp.ndarray
+            The new term's predictions ``g_k(X)``.
+
+        Returns
+        -------
+        float
+            Optimal step size (``0.0`` if the direction carries no signal).
+        """
+        direction = jnp.asarray(direction)
+        if not bool(jnp.any(jnp.abs(direction) > 1e-12)):
+            return 0.0
+
+        def objective(gamma: float) -> float:
+            return loss_fn.loss(y, base_pred + gamma * direction)
+
+        result = minimize_scalar(objective)
+        if not result.success or not np.isfinite(result.x):
+            return 1.0
+        return float(result.x)
+
     def fit(self, X: jnp.ndarray, y: jnp.ndarray) -> StagewiseSymbolicRegressor:
         """
         Fit the stagewise additive symbolic model.
@@ -351,6 +401,21 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
             )
 
         loss_fn = get_loss(self.loss)
+        is_squared = isinstance(loss_fn, SquaredError)
+
+        # OLS refit minimises squared error, so it is inconsistent with any
+        # other loss.  Fall back to gradient boosting (with a line search) and
+        # tell the user.
+        use_refit = self.refit_coefficients and is_squared
+        if self.refit_coefficients and not is_squared:
+            warnings.warn(
+                "refit_coefficients=True re-solves coefficients by ordinary "
+                "least squares, which targets squared error and is inconsistent "
+                f"with loss={loss_fn.name!r}; using gradient-boosting stagewise "
+                "weights with a per-stage line search instead.",
+                stacklevel=2,
+            )
+
         X_tr, y_tr, X_val, y_val = self._train_val_split(X, y)
 
         intercept = loss_fn.initial_prediction(y_tr)
@@ -371,14 +436,21 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
             terms.append(term)
             learning_rates.append(self.learning_rate)
 
-            if self.refit_coefficients:
+            if use_refit:
                 Phi_tr = jnp.stack([t.predict(X_tr) for t in terms], axis=1)
                 intercept, coef_arr = refit_ols(Phi_tr, y_tr)
                 coefficients = [float(c) for c in coef_arr]
                 prediction_tr = intercept + Phi_tr @ coef_arr
             else:
-                coefficients.append(self.learning_rate)
-                prediction_tr = prediction_tr + self.learning_rate * term.predict(X_tr)
+                g_tr = term.predict(X_tr)
+                if is_squared:
+                    step = self.learning_rate
+                else:
+                    # Gradient boosting: shrink the loss-optimal step size.
+                    gamma = self._line_search_step(loss_fn, y_tr, prediction_tr, g_tr)
+                    step = self.learning_rate * gamma
+                coefficients.append(float(step))
+                prediction_tr = prediction_tr + step * g_tr
 
             train_loss = loss_fn.loss(y_tr, prediction_tr)
 
@@ -505,9 +577,10 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         """
         self._check_is_fitted()
         config = self.get_params(deep=False)
-        # A Loss instance is not JSON-serialisable; store its registry name.
-        if not isinstance(config.get("loss"), str):
-            config["loss"] = config["loss"].name
+        # Serialise the loss faithfully: a plain name when it has no parameters,
+        # otherwise a {"name", "params"} dict (e.g. quantile / huber).
+        loss_config = get_loss(self.loss).to_config()
+        config["loss"] = loss_config["name"] if not loss_config["params"] else loss_config
         return {
             "config": config,
             "intercept": float(self.model_.intercept),
@@ -533,7 +606,9 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         StagewiseSymbolicRegressor
             The reconstructed fitted model.
         """
-        model = cls(**data["config"])
+        config = dict(data["config"])
+        config["loss"] = loss_from_config(config["loss"])
+        model = cls(**config)
         terms = [SymbolicRegressor._from_dict(t) for t in data["terms"]]
         model.model_ = AdditiveSymbolicModel(
             intercept=float(data["intercept"]),

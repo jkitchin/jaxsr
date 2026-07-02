@@ -291,8 +291,27 @@ model.save("additive_model.json")  # JSON round-trip (models are not picklable)
 Prefer this over a single large expression when the signal is a sum of several
 simple effects: keep `max_complexity` small and let the ensemble accumulate many
 interpretable terms. Early stopping on a validation split guards against
-overfitting on noisy data. A `BackfittingSymbolicRegressor` (BART/iBART-style,
-where terms are revised rather than frozen) is scaffolded for future work. See
+overfitting on noisy data.
+
+Because each term is fit by gradient boosting (fitting the negative gradient),
+you can also target losses ordinary least-squares selection cannot — **robust**
+and **quantile** symbolic regression:
+
+```python
+from jaxsr.additive import StagewiseSymbolicRegressor, QuantileLoss
+
+# Robust to outliers (Huber); use refit_coefficients=False for non-squared losses
+robust = StagewiseSymbolicRegressor(loss="huber", learning_rate=0.5,
+                                    refit_coefficients=False).fit(X, y)
+
+# 90th-percentile regression (fit several quantiles to build intervals)
+q90 = StagewiseSymbolicRegressor(loss=QuantileLoss(0.9), learning_rate=0.5,
+                                 refit_coefficients=False).fit(X, y)
+```
+
+Available losses: `"squared_error"` (default), `"absolute_error"`, `"huber"`,
+`"quantile"`. A `BackfittingSymbolicRegressor` (BART/iBART-style, where terms are
+revised rather than frozen) is scaffolded for future work. See
 `docs/guides/additive-symbolic-regression.md`.
 
 ## Visualization
