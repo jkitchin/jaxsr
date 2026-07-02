@@ -18,6 +18,8 @@ instead revise terms in place.
 
 from __future__ import annotations
 
+import json
+
 import jax.numpy as jnp
 import numpy as np
 
@@ -449,6 +451,106 @@ class StagewiseSymbolicRegressor(_SklearnCompatMixin):
         """
         self._check_is_fitted()
         return self.model_.to_expression()
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+    def _state_dict(self) -> dict:
+        """
+        Return a JSON-serialisable dictionary of the fitted model state.
+
+        Each symbolic term is serialised via the underlying
+        :class:`jaxsr.SymbolicRegressor` state dictionary, which avoids the
+        (unpicklable) basis-function closures.
+
+        Returns
+        -------
+        dict
+            Dictionary containing constructor config and fitted state.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+        """
+        self._check_is_fitted()
+        config = self.get_params(deep=False)
+        # A Loss instance is not JSON-serialisable; store its registry name.
+        if not isinstance(config.get("loss"), str):
+            config["loss"] = config["loss"].name
+        return {
+            "config": config,
+            "intercept": float(self.model_.intercept),
+            "coefficients": [float(c) for c in self.model_.coefficients],
+            "learning_rates": [float(lr) for lr in self.model_.learning_rates],
+            "feature_names": list(self.model_.feature_names),
+            "training_history": self.model_.training_history,
+            "terms": [term._state_dict() for term in self.model_.terms],
+        }
+
+    @classmethod
+    def _from_dict(cls, data: dict) -> StagewiseSymbolicRegressor:
+        """
+        Reconstruct a fitted regressor from a state dictionary.
+
+        Parameters
+        ----------
+        data : dict
+            Dictionary produced by :meth:`_state_dict`.
+
+        Returns
+        -------
+        StagewiseSymbolicRegressor
+            The reconstructed fitted model.
+        """
+        model = cls(**data["config"])
+        terms = [SymbolicRegressor._from_dict(t) for t in data["terms"]]
+        model.model_ = AdditiveSymbolicModel(
+            intercept=float(data["intercept"]),
+            terms=terms,
+            coefficients=[float(c) for c in data["coefficients"]],
+            learning_rates=[float(lr) for lr in data["learning_rates"]],
+            feature_names=list(data["feature_names"]),
+            training_history=data.get("training_history", []),
+        )
+        model._is_fitted = True
+        return model
+
+    def save(self, filepath: str) -> None:
+        """
+        Save the fitted model to a JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Destination path.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+        """
+        with open(filepath, "w") as f:
+            json.dump(self._state_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str) -> StagewiseSymbolicRegressor:
+        """
+        Load a fitted model from a JSON file.
+
+        Parameters
+        ----------
+        filepath : str
+            Path to a file created by :meth:`save`.
+
+        Returns
+        -------
+        StagewiseSymbolicRegressor
+            The loaded fitted model.
+        """
+        with open(filepath) as f:
+            data = json.load(f)
+        return cls._from_dict(data)
 
     def __repr__(self) -> str:
         """Pretty structural repr when fitted, sklearn-style otherwise."""

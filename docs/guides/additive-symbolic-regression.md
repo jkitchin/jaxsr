@@ -112,6 +112,18 @@ all terms:
 expr = model.to_expression()   # requires sympy
 ```
 
+## Saving and loading
+
+Fitted models serialize to JSON (each term is stored via the underlying
+`SymbolicRegressor` state), mirroring the rest of jaxsr. Note that the models
+are **not picklable** — the basis-function closures cannot be pickled — so use
+`save`/`load` rather than `pickle`:
+
+```python
+model.save("additive_model.json")
+loaded = StagewiseSymbolicRegressor.load("additive_model.json")
+```
+
 ## Early stopping
 
 With `early_stopping=True`, a validation split (`validation_fraction`) is held

@@ -256,6 +256,26 @@ def test_determinism_with_random_state():
     assert np.allclose(np.array(a.predict(X)), np.array(b.predict(X)))
 
 
+def test_save_load_roundtrip(tmp_path):
+    """save/load reconstructs a model with identical predictions and state."""
+    from jaxsr.additive import StagewiseSymbolicRegressor
+
+    X, y = _additive_data(n=120, noise=0.05, seed=4)
+    model = StagewiseSymbolicRegressor(n_terms=4, max_complexity=3, feature_names=["a", "b"]).fit(
+        X, y
+    )
+
+    path = tmp_path / "additive_model.json"
+    model.save(str(path))
+    loaded = StagewiseSymbolicRegressor.load(str(path))
+
+    assert np.allclose(np.array(model.predict(X)), np.array(loaded.predict(X)), atol=1e-6)
+    assert loaded.intercept_ == pytest.approx(model.intercept_)
+    assert np.allclose(loaded.coefficients_, model.coefficients_)
+    assert loaded.expressions_ == model.expressions_
+    assert loaded.n_terms_ == model.n_terms_
+
+
 def test_backfitting_scaffold_raises():
     """The backfitting scaffold raises NotImplementedError on fit."""
     from jaxsr.additive import BackfittingSymbolicRegressor
