@@ -22,6 +22,7 @@ from .selection import (
     SelectionPath,
     SelectionResult,
     compute_pareto_front,
+    fit_ols,
     select_features,
 )
 from .uncertainty import (
@@ -306,15 +307,23 @@ class SymbolicRegressor(_SklearnCompatMixin):
         # Evaluate basis functions
         Phi = self.basis_library.evaluate(X)
 
-        # Handle invalid values in design matrix
+        # Handle invalid values in the design matrix.  A basis that is
+        # non-finite on the training data (e.g. log(x) with x <= 0) must never
+        # remain in the final model: predict() re-evaluates each selected basis
+        # from scratch, so a non-finite basis yields NaN predictions.  Zero the
+        # whole invalid column first so the selection math stays finite, then
+        # drop any such column that still gets selected (below) -- greedy search
+        # can otherwise fill a term slot with a zeroed, useless column.
         invalid_mask = ~jnp.all(jnp.isfinite(Phi), axis=0)
-        if jnp.any(invalid_mask):
+        has_invalid = bool(jnp.any(invalid_mask))
+        if has_invalid:
             n_invalid = int(jnp.sum(invalid_mask))
             warnings.warn(
-                f"Removing {n_invalid} basis functions with non-finite values", stacklevel=2
+                f"Excluding {n_invalid} basis function(s) with non-finite values on the "
+                f"training data; they will not be selected.",
+                stacklevel=2,
             )
-            # Replace invalid columns with zeros (they won't be selected)
-            Phi = jnp.where(jnp.isfinite(Phi), Phi, 0)
+            Phi = jnp.where(invalid_mask, 0.0, Phi)
 
         # Run selection
         extra_kw: dict[str, Any] = {}
@@ -351,6 +360,11 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
         self._result = self._selection_path.best
 
+        # Drop any non-finite-on-training basis that slipped into the model so
+        # that predict() can never return NaN because of it.
+        if has_invalid:
+            self._drop_nonfinite_terms(Phi, y, invalid_mask)
+
         # Apply constraints if specified
         if self.constraints is not None:
             self._apply_constraints(Phi, y, X)
@@ -361,6 +375,64 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
         self._is_fitted = True
         return self
+
+    def _drop_nonfinite_terms(
+        self,
+        Phi: jnp.ndarray,
+        y: jnp.ndarray,
+        invalid_mask: jnp.ndarray,
+    ):
+        """
+        Remove selected terms whose basis is non-finite on the training data.
+
+        Such a term would make :meth:`predict` return NaN (the basis is
+        re-evaluated from scratch there).  The remaining terms are refit by
+        ordinary least squares and the information criteria recomputed.
+
+        Parameters
+        ----------
+        Phi : jnp.ndarray
+            Design matrix with invalid columns already zeroed.
+        y : jnp.ndarray
+            Target values.
+        invalid_mask : jnp.ndarray of bool
+            Per-column mask; True marks a basis non-finite on training data.
+        """
+        invalid = np.asarray(invalid_mask)
+        indices = [int(i) for i in np.asarray(self._result.selected_indices)]
+        keep = [i for i in indices if not invalid[i]]
+        if len(keep) == len(indices):
+            return  # nothing invalid was selected
+
+        if not keep:
+            # Degenerate: fall back to the constant term if the library has one.
+            keep = [i for i, name in enumerate(self.basis_library.names) if name == "1"][:1]
+            if not keep:
+                return
+
+        keep_arr = jnp.asarray(keep)
+        coeffs, mse = fit_ols(Phi[:, keep_arr], y)
+        names = [self.basis_library.names[i] for i in keep]
+        complexity = int(sum(self.basis_library.complexities[i] for i in keep))
+        n, k = len(y), len(coeffs)
+
+        parametric_params = self._result.parametric_params
+        if parametric_params:
+            parametric_params = {i: parametric_params[i] for i in keep if i in parametric_params}
+            parametric_params = parametric_params or None
+
+        self._result = SelectionResult(
+            coefficients=coeffs,
+            selected_indices=keep_arr,
+            selected_names=names,
+            mse=mse,
+            complexity=complexity,
+            aic=compute_information_criterion(n, k, mse, "aic"),
+            bic=compute_information_criterion(n, k, mse, "bic"),
+            aicc=compute_information_criterion(n, k, mse, "aicc"),
+            n_samples=n,
+            parametric_params=parametric_params,
+        )
 
     def _apply_constraints(
         self,
