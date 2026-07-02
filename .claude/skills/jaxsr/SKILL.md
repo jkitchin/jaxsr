@@ -265,6 +265,12 @@ Notes:
   line search; use `refit_coefficients=False` (OLS refit only applies to
   squared error and is auto-disabled with a warning otherwise). Fit several
   quantiles to build prediction intervals.
+- **Structural uncertainty:** `bootstrap_additive(model, X, y, n_bootstrap=...)`
+  refits on resamples and returns `["inclusion_probabilities"]` (how often each
+  basis is selected — a posterior-inclusion-probability proxy) and `["models"]`;
+  pass those to `bootstrap_predict_additive(models, X_new)` for an ensemble
+  prediction interval. Diffuse probabilities (~0.5) flag that the data don't
+  determine one expression (common with collinear features).
 - `include_transcendental`/`include_ratios` are off by default; if enabled, a
   stage that would produce non-finite predictions falls back to a finite basis.
 - `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised

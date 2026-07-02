@@ -367,6 +367,95 @@ def test_backfitting_invalid_params_and_inputs():
         BackfittingSymbolicRegressor().fit(X, y.at[0].set(jnp.nan))
 
 
+def test_bootstrap_additive_structure_and_reproducibility():
+    """Bootstrap yields valid inclusion probabilities and is reproducible."""
+    from jaxsr.additive import StagewiseSymbolicRegressor, bootstrap_additive
+
+    X, y = _additive_data(n=250, noise=0.1, seed=1)
+    est = StagewiseSymbolicRegressor(n_terms=3, max_complexity=3)
+    res = bootstrap_additive(est, X, y, n_bootstrap=25, random_state=0)
+
+    assert res["n_bootstrap"] == 25
+    assert len(res["models"]) == 25
+    assert res["n_terms"].shape == (25,)
+    probs = res["inclusion_probabilities"]
+    assert all(0.0 <= p <= 1.0 for p in probs.values())
+    # On identifiable data the true bases are selected almost every time.
+    assert probs.get("x0", 0.0) > 0.9
+    assert probs.get("x1^2", 0.0) > 0.9
+
+    # Reproducible for a fixed random_state.
+    res2 = bootstrap_additive(est, X, y, n_bootstrap=25, random_state=0)
+    assert res["inclusion_probabilities"] == res2["inclusion_probabilities"]
+
+
+def test_bootstrap_additive_detects_structural_instability():
+    """Collinear features give diffuse (non-degenerate) inclusion probs."""
+    from jaxsr.additive import StagewiseSymbolicRegressor, bootstrap_additive
+
+    rng = np.random.default_rng(0)
+    x0 = rng.normal(0, 1, 400)
+    x1 = 0.9 * x0 + 0.1 * rng.normal(0, 1, 400)
+    x2 = 0.8 * x0 + 0.2 * rng.normal(0, 1, 400)
+    X = jnp.array(np.column_stack([x0, x1, x2]))
+    y = jnp.array(x0 - x1 + 0.5 * x2 + rng.normal(0, 0.1, 400))
+
+    est = StagewiseSymbolicRegressor(n_terms=3, max_complexity=1, refit_coefficients=True)
+    probs = bootstrap_additive(est, X, y, n_bootstrap=40, random_state=1)["inclusion_probabilities"]
+    # At least one basis is genuinely uncertain (selected sometimes, not always).
+    assert any(0.15 < p < 0.85 for p in probs.values())
+
+
+def test_bootstrap_predict_additive_intervals():
+    """The predictive ensemble returns well-ordered intervals."""
+    from jaxsr.additive import (
+        StagewiseSymbolicRegressor,
+        bootstrap_additive,
+        bootstrap_predict_additive,
+    )
+
+    X, y = _additive_data(n=200, noise=0.2, seed=2)
+    est = StagewiseSymbolicRegressor(n_terms=3, max_complexity=3)
+    res = bootstrap_additive(est, X, y, n_bootstrap=30, random_state=0)
+
+    pi = bootstrap_predict_additive(res["models"], X, alpha=0.1)
+    n = X.shape[0]
+    assert pi["mean"].shape == (n,)
+    assert pi["predictions"].shape == (30, n)
+    assert np.all(pi["lower"] <= pi["median"] + 1e-9)
+    assert np.all(pi["median"] <= pi["upper"] + 1e-9)
+
+
+def test_bootstrap_additive_works_with_backfitting():
+    """Bootstrap uncertainty works for the backfitting regressor too."""
+    from jaxsr.additive import BackfittingSymbolicRegressor, bootstrap_additive
+
+    X, y = _additive_data(n=200, noise=0.1, seed=3)
+    est = BackfittingSymbolicRegressor(n_terms=3, n_sweeps=3, max_complexity=2)
+    res = bootstrap_additive(est, X, y, n_bootstrap=12, random_state=0)
+    assert res["n_bootstrap"] == 12
+    assert all(0.0 <= p <= 1.0 for p in res["inclusion_probabilities"].values())
+
+
+def test_bootstrap_additive_validation():
+    """Bootstrap functions validate their inputs."""
+    from jaxsr.additive import (
+        StagewiseSymbolicRegressor,
+        bootstrap_additive,
+        bootstrap_predict_additive,
+    )
+
+    X, y = _additive_data(n=60)
+    est = StagewiseSymbolicRegressor(n_terms=2, max_complexity=2)
+    with pytest.raises(ValueError):
+        bootstrap_additive(est, X, y, n_bootstrap=0)
+    with pytest.raises(ValueError):
+        bootstrap_predict_additive([], X)
+    res = bootstrap_additive(est, X, y, n_bootstrap=5, random_state=0)
+    with pytest.raises(ValueError):
+        bootstrap_predict_additive(res["models"], X, alpha=1.5)
+
+
 def test_backfitting_save_load_roundtrip(tmp_path):
     """Backfitting models round-trip through save/load."""
     from jaxsr.additive import BackfittingSymbolicRegressor

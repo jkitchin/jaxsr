@@ -124,6 +124,43 @@ model.save("additive_model.json")
 loaded = StagewiseSymbolicRegressor.load("additive_model.json")
 ```
 
+## Structural uncertainty (bootstrap)
+
+A single fitted expression can hide the fact that the *structure* itself is
+uncertain — several different basis sets may explain the data about equally
+well (this is common with collinear features). `bootstrap_additive` refits the
+model on bootstrap resamples and reports, for each basis function, how often it
+is selected — a cheap approximation to a posterior inclusion probability —
+together with a predictive ensemble:
+
+```python
+from jaxsr.additive import (
+    StagewiseSymbolicRegressor,
+    bootstrap_additive,
+    bootstrap_predict_additive,
+)
+
+est = StagewiseSymbolicRegressor(n_terms=3, max_complexity=2)
+res = bootstrap_additive(est, X, y, n_bootstrap=100, random_state=0)
+
+# How stable is the discovered structure?
+for name, prob in res["inclusion_probabilities"].items():
+    print(f"{name:10s} selected in {prob:.0%} of resamples")
+
+# Prediction intervals that reflect *structural* variability, not just noise
+pi = bootstrap_predict_additive(res["models"], X_new, alpha=0.1)
+pi["mean"], pi["lower"], pi["upper"]
+```
+
+**How to read it.** Inclusion probabilities near 0 or 1 mean the structure is
+identifiable and the single fitted expression is trustworthy. **Diffuse** values
+(e.g. a basis selected 50–60% of the time) mean the data do not determine one
+expression — no single symbolic model should be over-trusted, and the bootstrap
+intervals are the honest summary. This also works as a decision gate for heavier
+Bayesian modelling: if the probabilities are already crisp, there is little
+structural uncertainty left to quantify. It works for both the stagewise and
+backfitting regressors.
+
 ## Early stopping
 
 With `early_stopping=True`, a validation split (`validation_fraction`) is held

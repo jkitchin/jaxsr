@@ -315,7 +315,22 @@ terms is revised rather than frozen) is also available for squared error. It is
 never worse than stagewise+refit on training and genuinely helps when per-term
 complexity is small and features are collinear (where greedy selection gets
 stuck); it is also the foundation for a future Bayesian (BART/iBART-style)
-variant. See `docs/guides/additive-symbolic-regression.md`.
+variant.
+
+`bootstrap_additive` quantifies **structural uncertainty** — how often each
+basis function is selected across bootstrap resamples (a proxy for posterior
+inclusion probability), plus a predictive ensemble whose intervals reflect
+structural variability, not just coefficient noise:
+
+```python
+from jaxsr.additive import bootstrap_additive, bootstrap_predict_additive
+
+res = bootstrap_additive(model, X, y, n_bootstrap=100, random_state=0)
+res["inclusion_probabilities"]                       # {basis: fraction selected}
+pi = bootstrap_predict_additive(res["models"], X_new)  # mean / lower / upper
+```
+
+See `docs/guides/additive-symbolic-regression.md`.
 
 ## Visualization
 

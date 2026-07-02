@@ -22,6 +22,9 @@ Loss, SquaredError, AbsoluteError, HuberLoss, QuantileLoss, get_loss
     regression via gradient boosting.
 refit_ols
     Least-squares refit of intercept and per-term coefficients.
+bootstrap_additive, bootstrap_predict_additive
+    Bootstrap structural uncertainty: basis-function inclusion probabilities and
+    a predictive ensemble that reflects structural variability.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from .losses import (
     loss_from_config,
 )
 from .stagewise import StagewiseSymbolicRegressor
+from .uncertainty import bootstrap_additive, bootstrap_predict_additive
 
 __all__ = [
     "AbsoluteError",
@@ -50,6 +54,8 @@ __all__ = [
     "SquaredError",
     "StagewiseSymbolicRegressor",
     "additive_predict",
+    "bootstrap_additive",
+    "bootstrap_predict_additive",
     "get_loss",
     "loss_from_config",
     "refit_ols",
