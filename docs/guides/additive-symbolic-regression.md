@@ -28,6 +28,38 @@ The key distinction between the two additive variants:
 - **Backfitting**: terms are revised repeatedly, each conditioned on the current
   fit of all the others.
 
+## Scope: what this is (and isn't) good for
+
+**In one line:** JAXSR is a *linear method over a fixed feature space* — it
+selects a sparse combination of basis functions you supply. It is not a
+free-composition equation discoverer.
+
+That distinction decides whether it is the right tool:
+
+- **Good fit:** the right building blocks are on the menu (or you can add them
+  with `BasisLibrary.add_custom`), and you want an interpretable, robust,
+  uncertainty-aware additive model. On targets that live in the library it is
+  fast and accurate, and the additive layer adds robust/quantile losses and
+  structural-uncertainty bootstrapping that genetic-programming tools don't
+  offer out of the box.
+- **Wrong fit:** you want to *discover* an unknown compositional law such as
+  `exp(x0*x1)`, `x0 / (1 + x1**2)`, or `sin(2*x0)`. These are not single basis
+  functions, and the space of such compositions is infinite and continuously
+  parameterized, so no fixed library enumerates them in advance. For that,
+  reach for a genetic-programming or neural symbolic-regression tool (PySR,
+  Operon, AI-Feynman), which *search* the space of expressions instead of
+  selecting from a fixed dictionary.
+
+The limit is one of **discovery, not representation**: the linear-in-basis model
+fits any of those targets perfectly the moment the exact term is in the library
+(e.g. `library.add_custom("exp(x0*x1)", lambda X: jnp.exp(X[:, 0] * X[:, 1]))`) —
+it simply cannot figure out *which* composition it needs without being told.
+JAXSR's parametric bases can additionally fit a few constants *inside* a
+pre-specified nonlinearity (e.g. `sin(a*x0)` with `a` optimized), but that still
+requires you to name the functional form. The additive extensions in this guide
+raise the *statistical* sophistication (boosting, robust/quantile losses,
+backfitting, structural UQ); they do not change this expressiveness boundary.
+
 ## Quick start
 
 ```python

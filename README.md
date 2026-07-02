@@ -262,6 +262,14 @@ learner is an interpretable symbolic expression rather than a decision tree.
 `StagewiseSymbolicRegressor` repeatedly fits a small expression to the current
 residual and (optionally) refits all linear coefficients by least squares:
 
+> **Scope:** JAXSR is a *linear method over a fixed basis library* — it selects a
+> sparse combination of basis functions you supply. It excels at interpretable,
+> robust, uncertainty-aware modeling when the right building blocks are on the
+> menu, but it does **not** discover unknown compositional forms like
+> `exp(x0*x1)` or `sin(2*x0)` (the limit is discovery, not representation). For
+> free-composition equation discovery, use a genetic-programming or neural
+> symbolic-regression tool (PySR, Operon, AI-Feynman).
+
 ```python
 import numpy as np
 from jaxsr.additive import StagewiseSymbolicRegressor
