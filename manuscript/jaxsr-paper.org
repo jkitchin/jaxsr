@@ -440,7 +440,7 @@ learner = ActiveLearner(
 )
 
 for i in range(10):
-    x_next = learner.suggest()
+    x_next = learner.suggest(n_points=1).points
     y_next = true_function(x_next)
     learner.update(x_next, y_next)
 #+end_src
