@@ -19,7 +19,32 @@ ruff check --fix src/ tests/     # Auto-fix lint issues
 # Coverage
 pytest tests/ --cov=jaxsr --cov-report=term-missing   # Coverage to terminal
 pytest tests/ --cov=jaxsr --cov-report=html            # Coverage HTML report → htmlcov/
+
+# Browser app (webapp/) — see webapp/README.md
+python scripts/test_under_numpy.py       # run the suite on the NumPy backend
+python scripts/build_webapp.py           # build the wheel, manifest and example workbook
+python -m http.server -d webapp 8000     # serve it locally
 ```
+
+## The library must keep working without JAX
+
+`webapp/` publishes JAXSR to the browser through Pyodide, where `jaxlib` cannot exist.
+`webapp/py/jax_shim.py` supplies the small JAX-specific surface (`jit`, `grad`,
+`lax.erf`, `.at[]`, `random`) on top of NumPy, and CI runs the whole test suite through
+it (`numpy-backend` job in `.github/workflows/tests.yml`). Two consequences for library
+code:
+
+- **Everything runs in float64 there, not JAX's float32.** Do not rely on float32
+  overflow to signal an out-of-domain result — that was a real bug in `_safe_exp`, where
+  a fixed `clip(x, -500, 500)` produced `inf` at float32 (caught by the non-finite column
+  filter) but a finite ~1e217 at float64 that silently overflowed `Phi.T @ Phi`. Derive
+  such thresholds from `np.finfo(dtype)`.
+- **Scalar math in the information criteria uses `math`, not `jnp`.** `jnp.log` on a
+  Python float produces a float32 scalar, which was silently costing precision in every
+  AIC/BIC comparison. Keep `metrics.py`'s IC functions on plain Python floats.
+
+If you add a new JAX API call to `src/jaxsr/`, add it to the shim too, or the
+`numpy-backend` CI job will fail.
 
 ## CI Requirements
 
@@ -39,7 +64,6 @@ Always run `black` and `ruff check` locally before committing.
 - At least one test in the corresponding `tests/test_<module>.py` file
 
 ### Modules that still need dedicated test files:
-- `metrics.py` → needs `tests/test_metrics.py`
 - `simplify.py` → needs `tests/test_simplify.py`
 - `sampling.py` → needs `tests/test_sampling.py`
 - `plotting.py` → needs `tests/test_plotting.py`
@@ -301,3 +325,17 @@ The `fail_under` threshold is **60%**. Coverage reports exclude `pragma: no cove
 3. **metrics.py** (28%) — Test all metric functions with known inputs/outputs
 4. **utils.py** (40%) — Test utility functions
 5. **basis.py** (58%) — Test SISSO, power laws, rational forms builders
+
+<!-- crucible-project -->
+## Crucible Knowledge Base
+
+This project has a Crucible knowledge base in `.crucible/`.
+Use the `crucible` CLI to ingest sources, search, and maintain the wiki.
+
+Layout: `.crucible/sources/` (primary sources), `.crucible/wiki/` (distilled articles),
+`.crucible/crucible.db` (graph database).
+
+Conventions: org-mode with scimax, org-ref citations, narrative prose.
+The LLM maintains the wiki; manual edits are the exception.
+Run `crucible help all` for the full CLI reference.
+<!-- crucible-project -->
