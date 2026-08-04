@@ -3,7 +3,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/jkitchin/jaxsr?include_prereleases&sort=semver)](https://github.com/jkitchin/jaxsr/releases)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19542160.svg)](https://doi.org/10.5281/zenodo.19542160)
 [![Tests](https://github.com/jkitchin/jaxsr/actions/workflows/tests.yml/badge.svg)](https://github.com/jkitchin/jaxsr/actions/workflows/tests.yml)
-[![Docs](https://github.com/jkitchin/jaxsr/actions/workflows/docs.yml/badge.svg)](https://jkitchin.github.io/jaxsr/)
+[![Docs](https://github.com/jkitchin/jaxsr/actions/workflows/docs.yml/badge.svg)](https://kitchingroup.cheme.cmu.edu/jaxsr/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 ![PyPI Downloads](https://img.shields.io/pypi/dm/jaxsr.svg)
@@ -11,6 +11,17 @@
 ![img](jaxsr-image.png)
 
 JAXSR is a fully open-source symbolic regression library built on JAX that discovers interpretable algebraic expressions from data. It uses sparse optimization techniques with JAX for automatic differentiation, JIT compilation, and GPU acceleration.
+
+## Try it without installing anything
+
+**[kitchingroup.cheme.cmu.edu/jaxsr/app](https://kitchingroup.cheme.cmu.edu/jaxsr/app/)** runs
+JAXSR entirely in your browser. Upload a spreadsheet, say which columns are features and
+which is the response, choose the families of functions to consider, and get a ranked table
+of candidate equations with confidence intervals, ANOVA, diagnostic plots, and exports.
+
+Nothing is uploaded: the whole library is compiled to WebAssembly and runs client-side, so
+unpublished data never leaves your machine. The app offers an example workbook with a known
+answer, and can export a Python script that reproduces your fit with `pip install jaxsr`.
 
 ## Features
 
@@ -24,6 +35,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **Additive Symbolic Regression**: Boosting-style ensembles of small symbolic expressions — fit residuals stagewise for many simple, interpretable terms (`jaxsr.additive`)
 - **Scikit-learn Compatible**: Full estimator protocol (`get_params`/`set_params`/`clone`) — works with `cross_val_score`, `GridSearchCV`, `Pipeline`
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
+- **Two GUIs**: a hosted browser app that needs no install, and a local Streamlit app for the full design-of-experiments cycle
 
 ## Installation
 
@@ -38,6 +50,43 @@ git clone https://github.com/jkitchin/jaxsr.git
 cd jaxsr
 pip install -e ".[dev]"
 ```
+
+## Interactive apps
+
+Two graphical front ends, for different jobs.
+
+**Browser app** — [kitchingroup.cheme.cmu.edu/jaxsr/app](https://kitchingroup.cheme.cmu.edu/jaxsr/app/).
+Nothing to install. Best for fitting a dataset you already have, comparing candidate models,
+and sharing a result with someone who does not use Python. Runs on WebAssembly, so your data
+stays in the browser. See [`webapp/README.md`](webapp/README.md) for how it works and how to
+run it locally.
+
+**Streamlit DOE app** — for the full experimental cycle, where you are choosing what to
+measure next rather than analysing a finished dataset:
+
+```bash
+pip install "jaxsr[app]"
+jaxsr app                      # opens http://localhost:8501
+jaxsr app --study my.jaxsr     # resume a saved study
+```
+
+Eight pages covering the loop end to end: define factors, generate a design and export an
+Excel template for the bench, import the completed results, fit, inspect diagnostics,
+explore the response surface, run canonical analysis and get suggested next experiments,
+then export a Word or Excel report. State persists in a `.jaxsr` study file, so you can
+close it and pick the campaign back up later. Source in [`src/jaxsr/app/`](src/jaxsr/app/).
+
+| | Browser app | Streamlit DOE app |
+|---|---|---|
+| Install | none | `pip install "jaxsr[app]"` |
+| Starting point | data you already have | an experiment you are about to run |
+| Design generation | — | factorial, CCD, Box-Behnken, space-filling |
+| Ranked model table | ✓ | shows the selected model |
+| Response surface / optimization | — | ✓ |
+| Suggest next experiments | — | ✓ |
+| Persistent study file | — | ✓ |
+| Reports | LaTeX, JSON, Python, CSV, SVG | Word, Excel |
+| Data leaves your machine | never | never (runs locally) |
 
 ## Quick Start
 
@@ -415,7 +464,7 @@ for packaging).
 When Claude Code is available, it uses these files to provide context-aware help —
 recommending basis libraries, selection strategies, UQ methods, and constraint setups
 based on your specific problem. See the
-[Claude Code Skills guide](https://jkitchin.github.io/jaxsr/guides/claude_code_skills.html)
+[Claude Code Skills guide](https://kitchingroup.cheme.cmu.edu/jaxsr/guides/claude_code_skills.html)
 in the documentation for more details.
 
 ## Examples
@@ -432,7 +481,7 @@ The `examples/` directory also has a standalone script,
 
 ## API Reference
 
-See the [documentation](docs/) for full API details.
+See the [documentation](https://kitchingroup.cheme.cmu.edu/jaxsr/) for full API details.
 
 ## Citation
 
