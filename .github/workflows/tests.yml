@@ -37,6 +37,28 @@ jobs:
           file: ./coverage.xml
           fail_ci_if_error: false
 
+  # The browser app runs jaxsr on a NumPy stand-in for JAX, because jaxlib has
+  # no WebAssembly build. This runs the whole suite through that stand-in, so a
+  # library change that only breaks the browser path is caught here.
+  numpy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,excel,reports,cli]"
+
+      - name: Run the test suite on the NumPy backend
+        run: |
+          python scripts/test_under_numpy.py tests/ -v --tb=short --timeout=60
+
   lint:
     runs-on: ubuntu-latest
     steps:

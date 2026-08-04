@@ -332,3 +332,68 @@ class TestBasisLibrary:
         md = library._repr_markdown_(max_display=5)
         assert "and" in md.lower()
         assert "more" in md.lower()
+
+
+class TestSafeExponential:
+    """``_safe_exp`` must signal out-of-domain results the same way at any dtype.
+
+    Regression test: ``_safe_exp`` used to clip its argument to a hardcoded
+    +/-500.  At float32 that overflows to ``inf`` (which the regressor's
+    non-finite column filter removes), but at float64 it yields a finite
+    ~1e217 that survives selection and overflows ``Phi.T @ Phi`` instead.
+    """
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_out_of_range_argument_is_nan(self, dtype):
+        """An argument too large to square yields NaN, not a huge finite value."""
+        from jaxsr.basis import _safe_exp
+
+        out = np.asarray(_safe_exp(np.array([1e6], dtype=dtype)))
+        assert np.isnan(out[0])
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_in_range_argument_is_exact(self, dtype):
+        """Ordinary arguments are unaffected."""
+        from jaxsr.basis import _safe_exp
+
+        out = np.asarray(_safe_exp(np.array([0.0, 1.0, 2.0], dtype=dtype)))
+        assert np.allclose(out, np.exp([0.0, 1.0, 2.0]), rtol=1e-5)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_result_survives_being_squared(self, dtype):
+        """Whatever survives must be usable in a Gram matrix."""
+        from jaxsr.basis import _safe_exp
+
+        x = np.linspace(-1000, 1000, 4001, dtype=dtype)
+        out = np.asarray(_safe_exp(x), dtype=dtype)
+        finite = out[np.isfinite(out)]
+        gram = (finite.astype(dtype) ** 2).sum()
+        assert np.isfinite(gram)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_large_negative_argument_underflows_to_zero(self, dtype):
+        """Very negative arguments are legitimate (exp -> 0), not out-of-domain."""
+        from jaxsr.basis import _safe_exp
+
+        out = np.asarray(_safe_exp(np.array([-1e6], dtype=dtype)))
+        assert out[0] == 0.0
+
+    def test_pole_bearing_composition_is_excluded(self):
+        """exp(a/b) evaluated across a zero in b is dropped, not kept as 1e217."""
+        from jaxsr import SymbolicRegressor
+
+        rng = np.random.default_rng(0)
+        X = jnp.array(rng.uniform(-2, 2, size=(200, 2)))
+        y = jnp.exp(X[:, 0] * X[:, 1])
+        library = (
+            BasisLibrary(n_features=2)
+            .add_constant()
+            .add_linear()
+            .add_interactions()
+            .add_compositions(["exp"], ["product", "ratio"])
+        )
+        with pytest.warns(UserWarning, match="non-finite"):
+            model = SymbolicRegressor(basis_library=library, max_terms=4).fit(X, y)
+
+        assert "exp(x0*x1)" in model.selected_features_
+        assert np.all(np.isfinite(np.asarray(model.predict(X))))

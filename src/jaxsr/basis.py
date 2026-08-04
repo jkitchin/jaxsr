@@ -106,8 +106,24 @@ def _safe_sqrt(x: jnp.ndarray) -> jnp.ndarray:
 
 
 def _safe_exp(x: jnp.ndarray) -> jnp.ndarray:
-    """Safe exponential that clips input to avoid overflow."""
-    return jnp.exp(jnp.clip(x, -500, 500))
+    """
+    Safe exponential that returns NaN for arguments too large to be usable.
+
+    Like the other ``_safe_*`` helpers, an out-of-domain result is signalled
+    with NaN so that :meth:`SymbolicRegressor.fit` excludes the whole column.
+    The threshold is derived from the working dtype so that ``exp(x)`` can
+    still be squared and summed when the Gram matrix is formed.  A fixed clip
+    is dtype-dependent: at float32 it overflows to ``inf`` (which the non-finite
+    filter catches), but at float64 it yields a finite ~1e217 that survives
+    selection and overflows ``Phi.T @ Phi`` instead -- e.g. ``exp(a/b)``
+    evaluated near ``b == 0``.
+    """
+    dtype = np.result_type(np.asarray(x).dtype, np.float32)
+    # Leave headroom for squaring and summing roughly 1e7 rows.  Only the upper
+    # side needs bounding; large negative arguments underflow to zero on their
+    # own, which is a legitimate result rather than an out-of-domain one.
+    limit = 0.5 * float(np.log(np.finfo(dtype).max)) - 8.0
+    return jnp.where(x <= limit, jnp.exp(jnp.minimum(x, limit)), jnp.nan)
 
 
 def _safe_inv(x: jnp.ndarray) -> jnp.ndarray:

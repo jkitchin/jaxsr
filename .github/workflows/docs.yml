@@ -29,10 +29,22 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e .
-          pip install "jupyter-book>=0.15,<2" sphinx-copybutton
+          # `build` produces the wheel the app installs into Pyodide;
+          # xlsxwriter writes the example workbook the app offers.
+          pip install "jupyter-book>=0.15,<2" sphinx-copybutton build "xlsxwriter>=3.1"
 
       - name: Build the book
         run: jupyter-book build docs/
+
+      # The browser app is served as plain static files alongside the docs, at
+      # /jaxsr/app/. It lives outside docs/ so jupyter-book never tries to
+      # process it; the build step produces the wheel the page installs into
+      # Pyodide, plus the manifest that names it.
+      - name: Build the browser app
+        run: python scripts/build_webapp.py
+
+      - name: Stage the browser app into the site
+        run: cp -r webapp docs/_build/html/app
 
       - name: Upload artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'

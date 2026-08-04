@@ -659,3 +659,89 @@ class TestNegligibleTermPruning:
         model = SymbolicRegressor(basis_library=library, max_terms=5).fit(X, y)
         assert len(model.selected_features_) >= 3
         assert model.score(X, y) > 0.99
+
+
+class TestSelectionPathProperty:
+    """The public accessor for every candidate model the search evaluated."""
+
+    @pytest.fixture
+    def fitted(self):
+        """A model fitted on data generated from three known terms."""
+        rng = np.random.default_rng(0)
+        X = jnp.array(rng.normal(size=(120, 2)) * 2)
+        y = 2.5 * X[:, 0] + 1.2 * X[:, 0] * X[:, 1] - 0.8 * X[:, 1] ** 2
+        library = (
+            BasisLibrary(n_features=2, feature_names=["x0", "x1"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+            .add_interactions(max_order=2)
+        )
+        return SymbolicRegressor(basis_library=library, max_terms=5).fit(X, y)
+
+    def test_unfitted_raises(self):
+        """Accessing the path before fit() raises, like the other properties."""
+        library = BasisLibrary(n_features=2).add_constant().add_linear()
+        with pytest.raises(RuntimeError, match="not fitted"):
+            _ = SymbolicRegressor(basis_library=library).selection_path_
+
+    def test_exposes_candidate_results(self, fitted):
+        """The path holds SelectionResult entries with scores attached."""
+        path = fitted.selection_path_
+        assert len(path.results) > 0
+        for result in path.results:
+            assert result.n_terms >= 1
+            assert result.mse >= 0
+            assert len(result.selected_names) == result.n_terms
+            assert np.isfinite(result.bic)
+
+    def test_best_index_points_at_the_winning_candidate(self, fitted):
+        """best_index indexes into results and agrees with the `best` property."""
+        path = fitted.selection_path_
+        assert 0 <= path.best_index < len(path.results)
+        assert path.best is path.results[path.best_index]
+
+    def test_fitted_model_is_a_subset_of_the_best_candidate(self, fitted):
+        """The path predates pruning, so the fitted model can have fewer terms.
+
+        ``fit`` drops non-finite terms and prunes negligible ones after the
+        search finishes, so ``path.best`` is the winning *candidate* rather than
+        necessarily the returned model.
+        """
+        path = fitted.selection_path_
+        assert set(fitted.selected_features_) <= set(path.best.selected_names)
+
+    def test_best_candidate_coefficients_agree_on_shared_terms(self, fitted):
+        """Terms that survive pruning keep essentially the same coefficients."""
+        path = fitted.selection_path_
+        candidate = dict(
+            zip(path.best.selected_names, np.asarray(path.best.coefficients), strict=False)
+        )
+        for name, value in zip(
+            fitted.selected_features_, np.asarray(fitted.coefficients_), strict=False
+        ):
+            assert np.isclose(candidate[name], value, rtol=1e-2, atol=1e-6)
+
+    def test_records_the_strategy(self, fitted):
+        """The path names the search that produced it."""
+        assert fitted.selection_path_.strategy == "greedy_forward"
+
+    def test_pareto_front_is_drawn_from_the_path(self, fitted):
+        """Every Pareto-optimal model is one of the evaluated candidates."""
+        path_terms = {tuple(r.selected_names) for r in fitted.selection_path_.results}
+        for result in fitted.pareto_front_:
+            assert tuple(result.selected_names) in path_terms
+
+    def test_exhaustive_records_every_subset(self):
+        """Exhaustive search yields far more candidates than the greedy path."""
+        rng = np.random.default_rng(1)
+        X = jnp.array(rng.normal(size=(60, 2)))
+        y = 2.0 * X[:, 0] - 0.5 * X[:, 1] ** 2
+        library = (
+            BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(max_degree=2)
+        )
+        model = SymbolicRegressor(basis_library=library, max_terms=3, strategy="exhaustive").fit(
+            X, y
+        )
+        assert len(model.selection_path_.results) > 3
+        assert model.selection_path_.strategy == "exhaustive"

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JAXSR — symbolic regression in your browser</title>
+    <meta
+      name="description"
+      content="Discover interpretable algebraic equations from a spreadsheet. Runs entirely in your browser; your data is never uploaded."
+    />
+    <link rel="stylesheet" href="css/app.css" />
+    <script src="vendor/xlsx.full.min.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="title-block">
+        <h1>JAXSR</h1>
+        <p>Discover an interpretable equation from your data.</p>
+      </div>
+      <div id="status" data-kind="busy">Starting…</div>
+    </header>
+
+    <p class="notice privacy">
+      Everything runs inside your browser using WebAssembly. Your file is never uploaded, and the page
+      works offline once loaded.
+    </p>
+
+    <main>
+      <!-- 1 ------------------------------------------------------------- -->
+      <section class="step">
+        <h2><span class="step-number">1</span> Data</h2>
+
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="button">
+          <strong>Drop a spreadsheet here</strong>
+          <span class="muted">or click to choose — .xlsx, .xls or .csv</span>
+          <span id="file-name" class="file-name"></span>
+        </div>
+        <input id="file-input" type="file" accept=".xlsx,.xls,.csv" hidden />
+        <p class="muted">
+          No data handy?
+          <button id="load-example" class="link-button" type="button">Load the example workbook</button>
+          — 120 runs of a fictional reactor with a known answer. You can also
+          <a href="example/jaxsr-example.xlsx" download>download it</a> to open in Excel; its first
+          sheet walks through what to do and what to expect, and the last sheet gives the equations
+          the data came from.
+        </p>
+
+        <p id="data-error" class="notice error" hidden></p>
+
+        <div id="data-config" hidden>
+          <div id="sheet-row" class="field-row" hidden>
+            <label for="sheet-picker">Sheet</label>
+            <select id="sheet-picker"></select>
+          </div>
+
+          <h3>Assign columns</h3>
+          <p class="muted">
+            Mark the quantity you want to predict as <strong>Target</strong>, the variables that explain it
+            as <strong>Feature</strong>, and everything else as <strong>Ignore</strong>.
+          </p>
+          <table id="role-table" class="data"></table>
+
+          <details class="preview">
+            <summary>Preview data <span id="preview-caption" class="muted"></span></summary>
+            <div class="scroll-x"><table id="data-preview" class="data compact"></table></div>
+          </details>
+
+          <p id="data-summary" class="notice" hidden></p>
+        </div>
+      </section>
+
+      <!-- 2 ------------------------------------------------------------- -->
+      <section id="model-section" class="step" hidden>
+        <h2><span class="step-number">2</span> Candidate functions</h2>
+        <p class="muted">
+          Choose which families of terms the search may draw from. More families means a richer search but
+          a slower one, and raises the chance of a term fitting noise.
+        </p>
+
+        <div class="basis-grid">
+          <label><input id="basis-constant" type="checkbox" checked /> Constant <span class="muted">(intercept)</span></label>
+          <label><input id="basis-linear" type="checkbox" checked /> Linear <span class="muted">x₀, x₁, …</span></label>
+
+          <label>
+            <input id="basis-poly" type="checkbox" checked /> Polynomials
+            <span class="inline-field">
+              up to degree
+              <input id="poly-degree" type="number" min="2" max="6" value="3" />
+            </span>
+          </label>
+
+          <label>
+            <input id="basis-inter" type="checkbox" checked /> Interactions
+            <span class="inline-field">
+              up to order
+              <input id="inter-order" type="number" min="2" max="3" value="2" />
+            </span>
+          </label>
+
+          <label class="wide">
+            <input id="basis-trans" type="checkbox" /> Transcendental
+            <span class="sub-options">
+              <label><input type="checkbox" name="trans-func" value="log" checked /> log</label>
+              <label><input type="checkbox" name="trans-func" value="exp" checked /> exp</label>
+              <label><input type="checkbox" name="trans-func" value="sqrt" checked /> sqrt</label>
+              <label><input type="checkbox" name="trans-func" value="inv" checked /> 1/x</label>
+              <label><input type="checkbox" name="trans-func" value="sin" /> sin</label>
+              <label><input type="checkbox" name="trans-func" value="cos" /> cos</label>
+              <label><input type="checkbox" name="trans-func" value="tanh" /> tanh</label>
+            </span>
+          </label>
+
+          <label><input id="basis-ratios" type="checkbox" /> Ratios <span class="muted">xᵢ/xⱼ</span></label>
+          <label><input id="basis-comp" type="checkbox" /> Compositions <span class="muted">log(xᵢxⱼ), exp(xᵢ/xⱼ), …</span></label>
+          <label><input id="basis-power" type="checkbox" /> Power laws <span class="muted">x^0.5, x^1.5, …</span></label>
+        </div>
+
+        <p class="term-count">
+          <strong id="term-count">0</strong> candidate terms
+          <button class="link-button" type="button" onclick="this.nextElementSibling.hidden = !this.nextElementSibling.hidden">
+            show them
+          </button>
+          <span id="term-names" class="muted term-names" hidden></span>
+        </p>
+
+        <h3>Search settings</h3>
+        <div class="field-grid">
+          <div class="field-row">
+            <label for="max-terms">Max terms</label>
+            <input id="max-terms" type="number" min="1" max="20" value="5" />
+            <span class="muted">how many terms the final equation may contain</span>
+          </div>
+          <div class="field-row">
+            <label for="strategy">Strategy</label>
+            <select id="strategy">
+              <option value="greedy_forward" selected>greedy forward</option>
+              <option value="greedy_backward">greedy backward</option>
+              <option value="exhaustive">exhaustive</option>
+              <option value="lasso_path">LASSO path</option>
+            </select>
+            <span class="muted">greedy is fast; exhaustive is optimal but limited to small libraries</span>
+          </div>
+          <div class="field-row">
+            <label for="criterion">Ranked by</label>
+            <select id="criterion">
+              <option value="aicc" selected>AICc</option>
+              <option value="aic">AIC</option>
+              <option value="bic">BIC</option>
+            </select>
+            <span class="muted">AICc corrects AIC for small samples; BIC penalises extra terms harder</span>
+          </div>
+          <div class="field-row">
+            <label for="ridge">Ridge penalty</label>
+            <input id="ridge" type="number" min="0" step="0.001" placeholder="none" />
+            <span class="muted">optional; stabilises fits when candidate terms are correlated</span>
+          </div>
+        </div>
+
+        <p id="model-error" class="notice error" hidden></p>
+        <button id="fit-button" class="primary" type="button" disabled>Fit</button>
+      </section>
+
+      <!-- 3 ------------------------------------------------------------- -->
+      <section id="results-section" class="step" hidden>
+        <h2><span class="step-number">3</span> Ranked models</h2>
+        <p id="fit-timing" class="muted"></p>
+        <div id="candidates" class="scroll-x"></div>
+
+        <h3>Selected model</h3>
+        <div class="field-row">
+          <label for="alpha">Interval level</label>
+          <select id="alpha">
+            <option value="0.05" selected>95%</option>
+            <option value="0.01">99%</option>
+            <option value="0.10">90%</option>
+          </select>
+        </div>
+        <div id="detail"></div>
+
+        <section class="panel">
+          <h4>Cross-validation</h4>
+          <div class="field-row">
+            <label for="cv-folds">Folds</label>
+            <input id="cv-folds" type="number" min="2" max="20" value="5" />
+            <button id="cv-button" type="button">Run</button>
+          </div>
+          <p id="cv-result" class="muted"></p>
+        </section>
+      </section>
+
+      <!-- 4 ------------------------------------------------------------- -->
+      <section id="export-section" class="step" hidden>
+        <h2><span class="step-number">4</span> Export</h2>
+        <p class="muted">
+          The Python script reproduces this exact fit with <code>pip install jaxsr</code>. Download the data
+          alongside it so the script has something to read.
+        </p>
+        <div class="button-row">
+          <button type="button" data-export="python">Python script</button>
+          <button type="button" data-export="csv">Cleaned data (.csv)</button>
+          <button type="button" data-export="latex">LaTeX equation</button>
+          <button type="button" data-export="json">Model JSON</button>
+        </div>
+        <pre id="export-preview" class="code-preview" hidden></pre>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Powered by <a href="https://github.com/jkitchin/jaxsr">JAXSR</a>, running on
+        <a href="https://pyodide.org">Pyodide</a>. Spreadsheets are read with
+        <a href="https://sheetjs.com">SheetJS</a>.
+      </p>
+    </footer>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

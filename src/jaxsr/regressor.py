@@ -258,6 +258,50 @@ class SymbolicRegressor(_SklearnCompatMixin):
         self._check_is_fitted()
         return compute_pareto_front(self._selection_path.results)
 
+    @property
+    def selection_path_(self) -> SelectionPath:
+        """
+        Every candidate model the search evaluated, with the winner marked.
+
+        Returns
+        -------
+        SelectionPath
+            Holds ``results`` (a list of :class:`~jaxsr.selection.SelectionResult`,
+            each carrying its own coefficients, MSE, complexity and AIC/BIC/AICc),
+            the ``strategy`` name, and ``best_index`` -- the entry chosen by the
+            configured ``information_criterion``.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+
+        Notes
+        -----
+        What ``results`` contains depends on the strategy.  The greedy searches
+        record one model per step, so the path reads as "best model of each
+        size".  ``exhaustive`` records every subset it evaluated, so ranking the
+        path by an information criterion is meaningful there.  Use
+        :attr:`pareto_front_` for the accuracy/complexity trade-off curve.
+
+        The path records the search as it happened, *before* the post-selection
+        steps in :meth:`fit` -- dropping non-finite terms, pruning negligible
+        ones under ``prune_tol``, and constraint refitting.  So ``path.best``
+        can carry more terms than :attr:`selected_features_`; the fitted model
+        is always a subset of it.  Read the final model from
+        :attr:`coefficients_` and :attr:`selected_features_`, not from the path.
+
+        Examples
+        --------
+        >>> model = SymbolicRegressor(basis_library=library).fit(X, y)  # doctest: +SKIP
+        >>> path = model.selection_path_  # doctest: +SKIP
+        >>> for i, r in enumerate(path.results):  # doctest: +SKIP
+        ...     mark = "*" if i == path.best_index else " "
+        ...     print(f"{mark} {r.n_terms} terms  BIC={r.bic:.1f}  {r.expression()}")
+        """
+        self._check_is_fitted()
+        return self._selection_path
+
     def _check_is_fitted(self):
         """Check if model is fitted."""
         if not self._is_fitted:

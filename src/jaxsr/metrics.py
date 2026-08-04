@@ -6,6 +6,7 @@ Provides information criteria, cross-validation scores, and model comparison uti
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,34 @@ _np_trapezoid = getattr(np, "trapezoid", getattr(np, "trapz", None))
 # =============================================================================
 # Information Criteria
 # =============================================================================
+
+# Smallest MSE that still produces a finite log-likelihood.
+_MSE_FLOOR = float(np.finfo(float).tiny)
+
+
+def _floor_mse(mse: float) -> float:
+    """
+    Clamp an MSE away from zero so that ``log(mse)`` stays finite.
+
+    A perfect fit has ``mse == 0`` and is the *best* possible model, so it must
+    not be scored ``+inf`` -- every information criterion here is
+    lower-is-better, and ``+inf`` would make selection reject the exact model.
+    Exact zeros are routine in float64, where ``selection.py`` computes MSE via
+    the closed form ``(yTy - c @ rhs) / n``, which cancels to 0.0 on a perfect
+    fit (in float32 the residual-based path returns a small positive number
+    instead, which is why this only shows up at higher precision).
+
+    Parameters
+    ----------
+    mse : float
+        Mean squared error. Negative values are treated as zero.
+
+    Returns
+    -------
+    float
+        ``mse`` clamped to at least the smallest positive normal float.
+    """
+    return max(float(mse), _MSE_FLOOR)
 
 
 def compute_aic(
@@ -54,13 +83,12 @@ def compute_aic(
     n = n_samples
     k = n_params
 
-    if mse <= 0:
-        return float("inf")
+    mse = _floor_mse(mse)
 
     # AIC = -2 * log_likelihood + 2 * k
     # For Gaussian: log_likelihood = -n/2 * log(2*pi*sigma^2) - n/2
     # Simplified: AIC = n * log(MSE) + 2 * k
-    log_lik = -n / 2 * jnp.log(2 * jnp.pi * mse) - n / 2
+    log_lik = -n / 2 * math.log(2 * math.pi * mse) - n / 2
     return float(-2 * log_lik + 2 * k)
 
 
@@ -94,11 +122,10 @@ def compute_bic(
     n = n_samples
     k = n_params
 
-    if mse <= 0:
-        return float("inf")
+    mse = _floor_mse(mse)
 
-    log_lik = -n / 2 * jnp.log(2 * jnp.pi * mse) - n / 2
-    return float(-2 * log_lik + k * jnp.log(n))
+    log_lik = -n / 2 * math.log(2 * math.pi * mse) - n / 2
+    return float(-2 * log_lik + k * math.log(n))
 
 
 def compute_aicc(
@@ -176,14 +203,15 @@ def compute_hqc(
     n = n_samples
     k = n_params
 
-    if mse <= 0 or n <= 2:
+    if n <= 2:
         return float("inf")
+    mse = _floor_mse(mse)
 
-    log_log_n = jnp.log(jnp.log(n))
+    log_log_n = math.log(math.log(n))
     if log_log_n <= 0:
         return float("inf")
 
-    log_lik = -n / 2 * jnp.log(2 * jnp.pi * mse) - n / 2
+    log_lik = -n / 2 * math.log(2 * math.pi * mse) - n / 2
     return float(-2 * log_lik + 2 * k * log_log_n)
 
 
@@ -214,10 +242,9 @@ def compute_mdl(
     n = n_samples
     k = n_params
 
-    if mse <= 0:
-        return float("inf")
+    mse = _floor_mse(mse)
 
-    return float(n / 2 * jnp.log(mse) + k / 2 * jnp.log(n))
+    return float(n / 2 * math.log(mse) + k / 2 * math.log(n))
 
 
 def compute_information_criterion(
