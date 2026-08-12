@@ -10,7 +10,7 @@ from __future__ import annotations
 import itertools
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any
 
@@ -36,9 +36,12 @@ class BasisFunction:
         Indices of features used by this basis function.
     func_type : str
         Type of function (for serialization): "constant", "linear", "polynomial",
-        "interaction", "transcendental", "ratio", "custom".
+        "interaction", "transcendental", "ratio", "block", "custom".
     func_config : dict
         Configuration for reconstructing the function (for serialization).
+    block : str or None
+        Label of the structured block this function belongs to, set by
+        :meth:`BasisLibrary.add_block`. ``None`` for unlabelled functions.
     """
 
     name: str
@@ -47,6 +50,7 @@ class BasisFunction:
     feature_indices: tuple[int, ...] = ()
     func_type: str = "custom"
     func_config: dict[str, Any] = field(default_factory=dict)
+    block: str | None = None
 
     def evaluate(self, X: jnp.ndarray) -> jnp.ndarray:
         """Evaluate the basis function on input data."""
@@ -54,13 +58,16 @@ class BasisFunction:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary (excluding func)."""
-        return {
+        d = {
             "name": self.name,
             "complexity": self.complexity,
             "feature_indices": self.feature_indices,
             "func_type": self.func_type,
             "func_config": self.func_config,
         }
+        if self.block is not None:
+            d["block"] = self.block
+        return d
 
 
 @dataclass
@@ -134,6 +141,126 @@ def _safe_inv(x: jnp.ndarray) -> jnp.ndarray:
 def _safe_div(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """Safe division that handles zero denominator."""
     return jnp.where(jnp.abs(y) > 1e-10, x / y, jnp.nan)
+
+
+def _make_block_func(
+    func: Callable,
+    gather: jnp.ndarray | None,
+    multiply_index: int | None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """
+    Re-express a basis function of a source library on the current feature space.
+
+    Parameters
+    ----------
+    func : callable
+        ``func(X_source) -> array`` written against the source library's columns.
+    gather : jnp.ndarray or None
+        Column indices of the current feature space that reproduce the source
+        feature space, or None when the two coincide.
+    multiply_index : int or None
+        Column of the current feature space to multiply the result by, or None.
+
+    Returns
+    -------
+    wrapped : callable
+        Function ``(X) -> array`` of shape ``(n_samples,)``.
+    """
+    if gather is None and multiply_index is None:
+        return func
+
+    def wrapped(X: jnp.ndarray) -> jnp.ndarray:
+        values = func(X if gather is None else X[:, gather])
+        if multiply_index is None:
+            return values
+        return values * X[:, multiply_index]
+
+    return wrapped
+
+
+def _make_block_parametric_func(
+    func: Callable,
+    gather: jnp.ndarray | None,
+    multiply_index: int | None,
+) -> Callable:
+    """
+    Parametric counterpart of :func:`_make_block_func`.
+
+    Parameters
+    ----------
+    func : callable
+        ``func(X_source, **params) -> array`` written against the source
+        library's columns.
+    gather : jnp.ndarray or None
+        Column indices of the current feature space that reproduce the source
+        feature space, or None when the two coincide.
+    multiply_index : int or None
+        Column of the current feature space to multiply the result by, or None.
+
+    Returns
+    -------
+    wrapped : callable
+        Function ``(X, **params) -> array`` of shape ``(n_samples,)``.
+    """
+
+    def wrapped(X: jnp.ndarray, **params: float) -> jnp.ndarray:
+        values = func(X if gather is None else X[:, gather], **params)
+        if multiply_index is None:
+            return values
+        return values * X[:, multiply_index]
+
+    return wrapped
+
+
+def _parenthesize(name: str) -> str:
+    """
+    Wrap a basis-function name in parentheses if it reads as a bare sum.
+
+    ``"q^2"`` is safe to concatenate into ``"q^2*y_x"``, but ``"1+q"`` is not --
+    ``"1+q*y_x"`` would name a different function.
+
+    Parameters
+    ----------
+    name : str
+        Basis function name.
+
+    Returns
+    -------
+    name : str
+        The name, parenthesised if it contains a top-level ``+`` or ``-``.
+    """
+    depth = 0
+    for i, ch in enumerate(name):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch in "+-" and depth == 0 and i > 0 and name[i - 1] not in "^*/+-eE(":
+            return f"({name})"
+    return name
+
+
+def _block_term_name(basis_name: str, column_name: str | None) -> str:
+    """
+    Name a block term: the source basis name times the multiplying column.
+
+    Parameters
+    ----------
+    basis_name : str
+        Name of the basis function in the source library.
+    column_name : str or None
+        Name of the multiplying feature, or None for an unmultiplied block.
+
+    Returns
+    -------
+    name : str
+        Generated name, e.g. ``"q^2"`` and ``"y_x"`` give ``"q^2*y_x"``.
+    """
+    if column_name is None:
+        return basis_name
+    if basis_name == "1":
+        return column_name
+    return f"{_parenthesize(basis_name)}*{column_name}"
 
 
 class BasisLibrary:
@@ -450,6 +577,296 @@ class BasisLibrary:
         )
         self._compiled_evaluate = None
         return self
+
+    # ------------------------------------------------------------------
+    # Structured blocks
+    # ------------------------------------------------------------------
+
+    def _resolve_block_columns(
+        self,
+        library: BasisLibrary,
+        feature_map: dict[str, str] | None,
+    ) -> list[int]:
+        """Map each source feature onto a column of this library."""
+        columns = []
+        for name in library.feature_names:
+            target = (feature_map or {}).get(name, name)
+            if target not in self.feature_names:
+                raise ValueError(
+                    f"Source feature '{name}' has no counterpart in this library "
+                    f"(features: {self.feature_names}). Rename it, or pass "
+                    f"feature_map={{'{name}': '<target feature>'}}."
+                )
+            columns.append(self.feature_names.index(target))
+        return columns
+
+    def _resolve_feature_index(self, feature: str | int, argument: str) -> int:
+        """Resolve a feature given by name or index to a column index."""
+        if isinstance(feature, str):
+            if feature not in self.feature_names:
+                raise ValueError(
+                    f"{argument}='{feature}' is not a feature of this library "
+                    f"(features: {self.feature_names})"
+                )
+            return self.feature_names.index(feature)
+        if isinstance(feature, (int, np.integer)) and not isinstance(feature, bool):
+            index = int(feature)
+            if not 0 <= index < self.n_features:
+                raise ValueError(
+                    f"{argument}={index} is out of range for {self.n_features} features"
+                )
+            return index
+        raise TypeError(f"{argument} must be a feature name or index, got {type(feature).__name__}")
+
+    def add_block(
+        self,
+        library: BasisLibrary,
+        multiply_by: str | int | None = None,
+        block_name: str | None = None,
+        complexity_offset: int = 0,
+        feature_map: dict[str, str] | None = None,
+    ) -> BasisLibrary:
+        r"""
+        Add every function of another library, optionally times a data column.
+
+        This builds design-matrix blocks of the form :math:`\Theta(a) \odot b`,
+        where ``\Theta`` is a basis over one (or a few) variables and ``b`` is
+        another column of the data -- typically a measured or estimated
+        derivative. A coefficient selected in such a block is then literally a
+        term of the unknown coefficient *function* multiplying ``b``.
+
+        Parameters
+        ----------
+        library : BasisLibrary
+            Source library. Its features are matched to this library's features
+            by name (see ``feature_map``); its basis functions are copied, not
+            shared, so the source stays reusable across blocks.
+        multiply_by : str or int, optional
+            Feature of *this* library (name or index) to multiply every function
+            of the block by. If None, the block is added unmultiplied.
+        block_name : str, optional
+            Label recorded on every function of the block. Blocks are reported
+            by :attr:`blocks` and can be selected with :meth:`filter_by_block`
+            or dropped with :meth:`without_blocks`.
+        complexity_offset : int
+            Added to every inherited complexity score. Multiplying by a column
+            already costs 1 on its own.
+        feature_map : dict, optional
+            ``{source_feature_name: target_feature_name}`` for source features
+            whose names differ from this library's. Unlisted features are
+            matched by name.
+
+        Returns
+        -------
+        self : BasisLibrary
+            For method chaining.
+
+        Raises
+        ------
+        ValueError
+            If the source library is empty, a source feature has no counterpart
+            in this library, or ``multiply_by`` names an unknown feature.
+        TypeError
+            If ``library`` is not a BasisLibrary, or ``multiply_by`` is neither
+            a feature name nor an index.
+
+        Notes
+        -----
+        Names are generated as ``"<basis>*<column>"``, with the constant term
+        collapsing to just ``"<column>"``. Parametric basis functions are
+        carried over as parametric: their bounds, log-scale flag and name
+        template pass through unchanged, so profile-likelihood optimisation
+        still applies inside the block.
+
+        Like custom functions, block functions cannot be deserialized -- the
+        library config saves, but the block must be re-added after loading.
+
+        Examples
+        --------
+        >>> theta = (BasisLibrary(n_features=1, feature_names=["q"])
+        ...          .add_constant().add_linear().add_polynomials(max_degree=2))
+        >>> library = (BasisLibrary(n_features=2, feature_names=["q", "y_x"])
+        ...            .add_block(theta, multiply_by="y_x", block_name="horizontal")
+        ...            .add_block(theta, block_name="vertical"))
+        >>> library.names[:4]
+        ['y_x', 'q*y_x', 'q^2*y_x', '1']
+        >>> sorted(library.blocks)
+        ['horizontal', 'vertical']
+        """
+        if not isinstance(library, BasisLibrary):
+            raise TypeError(f"library must be a BasisLibrary, got {type(library).__name__}")
+        if len(library.basis_functions) == 0:
+            raise ValueError("Source library has no basis functions to add")
+
+        columns = self._resolve_block_columns(library, feature_map)
+        multiply_index = (
+            None if multiply_by is None else self._resolve_feature_index(multiply_by, "multiply_by")
+        )
+        multiply_name = None if multiply_index is None else self.feature_names[multiply_index]
+
+        # Skip the gather when the source feature space is this one, so that the
+        # copied functions stay as cheap (and as jit-friendly) as the originals.
+        gather = None if columns == list(range(self.n_features)) else jnp.asarray(columns)
+        extra_complexity = complexity_offset + (0 if multiply_index is None else 1)
+
+        parametric_by_index = {p.basis_index: p for p in library._parametric_info}
+
+        for source_index, bf in enumerate(library.basis_functions):
+            feature_indices = {columns[i] for i in bf.feature_indices}
+            if multiply_index is not None:
+                feature_indices.add(multiply_index)
+            feature_indices = tuple(sorted(feature_indices))
+            complexity = bf.complexity + extra_complexity
+
+            p_info = parametric_by_index.get(source_index)
+            if p_info is not None:
+                self.add_parametric(
+                    name=_block_term_name(p_info.name, multiply_name),
+                    func=_make_block_parametric_func(p_info.func, gather, multiply_index),
+                    param_bounds=dict(p_info.param_bounds),
+                    complexity=complexity,
+                    feature_indices=feature_indices,
+                    log_scale=p_info.log_scale,
+                )
+                self.basis_functions[-1].block = block_name
+                continue
+
+            name = _block_term_name(bf.name, multiply_name)
+            self.basis_functions.append(
+                BasisFunction(
+                    name=name,
+                    func=_make_block_func(bf.func, gather, multiply_index),
+                    complexity=complexity,
+                    feature_indices=feature_indices,
+                    func_type="block",
+                    func_config={
+                        "name": name,
+                        "source_name": bf.name,
+                        "source_type": bf.func_type,
+                        "multiply_by": multiply_name,
+                        "block": block_name,
+                    },
+                    block=block_name,
+                )
+            )
+
+        self._compiled_evaluate = None
+        return self
+
+    @property
+    def blocks(self) -> dict[str, list[int]]:
+        """Mapping from block label to the indices of that block's functions."""
+        blocks: dict[str, list[int]] = {}
+        for i, bf in enumerate(self.basis_functions):
+            if bf.block is not None:
+                blocks.setdefault(bf.block, []).append(i)
+        return blocks
+
+    def filter_by_block(
+        self,
+        include: str | list[str] | None = None,
+        exclude: str | list[str] | None = None,
+    ) -> list[int]:
+        """
+        Get indices of basis functions by block membership.
+
+        Parameters
+        ----------
+        include : str or list of str, optional
+            Only keep functions in these blocks. Unlabelled functions are
+            dropped when this is given.
+        exclude : str or list of str, optional
+            Drop functions in these blocks.
+
+        Returns
+        -------
+        indices : list of int
+            Indices of basis functions meeting the criteria.
+
+        Raises
+        ------
+        ValueError
+            If a named block is not present in the library.
+        """
+        blocks = set(self.blocks)
+
+        def _as_set(value: str | list[str] | None) -> set[str] | None:
+            if value is None:
+                return None
+            names = {value} if isinstance(value, str) else set(value)
+            unknown = names - blocks
+            if unknown:
+                raise ValueError(f"Unknown block(s) {sorted(unknown)}. Available: {sorted(blocks)}")
+            return names
+
+        included = _as_set(include)
+        excluded = _as_set(exclude) or set()
+
+        indices = []
+        for i, bf in enumerate(self.basis_functions):
+            if included is not None and bf.block not in included:
+                continue
+            if bf.block in excluded:
+                continue
+            indices.append(i)
+        return indices
+
+    def without_blocks(self, *block_names: str) -> BasisLibrary:
+        """
+        Return a copy of this library with whole blocks removed.
+
+        Dropping a block and refitting is the first diagnostic for a structured
+        library: it answers whether the block earned its place at all.
+
+        Parameters
+        ----------
+        *block_names : str
+            Labels of the blocks to drop.
+
+        Returns
+        -------
+        library : BasisLibrary
+            New library holding copies of the remaining basis functions, with
+            parametric bookkeeping re-indexed. The original is unchanged.
+
+        Raises
+        ------
+        ValueError
+            If a named block is not present in the library.
+
+        Examples
+        --------
+        >>> reduced = library.without_blocks("vertical")  # doctest: +SKIP
+        """
+        keep = set(self.filter_by_block(exclude=list(block_names)))
+
+        reduced = BasisLibrary(
+            n_features=self.n_features,
+            feature_names=list(self.feature_names),
+            feature_bounds=self.feature_bounds,
+            feature_types=list(self.feature_types),
+            categories={k: list(v) for k, v in self.categories.items()} or None,
+        )
+
+        old_to_new = {}
+        for i, bf in enumerate(self.basis_functions):
+            if i not in keep:
+                continue
+            old_to_new[i] = len(reduced.basis_functions)
+            reduced.basis_functions.append(replace(bf, func_config=dict(bf.func_config)))
+
+        for p_info in self._parametric_info:
+            if p_info.basis_index in old_to_new:
+                reduced._parametric_info.append(
+                    replace(
+                        p_info,
+                        basis_index=old_to_new[p_info.basis_index],
+                        param_bounds=dict(p_info.param_bounds),
+                        initial_params=dict(p_info.initial_params),
+                    )
+                )
+
+        return reduced
 
     # ------------------------------------------------------------------
     # Categorical basis functions
@@ -1297,6 +1714,96 @@ class BasisLibrary:
         return [bf.name for bf in self.basis_functions]
 
     @property
+    def canonical_names(self) -> list[str]:
+        """
+        Basis function names with parametric parameters left as symbols.
+
+        Identical to :attr:`names` except for parametric basis functions, which
+        keep the template they were registered with (``"exp(-a*x)"``) instead of
+        the fitted rendering (``"exp(-0.4913*x)"``).
+
+        Returns
+        -------
+        names : list of str
+            One name per basis function, in library order.
+        """
+        templates = {p.basis_index: p.name for p in self._parametric_info}
+        return [templates.get(i, bf.name) for i, bf in enumerate(self.basis_functions)]
+
+    def canonical_name(self, index: int) -> str:
+        """
+        Name identifying a basis function independently of any fitted values.
+
+        Fitting a parametric basis rewrites its name to embed the optimised
+        parameter value, so :attr:`names` is not a stable identity across
+        refits: ``"exp(-a*x)"`` becomes ``"exp(-0.4913*x)"``, and a different
+        value on the next fit. Anything that aggregates across refits (bootstrap
+        stability, selection frequencies) must key on this name instead.
+
+        Parameters
+        ----------
+        index : int
+            Index of the basis function in the library.
+
+        Returns
+        -------
+        name : str
+            The registered template name for a parametric basis function,
+            otherwise the ordinary basis function name.
+
+        Raises
+        ------
+        IndexError
+            If ``index`` is out of range for the library.
+        """
+        n_basis = len(self.basis_functions)
+        if not 0 <= index < n_basis:
+            raise IndexError(
+                f"Basis index {index} out of range for library with {n_basis} functions."
+            )
+        for p_info in self._parametric_info:
+            if p_info.basis_index == index:
+                return p_info.name
+        return self.basis_functions[index].name
+
+    def copy(self) -> BasisLibrary:
+        """
+        Return an independent copy of this library.
+
+        Basis function *callables* are shared (they are stateless), but every
+        piece of mutable metadata is duplicated. Fitting a model on a parametric
+        library rewrites basis names and rebinds evaluation closures in place,
+        so a repeated-refit procedure (bootstrap, cross-validation) must fit on
+        a copy or it will leave the caller's library — and therefore the
+        caller's fitted model — pinned to the last refit's parameter values.
+
+        Returns
+        -------
+        library : BasisLibrary
+            A new library holding the same basis functions in the same order.
+        """
+        new = BasisLibrary(
+            n_features=self.n_features,
+            feature_names=list(self.feature_names),
+            feature_bounds=list(self.feature_bounds) if self.feature_bounds is not None else None,
+            feature_types=list(self.feature_types),
+            categories={k: list(v) for k, v in self.categories.items()},
+        )
+        new.basis_functions = [
+            replace(bf, func_config=dict(bf.func_config)) for bf in self.basis_functions
+        ]
+        new._parametric_info = [
+            replace(
+                p,
+                param_bounds=dict(p.param_bounds),
+                initial_params=dict(p.initial_params),
+                resolved_params=dict(p.resolved_params) if p.resolved_params else None,
+            )
+            for p in self._parametric_info
+        ]
+        return new
+
+    @property
     def complexities(self) -> jnp.ndarray:
         """Array of complexity scores."""
         return jnp.array([bf.complexity for bf in self.basis_functions])
@@ -1600,6 +2107,11 @@ class BasisLibrary:
                 raise ValueError(
                     f"Cannot deserialize parametric function '{bf_config['name']}'. "
                     "Re-add it manually using add_parametric()."
+                )
+            elif func_type == "block":
+                raise ValueError(
+                    f"Cannot deserialize block function '{bf_config['name']}'. "
+                    "Re-add the block manually using add_block()."
                 )
             elif func_type == "custom":
                 raise ValueError(

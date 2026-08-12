@@ -43,12 +43,15 @@ Based on the answers, recommend a basis library configuration:
 | Large feature space (screening) | `add_constant + add_linear + add_interactions(2)` then use `lasso_path` strategy |
 | Response surface (DOE) | `add_constant + add_linear + add_polynomials(2) + add_interactions(2)` — or use `ResponseSurface` directly |
 | Categorical factors present | Add `add_categorical_indicators() + add_categorical_interactions()` to any of the above |
+| Unknown coefficient *function* multiplying a data column (superposition, implicit dynamics) | `add_block(theta, multiply_by="<column>", block_name=...)` — see `guides/basis-library.md` |
 
 **Key guidance:**
 - Start simple. You can always add complexity.
 - `add_transcendental(safe=True)` guards against log(0), 1/0, sqrt(<0). Always use `safe=True`.
 - `add_ratios(safe=True)` adds x_i/x_j terms. Doubles the library size — only use when ratios are physically meaningful.
 - `add_parametric()` enables nonlinear parameters (e.g., `exp(-a*x)`). Powerful but slower to fit.
+- `add_block()` multiplies a whole basis by a data column, so a selected coefficient is a term of an
+  unknown coefficient function. Drop a block with `without_blocks()` to test whether it earned its place.
 - If n_features > 5, avoid `add_polynomials(degree>2)` — the library becomes enormous.
 
 ### Step 3: Recommend Selection Strategy
@@ -104,10 +107,22 @@ Use `hard=True` for strict enforcement; `hard=False` (default) for soft penalty.
 | Robust to model uncertainty | `model.predict_bma()` | Averages over Pareto-front models weighted by criterion |
 | No distributional assumptions | `model.predict_conformal()` | Distribution-free. Needs enough data (n > 30). |
 | Assess model stability | `bootstrap_predict()` | Resamples data. Shows sensitivity to individual points. |
+| Selection stability | `bootstrap_model_selection()` | How often each term — and each whole structure — is selected |
+| Stability with grouped rows | `bootstrap_model_selection(..., groups=...)` | Rows share a condition/curve/subject. Resamples groups, not rows. |
+| Stability with upstream fits | `bootstrap_model_selection(..., resample_fn=...)` | Rows come from a smoother/derivative/simulation. Regenerates each replicate. |
+| Report your own replicates | `summarize_selection_replicates()` | You produced the replicates; reuse the same summary output |
 | Compare model structures | `model.predict_ensemble()` | Returns predictions from all Pareto-front models |
 | Variable importance | `anova()` | Decomposes variance by term. Shows which factors matter. |
 
 **Default recommendation:** Start with `predict_interval()` (built-in, fast). Add `predict_bma()` if you have multiple competing models. Use `predict_conformal()` for publication-quality intervals.
+
+**Check the resampling level first.** Every bootstrap above resamples rows by default,
+which is right only when rows are independent observations. If several rows share an
+experimental condition, or if the rows are outputs of an upstream fit, see
+"Resample at the level your data actually varies" in `guides/uncertainty.md` — a
+stability score computed at the wrong level always looks better than the truth.
+The same applies to scoring: use `cross_validate(..., groups=...)` when rows are
+grouped (see `guides/model-fitting.md`).
 
 ### Step 7: Recommend Reporting Format
 
@@ -385,6 +400,13 @@ See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 ### "How do I set up active learning?"
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.
+
+### "My data is a surface and I need partial derivatives"
+
+See `guides/surface-derivatives.md` for `SurfaceDerivatives`: several partials of one
+smoothed N-D surface (`y_x` and `y_T`, or `u_t = F(u, u_x, u_xx, ...)`), with the
+smoothing level chosen by GCV/marginal likelihood and reported. For a single time axis
+(`dX/dt`), use `estimate_derivatives` / `discover_dynamics` instead.
 
 ### "My measurements aren't equally precise"
 

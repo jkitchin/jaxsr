@@ -40,9 +40,9 @@ whole pipeline:
 | `sigma_`, `covariance_matrix_`, `coefficient_intervals()` | Weighted `s^2 (Phi^T W Phi)^{-1}` |
 | `predict_interval()`, `confidence_band()` | Weighted leverages |
 | `bootstrap_coefficients()`, `bootstrap_predict()` | Residuals resampled in whitened space, refit by WLS |
-| `bootstrap_model_selection()` | Weights follow their rows into each resample |
+| `bootstrap_model_selection()` | Weights follow their rows into each resample, groups included |
 | `anova()` | Weighted sums of squares, about the weighted mean |
-| `cross_validate()` | Weights follow their rows into the folds |
+| `cross_validate()` | Weights follow their rows into the folds, under every splitting strategy |
 | `predict_conformal(method="jackknife+")` | Weighted leverages and whitened LOO residuals |
 
 ## Effective sample size
@@ -117,6 +117,26 @@ Bad weights are rejected up front rather than silently absorbed:
 - negative entries → `ValueError`
 - `NaN` / `inf` → `ValueError`
 - all zeros → `ValueError`
+
+## Weights are orthogonal to the resampling level
+
+`cross_validate` and `bootstrap_model_selection` both let you choose *what* gets
+resampled — rows, or whole `groups`. That choice and the weights are independent: a
+weight says how precise a row is, a group says which rows are not independent of each
+other. Pass both when both are true.
+
+```python
+cross_validate(model, X, y, groups=run_id, sample_weight=1 / variances)
+bootstrap_model_selection(model, X, y, groups=run_id, sample_weight=1 / variances)
+```
+
+A group whose rows all carry zero weight is scored `NaN`, not `0.0`, so it cannot be
+mistaken for a group the model predicted perfectly. A *fold* with no weight on either
+side raises instead — there is nothing there to fit or score.
+
+`bootstrap_model_selection(..., resample_fn=...)` rejects `sample_weight`: each replicate
+regenerates its own rows, so a stored weight has no row to belong to. Apply the weighting
+inside your `resample_fn`.
 
 ## Not weighted
 

@@ -161,7 +161,26 @@ for name, lo, hi in zip(coeff_result["names"], coeff_result["lower"], coeff_resu
 from jaxsr import bootstrap_model_selection
 stability = bootstrap_model_selection(model, X, y, n_bootstrap=100)
 # Shows how often each term is selected across bootstrap samples
+print(stability["feature_frequencies"])    # {"x0": 1.0, "x0^2": 0.42, ...}
+print(stability["stability_score"])        # fraction picking the full-data term set
+print(stability["n_distinct_structures"])  # how many different term sets appeared
+for s in stability["structures"]:          # each distinct structure, most common first
+    print(f"  {s['frequency']:.2f}  {s['features']}")
 ```
+
+**Parametric basis functions:** terms are keyed by the name you registered
+(`"exp(-a*x)"`), not by the fitted rendering (`"exp(-0.4913*x)"`), so a basis whose
+nonlinear parameter is re-optimised in every replicate aggregates into a single
+frequency instead of one entry per replicate. The fitted values come back separately
+as a distribution:
+
+```python
+stability["parameter_distributions"]
+# {"exp(-a*x)": {"a": {"mean": 0.49, "sd": 0.03, "q05": 0.44, "q95": 0.54, "n": 100}}}
+```
+
+Each replicate fits on its own copy of the basis library, so the call leaves `model`
+and its library untouched.
 
 **When to use:**
 - Assess sensitivity to individual data points
@@ -174,6 +193,87 @@ captures model selection instability — if a different term is selected in some
 samples, that uncertainty is reflected in wider intervals.
 
 **Computational cost:** Refits the model n_bootstrap times. Use n_bootstrap=200-1000.
+
+## Resample at the level your data actually varies
+
+The default bootstrap resamples **rows**. That is only the right unit when rows are
+independent observations. Get this wrong and the reported spread is too narrow —
+usually a *lot* too narrow — while every number still looks perfectly reasonable.
+
+| Your rows are... | Resample | Call |
+|------------------|----------|------|
+| Independent measurements | rows | `bootstrap_model_selection(model, X, y)` |
+| Grouped (several rows per condition, curve, subject, batch) | groups | `bootstrap_model_selection(model, X, y, groups=...)` |
+| Produced by an upstream fit (spline, smoother, estimated derivative, simulation) | the whole pipeline | `bootstrap_model_selection(model, None, None, resample_fn=...)` |
+
+### Grouped data
+
+If every row of an isotherm shares a temperature and a fitted smoother, a row bootstrap
+leaks: a replicate that drops half an isotherm still trains on the other half, so the
+spread it reports is far narrower than the real between-condition variability.
+`groups` resamples whole groups with replacement instead.
+
+```python
+import numpy as np
+from jaxsr import bootstrap_model_selection
+
+# One label per row saying which condition/curve/subject the row came from
+groups = np.repeat([250.0, 275.0, 300.0, 325.0], 40)
+
+stability = bootstrap_model_selection(model, X, y, n_bootstrap=200, groups=groups, seed=0)
+print(stability["resampling"])       # "groups"
+print(stability["stability_score"])  # honest: reflects between-group variability
+```
+
+### Rows that came out of an upstream fit
+
+When the regression target is an estimated derivative, each row is a spline evaluation,
+not a measurement. Resampling those rows perturbs nothing about the smoother that
+produced them, so the dominant error source is invisible to a row-wise bootstrap. Pass
+`resample_fn` to regenerate the data — including the upstream stage — per replicate:
+
+```python
+import numpy as np
+from jaxsr import bootstrap_model_selection
+
+def replicate(rng):
+    """Called once per replicate with the bootstrap's RandomState."""
+    raw = simulate_experiment(seed=rng.randint(2**31))   # or resample raw measurements
+    smoother = fit_smoother(raw)                          # re-run the upstream stage
+    return smoother.features(), smoother.derivative()     # -> (X_b, y_b)
+
+stability = bootstrap_model_selection(
+    model, None, None, n_bootstrap=90, seed=0, resample_fn=replicate
+)
+print(stability["resampling"])            # "pipeline"
+print(stability["n_distinct_structures"]) # e.g. 9 distinct forms, all near-equivalent
+```
+
+`X` and `y` are unused (pass `None`) because `resample_fn` supplies every replicate.
+`groups` and `resample_fn` are mutually exclusive — `resample_fn` already decides how a
+replicate is built.
+
+### Already have your own replicates?
+
+If you orchestrated the replicates yourself — a loop over simulated datasets, a set of
+fits from a cluster job — hand the fitted models straight to the same reporting code:
+
+```python
+from jaxsr import summarize_selection_replicates
+
+models = [fit_one_replicate(i) for i in range(90)]   # your loop, your pipeline
+summary = summarize_selection_replicates(models, reference=full_fit, resampling="pipeline")
+
+print(summary["stability_score"], summary["n_distinct_structures"])
+```
+
+It also accepts mappings (`{"features": [...], "expression": "..."}`) or plain lists of
+selected term names, so replicates from outside JAXSR can be reported the same way.
+Without a `reference`, `stability_score` is the frequency of the most common structure.
+
+**Why it matters:** a narrow coefficient interval is misleading when the bootstrap keeps
+selecting a *different* symbolic structure, and a stability score computed at the wrong
+resampling level systematically says the model is more stable than it is.
 
 ## Decision Flowchart
 

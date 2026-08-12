@@ -319,6 +319,92 @@ def compute_information_criterion(
 # Cross-Validation
 # =============================================================================
 
+CV_STRATEGIES = ("kfold", "group-kfold", "leave-one-group-out")
+
+
+def _group_label(value: Any) -> Any:
+    """Convert a numpy scalar group label to a plain Python object."""
+    return value.item() if hasattr(value, "item") else value
+
+
+def group_indices(groups: Any) -> tuple[np.ndarray, list[np.ndarray]]:
+    """
+    Split row indices by group label.
+
+    Parameters
+    ----------
+    groups : array-like of shape (n_samples,)
+        Group label for each row. Labels may be integers, floats, or strings.
+
+    Returns
+    -------
+    unique : np.ndarray
+        Unique group labels, sorted.
+    row_indices : list of np.ndarray
+        ``row_indices[i]`` holds the row indices belonging to ``unique[i]``.
+
+    Raises
+    ------
+    ValueError
+        If ``groups`` is empty or not one-dimensional after raveling.
+    """
+    groups_arr = np.asarray(groups).ravel()
+    if groups_arr.size == 0:
+        raise ValueError("groups must contain at least one label.")
+    unique = np.unique(groups_arr)
+    return unique, [np.flatnonzero(groups_arr == g) for g in unique]
+
+
+def _kfold_splits(
+    n_samples: int, cv: int, rng: np.random.RandomState
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Build shuffled k-fold (train, test) index pairs over rows."""
+    indices = rng.permutation(n_samples)
+    fold_size = n_samples // cv
+    splits = []
+    for i in range(cv):
+        start_idx = i * fold_size
+        end_idx = start_idx + fold_size if i < cv - 1 else n_samples
+        test_idx = indices[start_idx:end_idx]
+        train_idx = np.concatenate([indices[:start_idx], indices[end_idx:]])
+        splits.append((train_idx, test_idx))
+    return splits
+
+
+def _group_kfold_splits(
+    row_indices: list[np.ndarray], cv: int
+) -> list[tuple[np.ndarray, np.ndarray, list[int]]]:
+    """
+    Assign whole groups to ``cv`` folds, balancing rows per fold.
+
+    Groups are placed largest-first into the fold that currently holds the
+    fewest rows, so no group is split across the train/test boundary.
+    """
+    fold_groups: list[list[int]] = [[] for _ in range(cv)]
+    fold_sizes = np.zeros(cv, dtype=int)
+    order = sorted(range(len(row_indices)), key=lambda g: (-len(row_indices[g]), g))
+    for g in order:
+        target = int(np.argmin(fold_sizes))
+        fold_groups[target].append(g)
+        fold_sizes[target] += len(row_indices[g])
+
+    all_rows = np.arange(sum(len(idx) for idx in row_indices))
+    splits = []
+    for members in fold_groups:
+        test_idx = np.sort(np.concatenate([row_indices[g] for g in members]))
+        train_idx = np.setdiff1d(all_rows, test_idx)
+        splits.append((train_idx, test_idx, sorted(members)))
+    return splits
+
+
+def _logo_splits(row_indices: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray, list[int]]]:
+    """Build leave-one-group-out (train, test, held-out groups) triples."""
+    all_rows = np.arange(sum(len(idx) for idx in row_indices))
+    splits = []
+    for g, test_idx in enumerate(row_indices):
+        splits.append((np.setdiff1d(all_rows, test_idx), test_idx, [g]))
+    return splits
+
 
 def cross_validate(
     model: SymbolicRegressor,
@@ -327,74 +413,143 @@ def cross_validate(
     cv: int = 5,
     scoring: str = "neg_mse",
     random_state: int | None = None,
+    groups: Any | None = None,
+    strategy: str = "kfold",
     sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, Any]:
     """
-    Perform k-fold cross-validation.
+    Perform cross-validation, optionally holding out whole groups.
+
+    When rows are not independent observations -- replicates of one
+    experimental condition, points along one measured curve, samples from one
+    subject -- splitting at the row level leaks information from the training
+    set into the test set and reports an optimistic score. Passing ``groups``
+    keeps every row of a group on the same side of the split.
 
     Parameters
     ----------
     model : SymbolicRegressor
-        Model to evaluate.
+        Model to evaluate. Cloned (unfitted) for every fold.
     X : jnp.ndarray
-        Feature matrix.
+        Feature matrix of shape (n_samples, n_features).
     y : jnp.ndarray
-        Target values.
+        Target values of shape (n_samples,) or (n_samples, n_outputs).
     cv : int
-        Number of folds.
+        Number of folds. Ignored when ``strategy="leave-one-group-out"``.
     scoring : str
         Scoring metric: "neg_mse", "neg_mae", "r2".
     random_state : int, optional
-        Random seed for fold splitting.
+        Random seed for fold splitting (used by ``strategy="kfold"`` only;
+        the group strategies are deterministic).
+    groups : array-like of shape (n_samples,), optional
+        Group label for each row. Required by the group strategies. If given
+        with the default ``strategy="kfold"``, the strategy is promoted to
+        ``"group-kfold"``.
+    strategy : str
+        One of ``"kfold"`` (random rows), ``"group-kfold"`` (whole groups
+        distributed over ``cv`` folds), or ``"leave-one-group-out"`` (one fold
+        per group).
     sample_weight : jnp.ndarray, optional
-        Per-sample weights.  Weights follow their rows into the folds: each
-        fold is fitted on its training weights and scored with its test
-        weights, so down-weighted observations neither drive the fit nor
-        dominate the score.
+        Per-sample weights.  Weights follow their rows into the folds under
+        every strategy: each fold is fitted on its training weights and scored
+        with its test weights, so down-weighted observations neither drive the
+        fit nor dominate the score.  Per-group scores are weighted the same
+        way.
 
     Returns
     -------
     results : dict
         Dictionary with keys:
+
         - "test_scores": array of test scores for each fold
         - "train_scores": array of train scores for each fold
-        - "mean_test_score": mean test score
-        - "std_test_score": std of test scores
+        - "mean_test_score", "std_test_score": summary of the test scores
+        - "mean_train_score", "std_train_score": summary of the train scores
+        - "strategy": the strategy actually used
+        - "n_splits": number of folds evaluated
+        - "groups_out": list of the held-out group labels per fold (empty
+          lists for ``"kfold"``)
+        - "per_group_scores": dict mapping group label to the score on that
+          group's rows while it was held out (empty for ``"kfold"``)
+        - "edge_groups": the lowest and highest group labels when labels are
+          numeric, else an empty list. These are the extrapolation cases --
+          read their entries in "per_group_scores" separately from the mean,
+          since interpolation and extrapolation carry different risk.
+        - "edge_group_scores": "per_group_scores" restricted to "edge_groups"
 
     Raises
     ------
     ValueError
-        If ``scoring`` is unknown or ``sample_weight`` is invalid.
+        If ``scoring`` or ``strategy`` is unknown, if ``cv < 2`` for a k-fold
+        strategy, if ``groups`` is missing for a group strategy or has the
+        wrong length, if there are fewer groups than folds, if
+        ``sample_weight`` is invalid, or if a fold ends up with zero total
+        weight on either side of its split.
+
+    Examples
+    --------
+    >>> result = cross_validate(model, X, y, cv=5)  # doctest: +SKIP
+    >>> result = cross_validate(  # doctest: +SKIP
+    ...     model, X, y, groups=temperature_id, strategy="leave-one-group-out"
+    ... )
     """
     from .regressor import _clone_estimator
-
-    n_samples = X.shape[0]
-    weights = validate_sample_weight(sample_weight, n_samples)
-    rng = np.random.RandomState(random_state)
-    indices = rng.permutation(n_samples)
-
-    fold_size = n_samples // cv
-    test_scores = []
-    train_scores = []
 
     scoring_funcs = {
         "neg_mse": lambda y_true, y_pred, w: -compute_mse(y_true, y_pred, w),
         "neg_mae": lambda y_true, y_pred, w: -compute_mae(y_true, y_pred, w),
         "r2": lambda y_true, y_pred, w: compute_r2(y_true, y_pred, w),
     }
-
     if scoring not in scoring_funcs:
         raise ValueError(f"Unknown scoring: {scoring}. Available: {list(scoring_funcs.keys())}")
-
     score_func = scoring_funcs[scoring]
 
-    for i in range(cv):
-        start_idx = i * fold_size
-        end_idx = start_idx + fold_size if i < cv - 1 else n_samples
+    if strategy not in CV_STRATEGIES:
+        raise ValueError(f"Unknown strategy: {strategy}. Available: {list(CV_STRATEGIES)}")
+    if groups is not None and strategy == "kfold":
+        strategy = "group-kfold"
+    if groups is None and strategy != "kfold":
+        raise ValueError(f"strategy={strategy!r} requires groups.")
 
-        test_idx = indices[start_idx:end_idx]
-        train_idx = np.concatenate([indices[:start_idx], indices[end_idx:]])
+    n_samples = X.shape[0]
+    weights = validate_sample_weight(sample_weight, n_samples)
+    rng = np.random.RandomState(random_state)
 
+    unique_groups: np.ndarray | None = None
+    if groups is None:
+        if cv < 2:
+            raise ValueError(f"cv must be at least 2, got {cv}.")
+        if cv > n_samples:
+            raise ValueError(f"cv={cv} exceeds the number of samples ({n_samples}).")
+        splits = [(tr, te, []) for tr, te in _kfold_splits(n_samples, cv, rng)]
+    else:
+        unique_groups, row_indices = group_indices(groups)
+        n_grouped_rows = sum(len(idx) for idx in row_indices)
+        if n_grouped_rows != n_samples:
+            raise ValueError(
+                f"groups has {np.asarray(groups).ravel().size} labels "
+                f"but X has {n_samples} rows."
+            )
+        if len(unique_groups) < 2:
+            raise ValueError("Group-based cross-validation requires at least 2 distinct groups.")
+        if strategy == "leave-one-group-out":
+            splits = _logo_splits(row_indices)
+        else:
+            if cv < 2:
+                raise ValueError(f"cv must be at least 2, got {cv}.")
+            if cv > len(unique_groups):
+                raise ValueError(
+                    f"cv={cv} exceeds the number of distinct groups ({len(unique_groups)}). "
+                    f"Use a smaller cv or strategy='leave-one-group-out'."
+                )
+            splits = _group_kfold_splits(row_indices, cv)
+
+    test_scores = []
+    train_scores = []
+    groups_out: list[list[Any]] = []
+    per_group_scores: dict[Any, float] = {}
+
+    for fold, (train_idx, test_idx, held_out) in enumerate(splits):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
         w_train = None if weights is None else weights[train_idx]
@@ -402,9 +557,9 @@ def cross_validate(
         for split, w_split in (("train", w_train), ("test", w_test)):
             if w_split is not None and float(jnp.sum(w_split)) <= 0:
                 raise ValueError(
-                    f"Fold {i} has zero total sample_weight in its {split} split; "
-                    "cross-validation cannot score it. Drop the zero-weight rows "
-                    "or use fewer folds."
+                    f"Fold {fold} has zero total sample_weight in its {split} split; "
+                    "cross-validation cannot score it. Drop the zero-weight rows, "
+                    "use fewer folds, or group differently."
                 )
 
         # Clone and fit model
@@ -417,8 +572,28 @@ def cross_validate(
         test_scores.append(score_func(y_test, y_pred_test, w_test))
         train_scores.append(score_func(y_train, y_pred_train, w_train))
 
+        fold_labels = []
+        for g in held_out:
+            label = _group_label(unique_groups[g])
+            fold_labels.append(label)
+            # Score each held-out group on its own rows, so a group that the
+            # model extrapolates badly to is not averaged away by its fold.
+            rows = np.flatnonzero(np.isin(test_idx, row_indices[g]))
+            w_rows = None if w_test is None else w_test[rows]
+            if w_rows is not None and float(jnp.sum(w_rows)) <= 0:
+                # Every row of this group was zero-weighted; scoring it would
+                # divide by zero, and reporting 0.0 would read as a real score.
+                per_group_scores[label] = float("nan")
+            else:
+                per_group_scores[label] = score_func(y_test[rows], y_pred_test[rows], w_rows)
+        groups_out.append(fold_labels)
+
     test_scores = np.array(test_scores)
     train_scores = np.array(train_scores)
+
+    edge_groups: list[Any] = []
+    if unique_groups is not None and np.issubdtype(unique_groups.dtype, np.number):
+        edge_groups = [_group_label(unique_groups[0]), _group_label(unique_groups[-1])]
 
     return {
         "test_scores": test_scores,
@@ -427,6 +602,12 @@ def cross_validate(
         "std_test_score": float(np.std(test_scores)),
         "mean_train_score": float(np.mean(train_scores)),
         "std_train_score": float(np.std(train_scores)),
+        "strategy": strategy,
+        "n_splits": len(splits),
+        "groups_out": groups_out,
+        "per_group_scores": per_group_scores,
+        "edge_groups": edge_groups,
+        "edge_group_scores": {g: per_group_scores[g] for g in edge_groups if g in per_group_scores},
     }
 
 

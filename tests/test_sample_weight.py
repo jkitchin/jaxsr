@@ -474,6 +474,27 @@ class TestUncertainty:
         result = bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=0)
         assert result["feature_frequencies"].get("x", 0.0) > 0.5
 
+    def test_bootstrap_model_selection_weights_follow_groups(self, fitted):
+        model, X, y, w = fitted
+        groups = np.repeat(np.arange(20), 10)
+        result = bootstrap_model_selection(
+            model, X, y, n_bootstrap=5, seed=0, groups=groups, sample_weight=w
+        )
+        assert result["resampling"] == "groups"
+        assert result["feature_frequencies"].get("x", 0.0) > 0.5
+
+    def test_bootstrap_model_selection_rejects_weights_with_resample_fn(self, fitted):
+        model, X, y, w = fitted
+        with pytest.raises(ValueError, match="cannot be combined with resample_fn"):
+            bootstrap_model_selection(
+                model,
+                None,
+                None,
+                n_bootstrap=2,
+                resample_fn=lambda rng: (X, y),
+                sample_weight=w,
+            )
+
     def test_jackknife_conformal_runs_weighted(self, fitted):
         model, _X, _y, _w = fitted
         result = conformal_predict_jackknife_plus(model, jnp.array([[0.5]]), alpha=0.1)
@@ -549,6 +570,54 @@ class TestCrossValidation:
         plain = cross_validate(model, X, y, cv=3, random_state=0)
         # Down-weighting the corrupted half makes the folds far more predictable.
         assert weighted["mean_test_score"] > plain["mean_test_score"]
+
+    def test_weights_compose_with_grouped_cv(self):
+        """Weights and group-aware splitting are independent choices."""
+        X, y, w = _corrupted_half()
+        groups = np.repeat(np.arange(10), 20)
+        model = SymbolicRegressor(basis_library=_library(), max_terms=2)
+
+        result = cross_validate(model, X, y, cv=5, groups=groups, sample_weight=w, random_state=0)
+        assert result["strategy"] == "group-kfold"
+        assert result["n_splits"] == 5
+        assert np.isfinite(result["mean_test_score"])
+        # Groups 0-4 are entirely corrupted-and-down-weighted; their per-group
+        # scores must still be finite numbers, not silent zeros.
+        assert all(np.isfinite(v) for v in result["per_group_scores"].values())
+
+    def test_zero_weight_group_scores_nan_not_zero(self):
+        """A group with no weight gets NaN, not a number that reads as a score."""
+        X, y, _w = _corrupted_half()
+        groups = np.repeat(np.arange(10), 20)
+        w = np.ones(200)
+        w[:20] = 0.0  # group 0 carries no weight at all
+        model = SymbolicRegressor(basis_library=_library(), max_terms=2)
+
+        result = cross_validate(
+            model, X, y, cv=5, groups=groups, sample_weight=jnp.array(w), random_state=0
+        )
+        # Group 0 shares its fold with a weighted group, so the fold is scorable
+        # but group 0 itself is not.
+        assert np.isnan(result["per_group_scores"][0])
+        assert np.isfinite(result["mean_test_score"])
+
+    def test_zero_weight_fold_raises_rather_than_scoring_nothing(self):
+        """Leave-one-group-out on an unweighted group has nothing to score."""
+        X, y, _w = _corrupted_half()
+        groups = np.repeat(np.arange(10), 20)
+        w = np.ones(200)
+        w[:20] = 0.0
+        model = SymbolicRegressor(basis_library=_library(), max_terms=2)
+
+        with pytest.raises(ValueError, match="zero total sample_weight"):
+            cross_validate(
+                model,
+                X,
+                y,
+                groups=groups,
+                strategy="leave-one-group-out",
+                sample_weight=jnp.array(w),
+            )
 
 
 class TestOtherEntryPoints:

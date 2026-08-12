@@ -11,6 +11,34 @@ for details.
 ## [Unreleased]
 
 ### Added
+- **Multivariate derivative estimation** (`jaxsr.derivatives`) — analytic partial
+  derivatives of a smoothed N-D surface, for problems whose regression needs more
+  than one partial (PDE-style discovery `u_t = F(u, u_x, u_xx, ...)`, or transform
+  laws such as `y(x, T) = f(x + s(T))` where `y_T = s'(T)·y_x`):
+  - `SurfaceDerivatives` — fits a smoother to scattered or gridded data and returns
+    requested mixed partials with standard errors. Three smoothers: `"tensor_spline"`
+    (penalized tensor-product B-splines, the default), `"local_poly"` (local
+    polynomial regression), and `"gp"` (Gaussian process with derivative posterior).
+  - `estimate_partial_derivatives` — one-call convenience wrapper.
+  - Smoothing is selected only by criteria blind to the downstream symbolic score
+    (GCV, log marginal likelihood, or a supplied noise level), and the level actually
+    used is reported via `smoothing_`, `smoothing_source_`, `effective_dof_`,
+    `residual_std_`, and `summary()`. `smoothing_scale` re-runs the estimate at a
+    deliberately different smoothing level to expose smoothing-induced bias.
+- Documentation for multivariate derivative estimation: user guide
+  (`docs/guides/surface-derivatives.md`), API reference page, and skill guide.
+- `BasisLibrary.canonical_name(index)` / `BasisLibrary.canonical_names` —
+  the name a basis function was registered with, which for a parametric
+  basis is the template (`"exp(-a*x)"`) rather than the fitted rendering
+  (`"exp(-0.4913*x)"`). This is the stable identity to key on when
+  aggregating across refits.
+- `BasisLibrary.copy()` — an independent copy of a library, so repeated
+  refits cannot rewrite the caller's basis names or rebind its parametric
+  evaluation closures.
+- `summarize_selection_replicates` (and therefore
+  `bootstrap_model_selection`) now returns `"parameter_distributions"`:
+  mean/sd/q05/q95/n of each parametric basis's nonlinear parameters across
+  replicates.
 - **`sample_weight` is now implemented** (#19). It was previously accepted by
   `SymbolicRegressor.fit()` and silently ignored, so a user passing measurement
   variances got an unweighted fit that looked like a weighted one. Weighted least
@@ -39,13 +67,29 @@ for details.
   `fit_ols()`, `fit_ridge()`, `select_features()`, `cross_validate()`,
   `compute_mse/rmse/mae/r2/adjusted_r2/mape/all_metrics()`, `compute_cv_score()`,
   `compute_loo_mse()`, `compute_press()`, and `bootstrap_model_selection()`;
-  `SymbolicRegressor.update()` gained `sample_weight_new`.
+  `SymbolicRegressor.update()` gained `sample_weight_new`. Weighting composes
+  with the group-aware resampling above: weights follow their rows into every
+  fold and every group resample. `bootstrap_model_selection` rejects
+  `sample_weight` together with `resample_fn`, since a replicate that
+  regenerates its own rows leaves a stored weight with no row to belong to.
 - New guide `docs/guides/sample-weights.md` (and the matching skill guide)
   covering weight semantics, the effective-sample-size policy, recipes for
   variance-derived and replicate weights, and what is deliberately left
   unweighted.
 
 ### Fixed
+- `bootstrap_model_selection` could not aggregate parametric basis
+  functions: `feature_frequencies` was keyed by the rendered name, so each
+  replicate's re-optimised parameter produced a distinct key and
+  `stability_score` was 0.0 even when every replicate selected the same
+  basis. Features are now keyed by basis identity
+  ([#16](https://github.com/jkitchin/jaxsr/issues/16)).
+- Cloning an estimator (`bootstrap_model_selection`,
+  `MultiOutputSymbolicRegressor`) shared the template's basis library. Fitting
+  a parametric library rewrites basis names and rebinds evaluation closures in
+  place, so clones overwrote each other's fitted parameters and left the
+  original model predicting with the last clone's values. Clones now get their
+  own `BasisLibrary.copy()`.
 - `compute_all_metrics()` no longer reports `max_error` over rows that carry no
   weight.
 

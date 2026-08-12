@@ -16,6 +16,7 @@ parts:
       - file: guides/performance
       - file: guides/sample-weights
       - file: guides/sklearn-integration
+      - file: guides/surface-derivatives
 
   - caption: Examples
     chapters:

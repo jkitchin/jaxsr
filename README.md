@@ -22,6 +22,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **JAX-Accelerated**: JIT compilation and GPU support for fast computation
 - **Symbolic Classification**: Discover interpretable logistic models for binary and multiclass problems via IRLS + sparse selection
 - **Additive Symbolic Regression**: Boosting-style ensembles of small symbolic expressions — fit residuals stagewise for many simple, interpretable terms (`jaxsr.additive`)
+- **Derivative Estimation**: Time derivatives for ODE discovery (`estimate_derivatives`, `discover_dynamics`), and analytic partial derivatives of a smoothed N-D surface for PDE-style or shift-law discovery (`SurfaceDerivatives`)
 - **Scikit-learn Compatible**: Full estimator protocol (`get_params`/`set_params`/`clone`) — works with `cross_val_score`, `GridSearchCV`, `Pipeline`
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
 
