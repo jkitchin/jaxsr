@@ -79,6 +79,12 @@ def _clone_estimator(est):
     """
     Clone an estimator by copying all constructor kwargs.
 
+    The clone gets its own copy of the basis library. Fitting a library that
+    holds parametric basis functions rewrites their names and rebinds their
+    evaluation closures in place, so clones that shared one library would
+    overwrite each other's fitted parameters -- and the original estimator's,
+    leaving it predicting with some other fit's values.
+
     Parameters
     ----------
     est : estimator
@@ -89,7 +95,11 @@ def _clone_estimator(est):
     clone : estimator
         Unfitted copy with the same configuration.
     """
-    return type(est)(**est.get_params(deep=False))
+    params = est.get_params(deep=False)
+    library = params.get("basis_library")
+    if library is not None and hasattr(library, "copy"):
+        params["basis_library"] = library.copy()
+    return type(est)(**params)
 
 
 # =============================================================================

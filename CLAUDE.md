@@ -133,6 +133,9 @@ review — incorrect examples teach users wrong patterns.
 | `BayesianModelAverage` | `.weights_`, `.models_` | `.weights`, `.expressions` (no trailing underscore) |
 | `CanonicalAnalysis` | `.predicted_response` | `.stationary_response` |
 | `cross_validate()` | Treating return as array | Returns `dict` with `"mean_test_score"`, `"std_test_score"` |
+| `cross_validate(groups=...)` | Expecting random row folds | Promotes `strategy` to `"group-kfold"`; strategies are `"kfold"`, `"group-kfold"`, `"leave-one-group-out"` |
+| `bootstrap_model_selection()` | Row bootstrap on grouped or pipeline-generated rows | Pass `groups=` (resamples groups) or `resample_fn=` (regenerates each replicate) |
+| `resample_fn` | Any signature | `resample_fn(rng) -> (X_b, y_b)`; mutually exclusive with `groups` |
 | `conformal_predict_split()` | Tuple unpacking | Standalone returns `dict`; `model.predict_conformal()` returns tuple |
 | `add_transcendental()` | Listing 7 default funcs | Defaults: `["log", "exp", "sqrt", "inv"]` (4 funcs) |
 | `ActiveLearner()` | `ActiveLearner(model, acq, bounds)` | `ActiveLearner(model, bounds, acquisition)` — bounds is 2nd arg |

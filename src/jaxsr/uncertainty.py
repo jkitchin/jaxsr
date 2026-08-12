@@ -11,6 +11,7 @@ OLS inference applies directly.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -739,13 +740,13 @@ def bootstrap_predict(
 
 def _summarize_parameter_samples(values: list[float]) -> dict[str, float | int]:
     """
-    Summarise the bootstrap distribution of one nonlinear parameter.
+    Summarise the distribution of one nonlinear parameter over replicates.
 
     Parameters
     ----------
     values : list of float
-        Fitted values of the parameter, one per bootstrap replicate that
-        selected the basis function it belongs to.
+        Fitted values of the parameter, one per replicate that selected the
+        basis function it belongs to.
 
     Returns
     -------
@@ -764,133 +765,241 @@ def _summarize_parameter_samples(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def bootstrap_model_selection(
-    model: SymbolicRegressor,
-    X: jnp.ndarray,
-    y: jnp.ndarray,
-    n_bootstrap: int = 100,
-    seed: int | None = None,
-) -> dict[str, Any]:
+def _model_feature_names(model: Any) -> list[str] | None:
     """
-    Pairs bootstrap for model selection stability.
+    Selected feature names of a fitted model, keyed by basis identity.
 
-    Resamples (X_i, y_i) pairs, reruns full ``model.fit()``, and tracks which
-    features are selected across bootstrap samples.
-
-    Features are keyed by **basis identity**, not by the rendered name. A
-    parametric basis renders with its fitted parameter substituted in
-    (``"exp(-0.4913*x)"``), which differs in every replicate, so keying on the
-    rendered name would give each replicate a unique feature and report a
-    stability of zero even when every replicate selected the same basis. The
-    fitted values are reported separately, as a distribution over replicates,
-    in ``"parameter_distributions"``.
-
-    Each replicate is fitted on its own copy of the basis library, so this never
-    disturbs ``model`` or the library it was fitted with.
+    A parametric basis renders its name with the fitted parameter substituted
+    in (``"exp(-0.4913*x)"``), and that value is re-optimised in every
+    replicate, so the rendered name is not a stable key: aggregating on it
+    gives every replicate a unique feature. The library's canonical name (the
+    template ``"exp(-a*x)"``) is used instead. Non-parametric bases are
+    unaffected.
 
     Parameters
     ----------
     model : SymbolicRegressor
-        Fitted model (used as template).
-    X : jnp.ndarray
-        Training features of shape (n_samples, n_features).
-    y : jnp.ndarray
-        Training targets of shape (n_samples,).
-    n_bootstrap : int
-        Number of bootstrap samples. Must be at least 1.
-    seed : int, optional
-        Random seed.
+        A fitted model.
+
+    Returns
+    -------
+    features : list of str or None
+        Canonical names of the selected features, or None if the model does not
+        expose the library and indices needed to resolve them (in which case
+        the caller falls back to ``selected_features_``).
+    """
+    library = getattr(model, "basis_library", None)
+    result = getattr(model, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return None
+    return [library.canonical_name(int(i)) for i in np.asarray(result.selected_indices)]
+
+
+def _replicate_parametric_params(replicate: Any) -> dict[str, dict[str, float]]:
+    """
+    Fitted nonlinear parameters of one replicate, keyed by basis identity.
+
+    Parameters
+    ----------
+    replicate : SymbolicRegressor or Mapping or sequence of str
+        A replicate in any of the forms :func:`_replicate_terms` accepts.
+
+    Returns
+    -------
+    params : dict
+        ``{basis identity: {param_name: fitted value}}``, restricted to bases
+        the replicate actually selected. Empty for replicates that are not
+        fitted models or whose library has no parametric basis functions.
+    """
+    library = getattr(replicate, "basis_library", None)
+    result = getattr(replicate, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return {}
+
+    fitted = getattr(result, "parametric_params", None)
+    if not fitted:
+        return {}
+
+    selected = {int(i) for i in np.asarray(result.selected_indices)}
+    return {
+        library.canonical_name(int(idx)): {k: float(v) for k, v in params.items()}
+        for idx, params in fitted.items()
+        if int(idx) in selected  # optimised during the search but not in the final model
+    }
+
+
+def _replicate_terms(replicate: Any) -> tuple[list[str], str]:
+    """
+    Extract ``(selected feature names, expression)`` from one replicate.
+
+    Feature names come from basis identity where the replicate is a fitted
+    model, so that a parametric basis aggregates across replicates instead of
+    appearing once per fitted parameter value. See :func:`_model_feature_names`.
+
+    Parameters
+    ----------
+    replicate : SymbolicRegressor or Mapping or sequence of str
+        A fitted model, a mapping with a ``"features"`` key (and optionally an
+        ``"expression"`` key), or a plain sequence of selected feature names.
+
+    Returns
+    -------
+    features : list of str
+        Selected feature names.
+    expression : str
+        The replicate's expression, or the features joined with ``" + "`` when
+        no expression is available.
+
+    Raises
+    ------
+    TypeError
+        If the replicate is not one of the supported forms.
+    ValueError
+        If the replicate is a model that has not been fitted.
+    """
+    if hasattr(replicate, "selected_features_"):
+        if not getattr(replicate, "_is_fitted", True):
+            raise ValueError("Replicate models must be fitted before summarising.")
+        canonical = _model_feature_names(replicate)
+        features = (
+            canonical if canonical is not None else [str(f) for f in replicate.selected_features_]
+        )
+        expression = str(getattr(replicate, "expression_", "") or " + ".join(features))
+        return features, expression
+
+    if isinstance(replicate, Mapping):
+        if "features" not in replicate:
+            raise TypeError("Mapping replicates must have a 'features' key.")
+        features = [str(f) for f in replicate["features"]]
+        expression = str(replicate.get("expression") or " + ".join(features))
+        return features, expression
+
+    if isinstance(replicate, (list, tuple, set, frozenset, np.ndarray)):
+        features = [str(f) for f in replicate]
+        return features, " + ".join(features)
+
+    raise TypeError(
+        f"Cannot read selected features from replicate of type {type(replicate).__name__}. "
+        f"Pass fitted models, mappings with a 'features' key, or sequences of feature names."
+    )
+
+
+def summarize_selection_replicates(
+    replicates: Sequence[Any],
+    reference: Any | None = None,
+    resampling: str = "custom",
+) -> dict[str, Any]:
+    """
+    Summarise selection stability over replicates the caller produced.
+
+    ``bootstrap_model_selection`` uses this internally, but it is public so
+    that replicates generated outside JAXSR can be reported the same way. That
+    matters when the rows fed to ``fit`` are themselves outputs of an upstream
+    step -- a smoother, a derivative estimate, a simulation -- because
+    resampling those rows perturbs nothing about the step that produced them.
+    The honest replicate there re-runs the whole pipeline; see
+    ``bootstrap_model_selection(..., resample_fn=...)`` or simply collect the
+    fitted models yourself and pass them here.
+
+    Parameters
+    ----------
+    replicates : sequence
+        One entry per replicate. Each may be a fitted ``SymbolicRegressor``, a
+        mapping with a ``"features"`` key (optionally ``"expression"``), or a
+        sequence of selected feature names.
+    reference : SymbolicRegressor or sequence of str, optional
+        The feature set to measure stability against, typically the model fit
+        to the full data. If omitted, ``stability_score`` is the frequency of
+        the most common structure instead.
+    resampling : str
+        Label recorded in the result describing what was resampled, e.g.
+        ``"rows"``, ``"groups"``, ``"pipeline"``.
 
     Returns
     -------
     result : dict
         Dictionary with keys:
 
-        - "feature_frequencies": dict mapping basis identity (the name as
-          registered, e.g. ``"exp(-a*x)"``) to the fraction of successful
-          replicates that selected it, in descending order of frequency
+        - "feature_frequencies": dict mapping feature name to the fraction of
+          replicates that selected it, highest first. Model replicates are
+          keyed by basis identity, so a parametric basis appears once (as the
+          registered ``"exp(-a*x)"``) rather than once per fitted value
         - "parameter_distributions": dict mapping basis identity to
           ``{param_name: {"mean", "sd", "q05", "q95", "n"}}`` for parametric
-          basis functions; empty when the library has none
-        - "stability_score": fraction of successful replicates selecting exactly
-          the same feature set as ``model``
-        - "expressions": list of expressions found across bootstraps, with
+          basis functions; empty unless the replicates are fitted models with
+          parametric bases
+        - "stability_score": fraction of replicates whose selected feature set
+          equals ``reference`` (or the modal structure's frequency)
+        - "expressions": list of expressions, one per replicate, with
           parametric values rendered as fitted in that replicate
-        - "n_successful": number of replicates that fitted without error; the
-          denominator of the frequencies and of the stability score
+        - "structures": list of dicts with "features", "count", "frequency",
+          one per distinct selected feature set, most frequent first
+        - "n_replicates", "n_distinct_structures", "n_distinct_expressions"
+        - "reference_features": the reference feature set, or None
+        - "resampling": the ``resampling`` label
 
     Raises
     ------
-    RuntimeError
-        If ``model`` is not fitted.
-    ValueError
-        If ``X`` and ``y`` have inconsistent lengths, or if ``n_bootstrap`` is
-        less than 1.
+    TypeError
+        If a replicate is not one of the supported forms.
+
+    Examples
+    --------
+    >>> models = [fit_one_replicate(i) for i in range(90)]  # doctest: +SKIP
+    >>> summary = summarize_selection_replicates(  # doctest: +SKIP
+    ...     models, reference=full_fit, resampling="pipeline"
+    ... )
+    >>> summary["n_distinct_structures"]  # doctest: +SKIP
+    9
     """
-    model._check_is_fitted()
-
-    X = jnp.atleast_2d(jnp.asarray(X))
-    y = jnp.asarray(y).ravel()
-    n = len(y)
-    if X.shape[0] != n:
-        raise ValueError(f"X has {X.shape[0]} samples but y has {n}.")
-    if n_bootstrap < 1:
-        raise ValueError(f"n_bootstrap must be at least 1, got {n_bootstrap}.")
-
-    rng = np.random.RandomState(seed)
-
-    library = model.basis_library
-    original_features = {
-        library.canonical_name(int(i)) for i in np.asarray(model._result.selected_indices)
-    }
-
-    base_params = model.get_params(deep=False)
+    reference_features: list[str] | None = None
+    if reference is not None:
+        reference_features = sorted(set(_replicate_terms(reference)[0]))
+    reference_set = set(reference_features) if reference_features is not None else None
 
     feature_counts: dict[str, int] = {}
+    structure_counts: dict[tuple[str, ...], int] = {}
     param_samples: dict[str, dict[str, list[float]]] = {}
+    expressions: list[str] = []
     same_count = 0
-    expressions = []
 
-    for _b in range(n_bootstrap):
-        boot_idx = rng.randint(0, n, size=n)
-        X_boot = X[boot_idx]
-        y_boot = y[boot_idx]
-
-        # Clone the model onto its own library: fitting a parametric library
-        # rebinds names and closures in place, so replicates must not share one.
-        library_boot = library.copy()
-        model_boot = model.__class__(**{**base_params, "basis_library": library_boot})
-
-        try:
-            model_boot.fit(X_boot, y_boot)
-            result = model_boot._result
-            indices = [int(i) for i in np.asarray(result.selected_indices)]
-            selected = {library_boot.canonical_name(i) for i in indices}
-            expression = model_boot.expression_
-        except Exception:
-            continue
-
-        for feat in selected:
-            feature_counts[feat] = feature_counts.get(feat, 0) + 1
-        if selected == original_features:
-            same_count += 1
-
-        for idx, params in (result.parametric_params or {}).items():
-            if int(idx) not in indices:
-                continue  # optimised during the search but not in the final model
-            key = library_boot.canonical_name(int(idx))
-            per_basis = param_samples.setdefault(key, {})
-            for pname, value in params.items():
-                per_basis.setdefault(pname, []).append(float(value))
-
+    for replicate in replicates:
+        features, expression = _replicate_terms(replicate)
         expressions.append(expression)
 
-    n_successful = len(expressions)
-    total = max(n_successful, 1)
+        selected = set(features)
+        for feat in selected:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
+
+        key = tuple(sorted(selected))
+        structure_counts[key] = structure_counts.get(key, 0) + 1
+
+        if reference_set is not None and selected == reference_set:
+            same_count += 1
+
+        for name, params in _replicate_parametric_params(replicate).items():
+            per_basis = param_samples.setdefault(name, {})
+            for pname, value in params.items():
+                per_basis.setdefault(pname, []).append(value)
+
+    n_replicates = len(expressions)
+    total = max(n_replicates, 1)
+
     feature_frequencies = {
-        name: count / total
-        for name, count in sorted(feature_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        k: v / total for k, v in sorted(feature_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     }
+    structures = [
+        {"features": list(key), "count": count, "frequency": count / total}
+        for key, count in sorted(structure_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    if reference_set is not None:
+        stability_score = same_count / total
+    elif structures:
+        stability_score = structures[0]["frequency"]
+    else:
+        stability_score = 0.0
+
     parameter_distributions = {
         name: {pname: _summarize_parameter_samples(vals) for pname, vals in per_basis.items()}
         for name, per_basis in param_samples.items()
@@ -899,10 +1008,158 @@ def bootstrap_model_selection(
     return {
         "feature_frequencies": feature_frequencies,
         "parameter_distributions": parameter_distributions,
-        "stability_score": same_count / total,
+        "stability_score": stability_score,
         "expressions": expressions,
-        "n_successful": n_successful,
+        "structures": structures,
+        "n_replicates": n_replicates,
+        "n_distinct_structures": len(structures),
+        "n_distinct_expressions": len(set(expressions)),
+        "reference_features": reference_features,
+        "resampling": resampling,
     }
+
+
+def bootstrap_model_selection(
+    model: SymbolicRegressor,
+    X: jnp.ndarray | None,
+    y: jnp.ndarray | None,
+    n_bootstrap: int = 100,
+    seed: int | None = None,
+    groups: Any | None = None,
+    resample_fn: Callable[[np.random.RandomState], tuple[Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """
+    Bootstrap model selection stability at the row, group, or pipeline level.
+
+    By default this is a pairs bootstrap: it resamples ``(X_i, y_i)`` rows,
+    reruns ``model.fit()``, and tracks which features are selected. That is
+    only the right unit of resampling when rows are independent observations.
+
+    - **Rows are grouped** -- several rows share one experimental condition,
+      one measured curve, one subject -- pass ``groups``. Whole groups are then
+      resampled with replacement, so a replicate never sees part of a group it
+      also trained on. Row resampling here reports a spread far narrower than
+      the real between-group variability.
+    - **Rows come out of an upstream fit** -- spline evaluations, estimated
+      derivatives, simulation output -- pass ``resample_fn``. Resampling such
+      rows perturbs nothing about the step that produced them, so the dominant
+      error source is invisible to a row-wise bootstrap. ``resample_fn`` gets
+      to regenerate the data (and re-run that upstream step) per replicate.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        Model used as the template for every replicate. If it is fitted, its
+        selected features become the reference for ``stability_score``.
+    X : jnp.ndarray or None
+        Training features. May be None when ``resample_fn`` is given.
+    y : jnp.ndarray or None
+        Training targets. May be None when ``resample_fn`` is given.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    seed : int, optional
+        Random seed.
+    groups : array-like of shape (n_samples,), optional
+        Group label per row. When given, groups rather than rows are resampled
+        with replacement. Cannot be combined with ``resample_fn``.
+    resample_fn : callable, optional
+        ``resample_fn(rng) -> (X_b, y_b)``, called once per replicate with the
+        bootstrap's ``numpy.random.RandomState`` so the replicates stay
+        reproducible under ``seed``. Use it to regenerate the data and re-run
+        whatever upstream stage produced it. Cannot be combined with ``groups``.
+
+    Returns
+    -------
+    result : dict
+        The dictionary returned by ``summarize_selection_replicates``, plus:
+
+        - "n_failed": number of replicates whose fit raised and was skipped
+        - "resampling": ``"rows"``, ``"groups"``, or ``"pipeline"``
+
+    Raises
+    ------
+    ValueError
+        If ``n_bootstrap < 1``, if both ``groups`` and ``resample_fn`` are
+        given, if ``groups`` has the wrong length, if fewer than 2 groups are
+        present, or if ``X``/``y`` are missing without a ``resample_fn``.
+    TypeError
+        If ``resample_fn`` does not return a ``(X_b, y_b)`` pair.
+
+    Examples
+    --------
+    >>> bootstrap_model_selection(model, X, y, groups=temperature_id)  # doctest: +SKIP
+    >>> def replicate(rng):  # doctest: +SKIP
+    ...     data = simulate(seed=rng.randint(2**31))
+    ...     return features_from_smoother(data), derivative_from_smoother(data)
+    >>> bootstrap_model_selection(model, None, None, resample_fn=replicate)  # doctest: +SKIP
+    """
+    from .metrics import group_indices
+    from .regressor import _clone_estimator
+
+    if n_bootstrap < 1:
+        raise ValueError(f"n_bootstrap must be at least 1, got {n_bootstrap}.")
+    if groups is not None and resample_fn is not None:
+        raise ValueError(
+            "Pass either groups or resample_fn, not both: resample_fn already "
+            "controls how each replicate is generated."
+        )
+
+    rng = np.random.RandomState(seed)
+    row_indices: list[np.ndarray] = []
+
+    if resample_fn is not None:
+        resampling = "pipeline"
+    else:
+        if X is None or y is None:
+            raise ValueError("X and y are required unless resample_fn is given.")
+        X = jnp.atleast_2d(jnp.asarray(X))
+        y = jnp.asarray(y).ravel()
+        n = len(y)
+        if X.shape[0] != n:
+            raise ValueError(f"X has {X.shape[0]} rows but y has {n} values.")
+
+        if groups is None:
+            resampling = "rows"
+        else:
+            resampling = "groups"
+            unique_groups, row_indices = group_indices(groups)
+            if sum(len(idx) for idx in row_indices) != n:
+                raise ValueError(
+                    f"groups has {np.asarray(groups).ravel().size} labels but X has {n} rows."
+                )
+            if len(unique_groups) < 2:
+                raise ValueError("Grouped bootstrap requires at least 2 distinct groups.")
+
+    fitted: list[SymbolicRegressor] = []
+    n_failed = 0
+
+    for _b in range(n_bootstrap):
+        if resample_fn is not None:
+            sample = resample_fn(rng)
+            if not isinstance(sample, tuple) or len(sample) != 2:
+                raise TypeError("resample_fn must return a (X_b, y_b) tuple.")
+            X_boot = jnp.atleast_2d(jnp.asarray(sample[0]))
+            y_boot = jnp.asarray(sample[1]).ravel()
+        elif resampling == "groups":
+            draw = rng.randint(0, len(row_indices), size=len(row_indices))
+            boot_idx = np.concatenate([row_indices[g] for g in draw])
+            X_boot, y_boot = X[boot_idx], y[boot_idx]
+        else:
+            boot_idx = rng.randint(0, len(y), size=len(y))
+            X_boot, y_boot = X[boot_idx], y[boot_idx]
+
+        model_boot = _clone_estimator(model)
+        try:
+            model_boot.fit(X_boot, y_boot)
+        except Exception:
+            n_failed += 1
+            continue
+        fitted.append(model_boot)
+
+    reference = model if getattr(model, "_is_fitted", False) else None
+    result = summarize_selection_replicates(fitted, reference=reference, resampling=resampling)
+    result["n_failed"] = n_failed
+    return result
 
 
 # =============================================================================
