@@ -59,7 +59,11 @@ reference. Each entry lists: **function/class**, **correct usage**, and **common
 | `bootstrap_predict()` | `dict` with keys `"y_pred"`, `"y_mean"`, `"y_std"`, `"lower"`, `"upper"` | Using `result.upper`, `result.lower` — it's a plain dict, use `result["upper"]` |
 | `conformal_predict_split()` | `dict` with keys `"y_pred"`, `"lower"`, `"upper"`, `"quantile"` | Tuple unpacking `y_pred, lo, hi = conformal_predict_split(...)` — returns dict |
 | `model.predict_conformal()` | `tuple` `(y_pred, lower, upper)` | Treating like dict — the *method* returns a tuple, the *standalone function* returns dict |
-| `cross_validate()` | `dict` with `"mean_test_score"`, `"std_test_score"`, etc. | Treating return as array |
+| `cross_validate()` | `dict` with `"mean_test_score"`, `"std_test_score"`, `"strategy"`, `"per_group_scores"`, `"edge_groups"`, etc. | Treating return as array |
+| `cross_validate(..., groups=...)` | grouped splits; `strategy` is promoted to `"group-kfold"` | Passing `groups` and expecting random row folds; only `"kfold"`, `"group-kfold"`, `"leave-one-group-out"` are valid strategies |
+| `bootstrap_model_selection()` | `dict` with `"feature_frequencies"`, `"stability_score"`, `"expressions"`, `"structures"`, `"n_replicates"`, `"n_distinct_structures"`, `"resampling"`, `"n_failed"` | Reporting a row-wise `stability_score` for grouped or pipeline-generated rows — pass `groups=` or `resample_fn=` |
+| `bootstrap_model_selection(..., resample_fn=...)` | `resample_fn(rng) -> (X_b, y_b)`; `X`/`y` may be `None` | Giving `resample_fn` a different signature, or combining it with `groups` (raises `ValueError`) |
+| `summarize_selection_replicates()` | `dict` (same keys, minus `"n_failed"`) | Assuming it needs fitted models — mappings with `"features"` and plain name lists also work |
 | `canonical_analysis()` | `CanonicalAnalysis` dataclass | — |
 
 #### Class Attributes

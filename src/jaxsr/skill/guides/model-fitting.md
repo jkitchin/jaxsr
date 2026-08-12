@@ -200,6 +200,35 @@ result = cross_validate(model, X, y, cv=5, scoring="r2")
 print(f"CV R²: {result['mean_test_score']:.4f} ± {result['std_test_score']:.4f}")
 ```
 
+### Grouped cross-validation
+
+Random row splits leak whenever several rows share a condition — replicates of one
+experiment, points along one measured curve, samples from one subject. The test fold
+then contains rows whose siblings the model already trained on, and the score comes out
+optimistic. Pass `groups` (one label per row) to keep whole groups on one side of the
+split:
+
+```python
+import numpy as np
+from jaxsr import cross_validate
+
+groups = np.repeat([250.0, 275.0, 300.0, 325.0], 40)   # one label per row
+
+# Whole groups distributed over cv folds (this is also what plain `groups=` does)
+result = cross_validate(model, X, y, cv=4, groups=groups, strategy="group-kfold")
+
+# One fold per group — the strictest check
+result = cross_validate(model, X, y, groups=groups, strategy="leave-one-group-out")
+print(result["per_group_scores"])    # {250.0: -0.31, 275.0: -0.08, ...}
+print(result["edge_groups"])         # [250.0, 325.0] — the extrapolation cases
+print(result["edge_group_scores"])   # read these separately from the mean
+```
+
+`edge_groups` holds the lowest and highest group labels when the labels are numeric.
+Those two folds are extrapolation, not interpolation, and they carry different risk —
+averaging them into `mean_test_score` hides exactly the failure a reviewer will ask
+about. Non-numeric labels (strings) have no natural ordering, so `edge_groups` is empty.
+
 ## Pareto Front
 
 After fitting, JAXSR computes a **Pareto front** — the set of models where no other

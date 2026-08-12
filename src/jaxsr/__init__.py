@@ -132,6 +132,7 @@ from .uncertainty import (
     conformal_predict_split,
     ensemble_predict,
     prediction_interval,
+    summarize_selection_replicates,
 )
 
 
@@ -259,4 +260,5 @@ __all__ = [
     "conformal_predict_split",
     "ensemble_predict",
     "prediction_interval",
+    "summarize_selection_replicates",
 ]

@@ -107,10 +107,22 @@ Use `hard=True` for strict enforcement; `hard=False` (default) for soft penalty.
 | Robust to model uncertainty | `model.predict_bma()` | Averages over Pareto-front models weighted by criterion |
 | No distributional assumptions | `model.predict_conformal()` | Distribution-free. Needs enough data (n > 30). |
 | Assess model stability | `bootstrap_predict()` | Resamples data. Shows sensitivity to individual points. |
+| Selection stability | `bootstrap_model_selection()` | How often each term — and each whole structure — is selected |
+| Stability with grouped rows | `bootstrap_model_selection(..., groups=...)` | Rows share a condition/curve/subject. Resamples groups, not rows. |
+| Stability with upstream fits | `bootstrap_model_selection(..., resample_fn=...)` | Rows come from a smoother/derivative/simulation. Regenerates each replicate. |
+| Report your own replicates | `summarize_selection_replicates()` | You produced the replicates; reuse the same summary output |
 | Compare model structures | `model.predict_ensemble()` | Returns predictions from all Pareto-front models |
 | Variable importance | `anova()` | Decomposes variance by term. Shows which factors matter. |
 
 **Default recommendation:** Start with `predict_interval()` (built-in, fast). Add `predict_bma()` if you have multiple competing models. Use `predict_conformal()` for publication-quality intervals.
+
+**Check the resampling level first.** Every bootstrap above resamples rows by default,
+which is right only when rows are independent observations. If several rows share an
+experimental condition, or if the rows are outputs of an upstream fit, see
+"Resample at the level your data actually varies" in `guides/uncertainty.md` — a
+stability score computed at the wrong level always looks better than the truth.
+The same applies to scoring: use `cross_validate(..., groups=...)` when rows are
+grouped (see `guides/model-fitting.md`).
 
 ### Step 7: Recommend Reporting Format
 
