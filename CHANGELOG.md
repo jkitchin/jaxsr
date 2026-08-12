@@ -10,6 +10,45 @@ for details.
 
 ## [Unreleased]
 
+### Added
+- **`sample_weight` is now implemented** (#19). It was previously accepted by
+  `SymbolicRegressor.fit()` and silently ignored, so a user passing measurement
+  variances got an unweighted fit that looked like a weighted one. Weighted least
+  squares is now applied consistently across:
+  - all four selection strategies, so weights steer *which terms are chosen*, not
+    only their coefficients;
+  - the reported MSE, R², and the AIC/BIC/AICc computed from them;
+  - constraint refitting (`fit_constrained_ols`), term pruning, and parametric
+    parameter optimisation;
+  - `sigma_`, `covariance_matrix_`, `coefficient_intervals()`,
+    `predict_interval()`, `confidence_band()`, `anova()`, the bootstrap
+    functions, `cross_validate()`, and jackknife+ conformal prediction.
+
+  Weights are normalised to average 1, so only their ratios matter and the fit is
+  invariant to their overall scale. The effective sample size in the information
+  criteria stays the nominal `n` — weighting does not manufacture observations,
+  which is why duplicating rows is not an equivalent trick. New
+  `SymbolicRegressor.effective_sample_size_` reports the Kish effective sample
+  size as a diagnostic, and `sample_weight_` exposes the normalised weights.
+
+  Invalid weights (wrong length, negative, non-finite, all-zero) now raise
+  `ValueError` instead of being ignored.
+
+  `sample_weight` was also added to `fit_symbolic()`,
+  `MultiOutputSymbolicRegressor.fit()`, `SymbolicRegressor.score()`,
+  `fit_ols()`, `fit_ridge()`, `select_features()`, `cross_validate()`,
+  `compute_mse/rmse/mae/r2/adjusted_r2/mape/all_metrics()`, `compute_cv_score()`,
+  `compute_loo_mse()`, `compute_press()`, and `bootstrap_model_selection()`;
+  `SymbolicRegressor.update()` gained `sample_weight_new`.
+- New guide `docs/guides/sample-weights.md` (and the matching skill guide)
+  covering weight semantics, the effective-sample-size policy, recipes for
+  variance-derived and replicate weights, and what is deliberately left
+  unweighted.
+
+### Fixed
+- `compute_all_metrics()` no longer reports `max_error` over rows that carry no
+  weight.
+
 ## [0.3.0] - 2026-07-02
 
 ### Added

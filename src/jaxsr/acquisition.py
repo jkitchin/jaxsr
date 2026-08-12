@@ -112,33 +112,51 @@ class BatchStrategy(Enum):
 # =========================================================================
 
 
+def _get_weighted_Phi_train(model: SymbolicRegressor) -> tuple[jnp.ndarray, jnp.ndarray | None]:
+    """Return the training design matrix, whitened by the fit's sample weights.
+
+    Every acquisition function below reasons about the posterior of a
+    *weighted* least-squares fit when one was requested, so the information
+    matrix must be ``Phi^T W Phi``.  Scoring a candidate against the
+    unweighted ``Phi^T Phi`` would propose the next experiment as if
+    down-weighted rows had been fully informative.
+    """
+    from .utils import whiten
+
+    weights = getattr(model, "_sample_weight", None)
+    Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
+    return whiten(Phi_train, weights), weights
+
+
 def _get_pred_and_sigma(
     model: SymbolicRegressor,
     X: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return (y_pred, sigma) for *X* using the OLS posterior.
 
-    sigma(x) = sigma_hat * sqrt( phi(x)^T (Phi^T Phi)^{-1} phi(x) )
+    sigma(x) = sigma_hat * sqrt( phi(x)^T (Phi^T W Phi)^{-1} phi(x) )
+
+    ``W`` is the diagonal of training sample weights (the identity for an
+    unweighted fit), and ``sigma_hat`` is the noise level of a unit-weight
+    observation.
     """
     from .uncertainty import compute_unbiased_variance
 
     X = jnp.atleast_2d(jnp.asarray(X))
     model._check_is_fitted()
 
+    weights = getattr(model, "_sample_weight", None)
     Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
-    sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
+    sigma_sq = compute_unbiased_variance(
+        Phi_train, model._y_train, model._result.coefficients, weights
+    )
 
-    # (Phi^T Phi)^{-1} via SVD for stability
-    U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
-    rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
-    cutoff = rcond * jnp.max(s)
-    s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
-    PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
+    PhiTPhiInv = _get_PhiTPhiInv(model)
 
     Phi_new = model.basis_library.evaluate_subset(X, model._result.selected_indices)
     y_pred = Phi_new @ model._result.coefficients
 
-    # Vectorised leverage: h_ii = phi_i^T @ (Phi^T Phi)^{-1} @ phi_i
+    # Vectorised leverage: h_ii = phi_i^T @ (Phi^T W Phi)^{-1} @ phi_i
     h = jnp.sum((Phi_new @ PhiTPhiInv) * Phi_new, axis=1)
     sigma = jnp.sqrt(jnp.maximum(sigma_sq * h, 0.0))
 
@@ -146,10 +164,10 @@ def _get_pred_and_sigma(
 
 
 def _get_PhiTPhiInv(model: SymbolicRegressor) -> jnp.ndarray:
-    """Return (Phi^T Phi)^{-1} for the training design matrix."""
-    Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
-    U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
-    rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
+    """Return (Phi^T W Phi)^{-1} for the training design matrix."""
+    Phi_train_w, _weights = _get_weighted_Phi_train(model)
+    U, s, Vt = jnp.linalg.svd(Phi_train_w, full_matrices=False)
+    rcond = jnp.finfo(Phi_train_w.dtype).eps * max(Phi_train_w.shape)
     cutoff = rcond * jnp.max(s)
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     return Vt.T @ jnp.diag(s_inv_sq) @ Vt
@@ -604,8 +622,11 @@ class ThompsonSampling(AcquisitionFunction):
         Phi_train = model.basis_library.evaluate_subset(
             model._X_train, model._result.selected_indices
         )
-        sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
-        cov = compute_coeff_covariance(Phi_train, sigma_sq)
+        weights = getattr(model, "_sample_weight", None)
+        sigma_sq = compute_unbiased_variance(
+            Phi_train, model._y_train, model._result.coefficients, weights
+        )
+        cov = compute_coeff_covariance(Phi_train, sigma_sq, weights)
 
         beta_hat = np.array(model._result.coefficients)
         cov_np = np.array(cov)
@@ -662,7 +683,12 @@ class AOptimal(AcquisitionFunction):
         Phi_train = model.basis_library.evaluate_subset(
             model._X_train, model._result.selected_indices
         )
-        sigma_sq = compute_unbiased_variance(Phi_train, model._y_train, model._result.coefficients)
+        sigma_sq = compute_unbiased_variance(
+            Phi_train,
+            model._y_train,
+            model._result.coefficients,
+            getattr(model, "_sample_weight", None),
+        )
         PhiTPhiInv = _get_PhiTPhiInv(model)
         cov = sigma_sq * PhiTPhiInv
 
@@ -1069,6 +1095,7 @@ class ActiveLearner:
         # Save original state
         X_orig = self.model._X_train
         y_orig = self.model._y_train
+        w_orig = getattr(self.model, "_sample_weight", None)
         result_orig = self.model._result
 
         selected_indices = []
@@ -1095,19 +1122,29 @@ class ActiveLearner:
                 y_star = self.model.predict(x_star)
                 self.model._X_train = jnp.vstack([self.model._X_train, x_star])
                 self.model._y_train = jnp.concatenate([self.model._y_train, y_star])
+                if w_orig is not None:
+                    # The fantasised observation enters at unit weight -- i.e.
+                    # as precise as an average existing point.  It must be
+                    # appended, or the weights no longer line up with the rows.
+                    self.model._sample_weight = jnp.concatenate(
+                        [self.model._sample_weight, jnp.ones(1)]
+                    )
 
                 # Quick coefficient refit (not full selection)
                 Phi = self.model.basis_library.evaluate_subset(
                     self.model._X_train, self.model._result.selected_indices
                 )
-                coeffs = jnp.linalg.lstsq(Phi, self.model._y_train, rcond=None)[0]
-                from .selection import SelectionResult
+                from .selection import SelectionResult, fit_ols
+
+                coeffs, mse = fit_ols(
+                    Phi, self.model._y_train, sample_weight=self.model._sample_weight
+                )
 
                 self.model._result = SelectionResult(
                     coefficients=coeffs,
                     selected_indices=result_orig.selected_indices,
                     selected_names=result_orig.selected_names,
-                    mse=float(jnp.mean((self.model._y_train - Phi @ coeffs) ** 2)),
+                    mse=mse,
                     complexity=result_orig.complexity,
                     aic=result_orig.aic,
                     bic=result_orig.bic,
@@ -1118,6 +1155,7 @@ class ActiveLearner:
             # Restore original model state
             self.model._X_train = X_orig
             self.model._y_train = y_orig
+            self.model._sample_weight = w_orig
             self.model._result = result_orig
 
         selected_indices = np.array(selected_indices)

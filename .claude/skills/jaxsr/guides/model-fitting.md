@@ -266,3 +266,15 @@ y_pred = predict_fn(X_numpy)
 model.save("model.json")
 loaded = SymbolicRegressor.load("model.json")
 ```
+
+## Unequal Measurement Precision
+
+If your observations differ in precision, pass `sample_weight` to `fit()`:
+
+```python
+model.fit(X, y, sample_weight=1.0 / variances)
+```
+
+Weights are honoured by term selection, the reported MSE and information criteria,
+constraint refitting and every uncertainty method — not just the final coefficients.
+See `guides/sample-weights.md`.

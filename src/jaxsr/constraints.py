@@ -21,6 +21,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from .utils import validate_sample_weight, whiten
+
 # =============================================================================
 # Constraint Types
 # =============================================================================
@@ -1895,6 +1897,7 @@ def fit_constrained_ols(
     basis_library: Any | None = None,
     selected_indices: Any | None = None,
     enforcement: str = "penalty",
+    sample_weight: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, float]:
     """
     Fit least squares with constraints.
@@ -1934,19 +1937,26 @@ def fit_constrained_ols(
         - ``"constrained"`` – scipy ``trust-constr`` with ``LinearConstraint``.
           Solver-tolerance guarantee (~1e-8).
         - ``"exact"`` – cvxpy QP.  Mathematical guarantee.  Requires ``cvxpy``.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights of shape ``(n_samples,)``.  Only the least-squares
+        part of the objective is weighted; the constraints are properties of
+        the fitted function over the design space and are evaluated on the
+        raw ``X``, so a down-weighted row still has to obey them.  The
+        returned MSE is the weighted MSE ``sum_i w_i r_i^2 / n``.
 
     Returns
     -------
     coefficients : jnp.ndarray
         Fitted coefficients.
     mse : float
-        Mean squared error.
+        (Weighted) mean squared error.
 
     Raises
     ------
     ValueError
-        If *enforcement* is not one of the valid levels, or if
-        ``enforcement='exact'`` is used with ``hard=True`` CUSTOM constraints.
+        If *enforcement* is not one of the valid levels, if
+        ``enforcement='exact'`` is used with ``hard=True`` CUSTOM constraints,
+        or if ``sample_weight`` is invalid.
     ImportError
         If ``enforcement='exact'`` and ``cvxpy`` is not installed.
     RuntimeError
@@ -1964,11 +1974,17 @@ def fit_constrained_ols(
     fixed_idx_set = {f[0] for f in fixed}
 
     n_total = len(basis_names)
-    Phi_np = np.array(Phi)
-    y_np = np.array(y)
+
+    # Whitened copies drive every least-squares computation below; the raw
+    # ``Phi`` is kept for constraint evaluation, which must not be weighted.
+    weights = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi_fit = whiten(Phi, weights)
+    y_fit = whiten(jnp.asarray(y), weights)
+    Phi_np = np.array(Phi_fit)
+    y_np = np.array(y_fit)
 
     # Initial OLS solution
-    coeffs_jax, _, _, _ = jnp.linalg.lstsq(Phi, y, rcond=None)
+    coeffs_jax, _, _, _ = jnp.linalg.lstsq(Phi_fit, y_fit, rcond=None)
     coeffs_init = np.array(coeffs_jax)
 
     # Apply hard sign/fixed constraints to initial guess
@@ -2020,17 +2036,19 @@ def fit_constrained_ols(
     fixed_jax = [(idx, jnp.asarray(val)) for idx, val in fixed]
     free_indices_arr = jnp.array(free_indices, dtype=jnp.int32)
 
-    # Pre-compute perturbed design matrices for constraint evaluation
+    # Pre-compute perturbed design matrices for constraint evaluation.  These
+    # use the *raw* Phi: a constraint such as "monotonic in x" is a statement
+    # about the fitted function, not about how much each row was trusted.
     constraint_data = _precompute_constraint_data(
         evaluator, X_jax, basis_library, selected_indices, Phi
     )
 
-    y_jax = jnp.array(y)
+    y_jax = y_fit
 
     # Dispatch to the chosen enforcement solver
     if enforcement == "penalty":
         return _fit_penalty(
-            Phi=Phi,
+            Phi=Phi_fit,
             y_jax=y_jax,
             evaluator=evaluator,
             x0=x0,
@@ -2047,7 +2065,7 @@ def fit_constrained_ols(
         )
     elif enforcement == "constrained":
         return _fit_trust_constr(
-            Phi=Phi,
+            Phi=Phi_fit,
             y_jax=y_jax,
             evaluator=evaluator,
             x0=x0,
@@ -2064,7 +2082,7 @@ def fit_constrained_ols(
         )
     else:  # enforcement == "exact"
         return _fit_qp_exact(
-            Phi=Phi,
+            Phi=Phi_fit,
             y_jax=y_jax,
             evaluator=evaluator,
             free_indices=free_indices,

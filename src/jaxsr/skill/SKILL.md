@@ -386,6 +386,12 @@ See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.
 
+### "My measurements aren't equally precise"
+
+See `guides/sample-weights.md` for `sample_weight`: weighted least squares applied
+consistently through selection, information criteria, constraints and uncertainty,
+plus the effective-sample-size policy and why row duplication is not a substitute.
+
 ### "One expression isn't enough / the signal is a sum of many effects"
 
 See `guides/additive.md` for boosting-style additive symbolic regression

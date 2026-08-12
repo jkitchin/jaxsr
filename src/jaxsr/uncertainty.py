@@ -18,6 +18,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy import stats
 
+from .utils import validate_sample_weight, weighted_mean, whiten
+
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
 
@@ -31,6 +33,7 @@ def compute_unbiased_variance(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute unbiased noise variance estimate: s^2 = SSR / (n - p).
@@ -43,14 +46,24 @@ def compute_unbiased_variance(
         Target values of shape (n_samples,).
     coefficients : jnp.ndarray
         Fitted coefficients of shape (n_features,).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  The sum of squares becomes
+        ``sum_i w_i r_i^2``, so the estimate is the variance of a
+        *unit-weight* observation under the model ``var(y_i) = sigma^2 / w_i``.
 
     Returns
     -------
     sigma_sq : float
         Unbiased variance estimate.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi.shape
-    residuals = y - Phi @ coefficients
+    w = validate_sample_weight(sample_weight, n)
+    residuals = whiten(y - Phi @ coefficients, w)
     ssr = float(jnp.sum(residuals**2))
     dof = n - p
     if dof <= 0:
@@ -64,9 +77,10 @@ def compute_unbiased_variance(
 def compute_coeff_covariance(
     Phi: jnp.ndarray,
     sigma_sq: float,
+    sample_weight: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
-    Compute coefficient covariance matrix: Cov(beta) = sigma^2 * (Phi^T Phi)^{-1}.
+    Compute coefficient covariance matrix: Cov(beta) = sigma^2 * (Phi^T W Phi)^{-1}.
 
     Uses SVD for numerical stability.
 
@@ -76,15 +90,25 @@ def compute_coeff_covariance(
         Design matrix of shape (n_samples, n_features).
     sigma_sq : float
         Unbiased noise variance estimate.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights forming the diagonal of ``W``.  ``None`` gives the
+        ordinary ``sigma^2 (Phi^T Phi)^{-1}``.
 
     Returns
     -------
     cov : jnp.ndarray
         Covariance matrix of shape (n_features, n_features).
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
-    U, s, Vt = jnp.linalg.svd(Phi, full_matrices=False)
-    # (Phi^T Phi)^{-1} = V @ diag(1/s^2) @ V^T
-    rcond = jnp.finfo(Phi.dtype).eps * max(Phi.shape)
+    w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi_w = whiten(Phi, w)
+    U, s, Vt = jnp.linalg.svd(Phi_w, full_matrices=False)
+    # (Phi^T W Phi)^{-1} = V @ diag(1/s^2) @ V^T for the whitened Phi
+    rcond = jnp.finfo(Phi_w.dtype).eps * max(Phi_w.shape)
     cutoff = rcond * jnp.max(s)
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
@@ -97,6 +121,7 @@ def coefficient_intervals(
     coefficients: jnp.ndarray,
     names: list[str],
     alpha: float = 0.05,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, tuple[float, float, float, float]]:
     """
     Compute t-based confidence intervals for each coefficient.
@@ -113,13 +138,24 @@ def coefficient_intervals(
         Names of basis functions.
     alpha : float
         Significance level (default 0.05 for 95% CIs).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights used for the fit.  Standard errors then come from
+        the weighted covariance ``s^2 (Phi^T W Phi)^{-1}``; passing ``None``
+        for a weighted fit understates the uncertainty of coefficients that
+        rest mostly on down-weighted rows.
 
     Returns
     -------
     intervals : dict
         {name: (estimate, lower, upper, se)} for each coefficient.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi.shape
+    w = validate_sample_weight(sample_weight, n)
     dof = n - p
     if dof <= 0:
         warnings.warn("Not enough degrees of freedom for coefficient intervals.", stacklevel=2)
@@ -128,8 +164,8 @@ def coefficient_intervals(
             for name, coef in zip(names, coefficients, strict=False)
         }
 
-    sigma_sq = compute_unbiased_variance(Phi, y, coefficients)
-    cov = compute_coeff_covariance(Phi, sigma_sq)
+    sigma_sq = compute_unbiased_variance(Phi, y, coefficients, w)
+    cov = compute_coeff_covariance(Phi, sigma_sq, w)
     se = jnp.sqrt(jnp.diag(cov))
 
     t_crit = stats.t.ppf(1 - alpha / 2, dof)
@@ -151,6 +187,7 @@ def prediction_interval(
     coefficients: jnp.ndarray,
     Phi_new: jnp.ndarray,
     alpha: float = 0.05,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """
     Compute prediction and confidence intervals for new observations.
@@ -170,6 +207,10 @@ def prediction_interval(
         Design matrix for new points of shape (n_new, p).
     alpha : float
         Significance level (default 0.05 for 95% intervals).
+    sample_weight : jnp.ndarray, optional
+        Weights of the *training* rows, of shape ``(n_train,)``.  ``Phi_new``
+        is never weighted: the interval it produces is for a new observation
+        of unit weight, i.e. one as precise as an average training point.
 
     Returns
     -------
@@ -180,8 +221,14 @@ def prediction_interval(
         - "conf_lower", "conf_upper": confidence band bounds
         - "pred_se": prediction standard error
         - "conf_se": confidence standard error (mean response)
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi_train.shape
+    w = validate_sample_weight(sample_weight, n)
     dof = n - p
     if dof <= 0:
         y_pred = Phi_new @ coefficients
@@ -196,12 +243,13 @@ def prediction_interval(
             "conf_se": nan_arr,
         }
 
-    sigma_sq = compute_unbiased_variance(Phi_train, y_train, coefficients)
+    sigma_sq = compute_unbiased_variance(Phi_train, y_train, coefficients, w)
     sigma = jnp.sqrt(sigma_sq)
 
-    # Compute (Phi^T Phi)^{-1} via SVD
-    U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
-    rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
+    # Compute (Phi^T W Phi)^{-1} via SVD of the whitened design matrix
+    Phi_train_w = whiten(Phi_train, w)
+    U, s, Vt = jnp.linalg.svd(Phi_train_w, full_matrices=False)
+    rcond = jnp.finfo(Phi_train_w.dtype).eps * max(Phi_train_w.shape)
     cutoff = rcond * jnp.max(s)
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
@@ -492,6 +540,15 @@ def conformal_predict_split(
         - "lower": lower interval bound
         - "upper": upper interval bound
         - "quantile": the conformal quantile used
+
+    Notes
+    -----
+    The calibration set is treated as unweighted, even when ``model`` was
+    fitted with ``sample_weight``: coverage here comes from exchangeability of
+    the calibration residuals, not from the fit.  If the calibration points
+    have unequal precision, the resulting interval is a valid but
+    uninformatively wide one for the precise points.  For a weight-aware
+    interval use ``method="jackknife+"``, which reuses the training weights.
     """
     model._check_is_fitted()
     X_cal = jnp.atleast_2d(jnp.asarray(X_cal))
@@ -547,6 +604,20 @@ def conformal_predict_jackknife_plus(
         - "y_pred": point predictions
         - "lower": lower interval bound
         - "upper": upper interval bound
+
+    Raises
+    ------
+    ValueError
+        If the model has no stored training data.
+
+    Notes
+    -----
+    For a weighted fit the leverages are the weighted-least-squares ones and
+    the nonconformity scores are the whitened LOO residuals
+    ``sqrt(w_i) |r_i| / (1 - h_ii)``, which are exchangeable under the model
+    ``var(y_i) = sigma^2 / w_i``.  The resulting interval is therefore for a
+    new observation of *unit* weight; scale it by ``1 / sqrt(w_new)`` if the
+    new point has a known precision of its own.
     """
     model._check_is_fitted()
     X_new = jnp.atleast_2d(jnp.asarray(X_new))
@@ -556,20 +627,21 @@ def conformal_predict_jackknife_plus(
 
     X_train = model._X_train
     y_train = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     n = len(y_train)
 
     # Compute design matrix for training data
     Phi_train = model.basis_library.evaluate_subset(X_train, model._result.selected_indices)
     coefficients = model._result.coefficients
 
-    # Compute leverage (hat matrix diagonal)
-    Phi_pinv = jnp.linalg.pinv(Phi_train)
-    H = Phi_train @ Phi_pinv
-    h_diag = jnp.diag(H)
+    # Compute leverage (hat matrix diagonal) of the whitened problem:
+    # h_ii = w_i * phi_i^T (Phi^T W Phi)^-1 phi_i
+    Phi_w = whiten(Phi_train, weights)
+    h_diag = jnp.sum(Phi_w * jnp.linalg.pinv(Phi_w).T, axis=1)
 
-    # LOO residuals: e_i / (1 - h_ii)
+    # LOO residuals: e_i / (1 - h_ii), whitened so they are exchangeable
     y_pred_train = Phi_train @ coefficients
-    residuals = y_train - y_pred_train
+    residuals = whiten(y_train - y_pred_train, weights)
     loo_residuals = residuals / (1 - h_diag + 1e-10)
 
     # LOO predictions: y_hat_i^{-i} = y_i - e_i/(1-h_ii) ... wait,
@@ -638,6 +710,20 @@ def bootstrap_coefficients(
         - "lower": lower CI bound for each coefficient
         - "upper": upper CI bound for each coefficient
         - "names": coefficient names
+
+    Raises
+    ------
+    ValueError
+        If the model has no stored training data.
+
+    Notes
+    -----
+    Weights from :meth:`~jaxsr.SymbolicRegressor.fit` are honoured
+    automatically.  Raw residuals of a weighted fit are not exchangeable --
+    a down-weighted row is *expected* to miss by more -- so resampling them
+    directly would leak that row's noise onto precise rows.  The resampling
+    therefore happens in whitened space, on ``sqrt(w_i) * r_i``, and each
+    bootstrap replicate is refit by weighted least squares.
     """
     model._check_is_fitted()
 
@@ -646,21 +732,27 @@ def bootstrap_coefficients(
 
     Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
     y_train = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     coefficients = model._result.coefficients
     y_hat = Phi_train @ coefficients
-    residuals = y_train - y_hat
+
+    # Work in whitened space: OLS there is exactly WLS here, and the whitened
+    # residuals are homoscedastic, so they can be resampled across rows.
+    Phi_w = whiten(Phi_train, weights)
+    residuals_w = whiten(y_train - y_hat, weights)
+    y_hat_w = whiten(y_hat, weights)
 
     rng = np.random.RandomState(seed)
     n = len(y_train)
 
     # Generate all bootstrap y* at once
     boot_indices = rng.randint(0, n, size=(n_bootstrap, n))
-    boot_residuals = np.array(residuals)[boot_indices]  # (n_bootstrap, n)
-    y_star = np.array(y_hat)[None, :] + boot_residuals  # (n_bootstrap, n)
+    boot_residuals = np.array(residuals_w)[boot_indices]  # (n_bootstrap, n)
+    y_star = np.array(y_hat_w)[None, :] + boot_residuals  # (n_bootstrap, n)
 
-    # Vectorized OLS: beta* = (Phi^T Phi)^{-1} Phi^T y*
+    # Vectorized WLS: beta* = (Phi_w^T Phi_w)^{-1} Phi_w^T y_w*
     # Pre-compute pseudo-inverse
-    Phi_np = np.array(Phi_train)
+    Phi_np = np.array(Phi_w)
     PhiTPhiInv_PhiT = np.linalg.pinv(Phi_np)  # (p, n)
 
     # All bootstrap coefficients at once
@@ -743,6 +835,7 @@ def bootstrap_model_selection(
     y: jnp.ndarray,
     n_bootstrap: int = 100,
     seed: int | None = None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, Any]:
     """
     Pairs bootstrap for model selection stability.
@@ -762,6 +855,11 @@ def bootstrap_model_selection(
         Number of bootstrap samples.
     seed : int, optional
         Random seed.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Each weight follows its row into the resample,
+        so a replicate that happens to draw many down-weighted rows is fitted
+        as the thin evidence it is.  Defaults to the weights ``model`` was
+        fitted with when ``X`` and ``y`` are that same training set.
 
     Returns
     -------
@@ -770,10 +868,27 @@ def bootstrap_model_selection(
         - "feature_frequencies": dict mapping feature name to selection frequency
         - "stability_score": fraction of bootstraps selecting the same features
         - "expressions": list of expressions found across bootstraps
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     X = jnp.atleast_2d(jnp.asarray(X))
     y = jnp.asarray(y).ravel()
     n = len(y)
+
+    if sample_weight is None and getattr(model, "_sample_weight", None) is not None:
+        if len(model._sample_weight) == n:
+            sample_weight = model._sample_weight
+        else:
+            warnings.warn(
+                "model was fitted with sample_weight but X/y here have a different "
+                "length, so the bootstrap runs unweighted. Pass sample_weight "
+                "explicitly to weight it.",
+                stacklevel=2,
+            )
+    weights = validate_sample_weight(sample_weight, n)
 
     rng = np.random.RandomState(seed)
 
@@ -786,6 +901,9 @@ def bootstrap_model_selection(
         boot_idx = rng.randint(0, n, size=n)
         X_boot = X[boot_idx]
         y_boot = y[boot_idx]
+        w_boot = None if weights is None else weights[boot_idx]
+        if w_boot is not None and float(jnp.sum(w_boot)) <= 0:
+            continue  # degenerate resample: every drawn row had zero weight
 
         # Clone model
         model_boot = model.__class__(
@@ -799,7 +917,7 @@ def bootstrap_model_selection(
             random_state=model.random_state,
         )
         try:
-            model_boot.fit(X_boot, y_boot)
+            model_boot.fit(X_boot, y_boot, sample_weight=w_boot)
             selected = set(model_boot.selected_features_)
             for feat in selected:
                 feature_counts[feat] = feature_counts.get(feat, 0) + 1
@@ -962,6 +1080,12 @@ def anova(
     The returned :pyclass:`AnovaResult` includes diagnostic warnings when
     these conditions are detected.
 
+    When the model was fitted with ``sample_weight``, every sum of squares is
+    the weighted one (``sum_i w_i r_i^2``) and the total is taken about the
+    weighted mean of ``y``, so the table decomposes the same quantity the fit
+    minimised.  Degrees of freedom stay nominal, matching the information
+    criteria.
+
     Examples
     --------
     >>> from jaxsr.uncertainty import anova
@@ -977,16 +1101,22 @@ def anova(
 
     X = model._X_train
     y = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     n = len(y)
     selected = list(np.array(model._result.selected_indices))
     names = list(model._result.selected_names)
     p = len(selected)
 
+    # Everything below is computed on the whitened problem, so each sum of
+    # squares is the weighted one and reduces to the ordinary one when the
+    # model was fitted without weights.
+    y_w = whiten(y, weights)
+
     # Full model design matrix and residuals
     Phi_full = model.basis_library.evaluate_subset(X, selected)
     y_hat_full = Phi_full @ model._result.coefficients
-    ss_res_full = float(jnp.sum((y - y_hat_full) ** 2))
-    ss_tot = float(jnp.sum((y - jnp.mean(y)) ** 2))
+    ss_res_full = float(jnp.sum(whiten(y - y_hat_full, weights) ** 2))
+    ss_tot = float(jnp.sum(whiten(y - weighted_mean(y, weights), weights) ** 2))
     ss_model = ss_tot - ss_res_full
     df_res = n - p
     ms_res = ss_res_full / df_res if df_res > 0 else float("inf")
@@ -1014,9 +1144,9 @@ def anova(
         ss_prev = ss_tot  # residual SS of the "null" (intercept-free) model
         for k in range(p):
             subset = selected[: k + 1]
-            Phi_k = model.basis_library.evaluate_subset(X, subset)
-            beta_k = jnp.linalg.lstsq(Phi_k, y, rcond=None)[0]
-            ss_res_k = float(jnp.sum((y - Phi_k @ beta_k) ** 2))
+            Phi_k = whiten(model.basis_library.evaluate_subset(X, subset), weights)
+            beta_k = jnp.linalg.lstsq(Phi_k, y_w, rcond=None)[0]
+            ss_res_k = float(jnp.sum((y_w - Phi_k @ beta_k) ** 2))
             ss_term = ss_prev - ss_res_k  # extra SS explained by this term
             ss_term = max(ss_term, 0.0)
             ms_term = ss_term  # df = 1 per term
@@ -1042,9 +1172,9 @@ def anova(
                 # Only one term — its marginal SS is the whole model SS
                 ss_term = ss_model
             else:
-                Phi_mk = model.basis_library.evaluate_subset(X, subset_minus_k)
-                beta_mk = jnp.linalg.lstsq(Phi_mk, y, rcond=None)[0]
-                ss_res_mk = float(jnp.sum((y - Phi_mk @ beta_mk) ** 2))
+                Phi_mk = whiten(model.basis_library.evaluate_subset(X, subset_minus_k), weights)
+                beta_mk = jnp.linalg.lstsq(Phi_mk, y_w, rcond=None)[0]
+                ss_res_mk = float(jnp.sum((y_w - Phi_mk @ beta_mk) ** 2))
                 ss_term = ss_res_mk - ss_res_full
             ss_term = max(ss_term, 0.0)
             ms_term = ss_term

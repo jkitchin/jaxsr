@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import jax.numpy as jnp
 import numpy as np
 
+from .utils import validate_sample_weight, weighted_mean, whiten
+
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
 
@@ -23,6 +25,27 @@ _np_trapezoid = getattr(np, "trapezoid", getattr(np, "trapz", None))
 # =============================================================================
 # Information Criteria
 # =============================================================================
+#
+# Effective sample size under sample weights
+# ------------------------------------------
+# JAXSR treats ``sample_weight`` as *relative precision*: observation ``i`` is
+# assumed to have variance ``sigma^2 / w_i``.  Weights are normalised to sum to
+# ``n`` (see :func:`jaxsr.utils.validate_sample_weight`) and the ``n_samples``
+# passed to every criterion below stays the nominal ``n`` -- the number of
+# observations actually measured.  Consequences worth knowing:
+#
+# * The criteria are invariant to the overall scale of the weights, so ``w`` and
+#   ``1000 * w`` select the same model.
+# * Weighting does not manufacture or destroy observations.  ``k * log(n)`` in
+#   BIC penalises complexity by how much data was collected, not by how much of
+#   it happened to be precise.  This is why row duplication is *not* a valid way
+#   to emulate weights: it inflates ``n`` and shifts every criterion.
+# * The MSE fed to the criteria is the weighted MSE ``sum_i w_i r_i^2 / n``.
+#
+# If most of the weight sits on a handful of rows, the nominal ``n`` overstates
+# how much information the comparison rests on;
+# :func:`jaxsr.utils.effective_sample_size` reports the Kish effective sample
+# size for that diagnosis.
 
 # Smallest MSE that still produces a finite log-likelihood.
 _MSE_FLOOR = float(np.finfo(float).tiny)
@@ -271,6 +294,12 @@ def compute_information_criterion(
     -------
     ic : float
         Information criterion value (lower is better).
+
+    Notes
+    -----
+    Under sample weights, pass the *nominal* number of observations as
+    ``n_samples`` and the weighted MSE ``sum_i w_i r_i^2 / n`` as ``mse``.
+    See the effective-sample-size note at the top of this module.
     """
     criteria = {
         "aic": compute_aic,
@@ -298,6 +327,7 @@ def cross_validate(
     cv: int = 5,
     scoring: str = "neg_mse",
     random_state: int | None = None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, Any]:
     """
     Perform k-fold cross-validation.
@@ -316,6 +346,11 @@ def cross_validate(
         Scoring metric: "neg_mse", "neg_mae", "r2".
     random_state : int, optional
         Random seed for fold splitting.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Weights follow their rows into the folds: each
+        fold is fitted on its training weights and scored with its test
+        weights, so down-weighted observations neither drive the fit nor
+        dominate the score.
 
     Returns
     -------
@@ -325,10 +360,16 @@ def cross_validate(
         - "train_scores": array of train scores for each fold
         - "mean_test_score": mean test score
         - "std_test_score": std of test scores
+
+    Raises
+    ------
+    ValueError
+        If ``scoring`` is unknown or ``sample_weight`` is invalid.
     """
     from .regressor import _clone_estimator
 
     n_samples = X.shape[0]
+    weights = validate_sample_weight(sample_weight, n_samples)
     rng = np.random.RandomState(random_state)
     indices = rng.permutation(n_samples)
 
@@ -337,13 +378,9 @@ def cross_validate(
     train_scores = []
 
     scoring_funcs = {
-        "neg_mse": lambda y_true, y_pred: -float(jnp.mean((y_true - y_pred) ** 2)),
-        "neg_mae": lambda y_true, y_pred: -float(jnp.mean(jnp.abs(y_true - y_pred))),
-        "r2": lambda y_true, y_pred: float(
-            1
-            - jnp.sum((y_true - y_pred) ** 2)
-            / jnp.maximum(jnp.sum((y_true - jnp.mean(y_true)) ** 2), 1e-10)
-        ),
+        "neg_mse": lambda y_true, y_pred, w: -compute_mse(y_true, y_pred, w),
+        "neg_mae": lambda y_true, y_pred, w: -compute_mae(y_true, y_pred, w),
+        "r2": lambda y_true, y_pred, w: compute_r2(y_true, y_pred, w),
     }
 
     if scoring not in scoring_funcs:
@@ -360,16 +397,25 @@ def cross_validate(
 
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
+        w_train = None if weights is None else weights[train_idx]
+        w_test = None if weights is None else weights[test_idx]
+        for split, w_split in (("train", w_train), ("test", w_test)):
+            if w_split is not None and float(jnp.sum(w_split)) <= 0:
+                raise ValueError(
+                    f"Fold {i} has zero total sample_weight in its {split} split; "
+                    "cross-validation cannot score it. Drop the zero-weight rows "
+                    "or use fewer folds."
+                )
 
         # Clone and fit model
         model_clone = _clone_estimator(model)
-        model_clone.fit(X_train, y_train)
+        model_clone.fit(X_train, y_train, sample_weight=w_train)
 
         y_pred_test = model_clone.predict(X_test)
         y_pred_train = model_clone.predict(X_train)
 
-        test_scores.append(score_func(y_test, y_pred_test))
-        train_scores.append(score_func(y_train, y_pred_train))
+        test_scores.append(score_func(y_test, y_pred_test, w_test))
+        train_scores.append(score_func(y_train, y_pred_train, w_train))
 
     test_scores = np.array(test_scores)
     train_scores = np.array(train_scores)
@@ -389,6 +435,7 @@ def compute_cv_score(
     y: jnp.ndarray,
     cv: int = 5,
     random_state: int | None = None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute cross-validation MSE for a design matrix.
@@ -405,13 +452,22 @@ def compute_cv_score(
         Number of folds.
     random_state : int, optional
         Random seed.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Each fold is fitted by weighted least squares on
+        its training weights and scored by weighted MSE on its test weights.
 
     Returns
     -------
     cv_mse : float
         Mean cross-validation MSE.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n_samples = Phi.shape[0]
+    weights = validate_sample_weight(sample_weight, n_samples)
     rng = np.random.RandomState(random_state)
     indices = rng.permutation(n_samples)
 
@@ -427,12 +483,15 @@ def compute_cv_score(
 
         Phi_train, Phi_test = Phi[train_idx], Phi[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
+        w_train = None if weights is None else weights[train_idx]
+        w_test = None if weights is None else weights[test_idx]
 
-        # Solve least squares
-        coeffs, _, _, _ = jnp.linalg.lstsq(Phi_train, y_train, rcond=None)
+        # Solve (weighted) least squares
+        coeffs, _, _, _ = jnp.linalg.lstsq(
+            whiten(Phi_train, w_train), whiten(y_train, w_train), rcond=None
+        )
         y_pred = Phi_test @ coeffs
-        mse = float(jnp.mean((y_test - y_pred) ** 2))
-        mse_scores.append(mse)
+        mse_scores.append(compute_mse(y_test, y_pred, w_test))
 
     return float(np.mean(mse_scores))
 
@@ -441,6 +500,7 @@ def compute_loo_mse(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute leave-one-out MSE efficiently using Sherman-Morrison formula.
@@ -455,32 +515,41 @@ def compute_loo_mse(
         Target values.
     coefficients : jnp.ndarray
         Fitted coefficients.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  The leverages become the weighted-least-squares
+        leverages ``w_i * phi_i^T (Phi^T W Phi)^-1 phi_i`` and the LOO
+        residuals are averaged with the same weights.
 
     Returns
     -------
     loo_mse : float
         Leave-one-out mean squared error.
-    """
-    y_pred = Phi @ coefficients
-    residuals = y - y_pred
 
-    # Hat matrix diagonal: h_ii = Phi_i @ (Phi.T @ Phi)^-1 @ Phi_i.T
-    # Using pseudo-inverse for numerical stability
-    Phi_pinv = jnp.linalg.pinv(Phi)
-    H = Phi @ Phi_pinv
-    h_diag = jnp.diag(H)
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y))
+    residuals = y - Phi @ coefficients
+
+    # Hat matrix diagonal of the whitened problem:
+    #   h_ii = w_i * phi_i^T (Phi^T W Phi)^-1 phi_i
+    # which reduces to the ordinary leverage when the weights are all 1.
+    Phi_w = whiten(Phi, w)
+    h_diag = jnp.sum(Phi_w * jnp.linalg.pinv(Phi_w).T, axis=1)
 
     # LOO residual: e_i / (1 - h_ii)
     loo_residuals = residuals / (1 - h_diag + 1e-10)
-    loo_mse = jnp.mean(loo_residuals**2)
 
-    return float(loo_mse)
+    return float(weighted_mean(loo_residuals**2, w))
 
 
 def compute_press(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute PRESS (Predicted Residual Error Sum of Squares).
@@ -495,13 +564,20 @@ def compute_press(
         Target values.
     coefficients : jnp.ndarray
         Fitted coefficients.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights; see :func:`compute_loo_mse`.
 
     Returns
     -------
     press : float
         PRESS statistic.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
-    return compute_loo_mse(Phi, y, coefficients) * len(y)
+    return compute_loo_mse(Phi, y, coefficients, sample_weight) * len(y)
 
 
 # =============================================================================
@@ -509,25 +585,134 @@ def compute_press(
 # =============================================================================
 
 
-def compute_mse(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute mean squared error."""
-    return float(jnp.mean((y_true - y_pred) ** 2))
+def compute_mse(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute mean squared error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values of shape ``(n_samples,)``.
+    y_pred : jnp.ndarray
+        Predicted values of shape ``(n_samples,)``.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Weights are normalised to sum to ``n_samples``,
+        so the result is ``sum_i w_i r_i^2 / n``.
+
+    Returns
+    -------
+    float
+        (Weighted) mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` has the wrong length or contains negative or
+        non-finite values.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    return float(weighted_mean((y_true - y_pred) ** 2, w))
 
 
-def compute_rmse(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute root mean squared error."""
-    return float(jnp.sqrt(jnp.mean((y_true - y_pred) ** 2)))
+def compute_rmse(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute root mean squared error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) root mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    return float(np.sqrt(compute_mse(y_true, y_pred, sample_weight)))
 
 
-def compute_mae(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute mean absolute error."""
-    return float(jnp.mean(jnp.abs(y_true - y_pred)))
+def compute_mae(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute mean absolute error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) mean absolute error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    return float(weighted_mean(jnp.abs(y_true - y_pred), w))
 
 
-def compute_r2(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute R-squared (coefficient of determination)."""
-    ss_res = jnp.sum((y_true - y_pred) ** 2)
-    ss_tot = jnp.sum((y_true - jnp.mean(y_true)) ** 2)
+def compute_r2(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute R-squared (coefficient of determination), optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Both the residual and the total sum of squares
+        are weighted, and the total is taken about the *weighted* mean of
+        ``y_true``.
+
+    Returns
+    -------
+    float
+        (Weighted) R-squared.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    weights = jnp.ones_like(y_true) if w is None else w
+    y_bar = weighted_mean(y_true, w)
+    ss_res = jnp.sum(weights * (y_true - y_pred) ** 2)
+    ss_tot = jnp.sum(weights * (y_true - y_bar) ** 2)
     return float(1 - ss_res / (ss_tot + 1e-10))
 
 
@@ -535,6 +720,7 @@ def compute_adjusted_r2(
     y_true: jnp.ndarray,
     y_pred: jnp.ndarray,
     n_params: int,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute adjusted R-squared.
@@ -549,15 +735,23 @@ def compute_adjusted_r2(
         Predicted values.
     n_params : int
         Number of model parameters.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  ``n`` remains the nominal sample count; only R²
+        itself is weighted.
 
     Returns
     -------
     adj_r2 : float
         Adjusted R-squared.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n = len(y_true)
     k = n_params
-    r2 = compute_r2(y_true, y_pred)
+    r2 = compute_r2(y_true, y_pred, sample_weight)
 
     if n - k - 1 <= 0:
         return float("-inf")
@@ -566,26 +760,55 @@ def compute_adjusted_r2(
 
 
 def compute_max_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute maximum absolute error."""
+    """Compute maximum absolute error (unweighted -- a max is not an average)."""
     return float(jnp.max(jnp.abs(y_true - y_pred)))
 
 
-def compute_mape(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
+def compute_mape(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
     """
-    Compute mean absolute percentage error.
+    Compute mean absolute percentage error, optionally weighted.
 
     MAPE = mean(|y_true - y_pred| / |y_true|) * 100
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.  Entries with ``|y_true| <= 1e-10`` are skipped.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) MAPE in percent, or ``inf`` if every target is ~0.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
+    w = validate_sample_weight(sample_weight, len(y_true))
     mask = jnp.abs(y_true) > 1e-10
-    if not jnp.any(mask):
+    if not bool(jnp.any(mask)):
         return float("inf")
-    return float(jnp.mean(jnp.abs((y_true - y_pred) / y_true)[mask]) * 100)
+    pct = jnp.abs((y_true - y_pred) / y_true)[mask]
+    w_masked = None if w is None else w[mask]
+    if w_masked is not None and float(jnp.sum(w_masked)) <= 0:
+        return float("inf")
+    return float(weighted_mean(pct, w_masked) * 100)
 
 
 def compute_all_metrics(
     y_true: jnp.ndarray,
     y_pred: jnp.ndarray,
     n_params: int,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, float]:
     """
     Compute all standard regression metrics.
@@ -598,23 +821,43 @@ def compute_all_metrics(
         Predicted values.
     n_params : int
         Number of model parameters.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Every averaged metric is weighted;
+        ``"max_error"`` is taken over the samples with non-zero weight, since
+        a maximum has no weighted analogue.
 
     Returns
     -------
     metrics : dict
         Dictionary containing all metrics.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n = len(y_true)
-    mse = compute_mse(y_true, y_pred)
+    w = validate_sample_weight(sample_weight, n)
+    mse = compute_mse(y_true, y_pred, w)
+
+    if w is None:
+        max_error = compute_max_error(y_true, y_pred)
+    else:
+        nonzero = w > 0
+        max_error = (
+            compute_max_error(y_true[nonzero], y_pred[nonzero])
+            if bool(jnp.any(nonzero))
+            else float("nan")
+        )
 
     return {
         "mse": mse,
-        "rmse": compute_rmse(y_true, y_pred),
-        "mae": compute_mae(y_true, y_pred),
-        "r2": compute_r2(y_true, y_pred),
-        "adjusted_r2": compute_adjusted_r2(y_true, y_pred, n_params),
-        "max_error": compute_max_error(y_true, y_pred),
-        "mape": compute_mape(y_true, y_pred),
+        "rmse": compute_rmse(y_true, y_pred, w),
+        "mae": compute_mae(y_true, y_pred, w),
+        "r2": compute_r2(y_true, y_pred, w),
+        "adjusted_r2": compute_adjusted_r2(y_true, y_pred, n_params, w),
+        "max_error": max_error,
+        "mape": compute_mape(y_true, y_pred, w),
         "aic": compute_aic(n, n_params, mse),
         "aicc": compute_aicc(n, n_params, mse),
         "bic": compute_bic(n, n_params, mse),
