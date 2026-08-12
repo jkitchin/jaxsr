@@ -15,6 +15,7 @@ parts:
       - file: guides/claude_code_skills
       - file: guides/performance
       - file: guides/sklearn-integration
+      - file: guides/surface-derivatives
 
   - caption: Examples
     chapters:

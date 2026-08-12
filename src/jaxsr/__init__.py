@@ -39,6 +39,9 @@ from .basis import BasisFunction, BasisLibrary
 # Classification
 from .classifier import SymbolicClassifier, fit_symbolic_classification
 from .constraints import Constraint, Constraints, ConstraintType, build_constraint_scorer
+
+# Multivariate derivative estimation
+from .derivatives import SurfaceDerivatives, estimate_partial_derivatives
 from .dynamics import DynamicsResult, discover_dynamics, estimate_derivatives
 
 # Metrics
@@ -202,6 +205,9 @@ __all__ = [
     "DynamicsResult",
     "discover_dynamics",
     "estimate_derivatives",
+    # Multivariate derivative estimation
+    "SurfaceDerivatives",
+    "estimate_partial_derivatives",
     # Metrics
     "ModelComparison",
     "compare_models",

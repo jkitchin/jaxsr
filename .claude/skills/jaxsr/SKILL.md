@@ -401,6 +401,13 @@ See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.
 
+### "My data is a surface and I need partial derivatives"
+
+See `guides/surface-derivatives.md` for `SurfaceDerivatives`: several partials of one
+smoothed N-D surface (`y_x` and `y_T`, or `u_t = F(u, u_x, u_xx, ...)`), with the
+smoothing level chosen by GCV/marginal likelihood and reported. For a single time axis
+(`dX/dt`), use `estimate_derivatives` / `discover_dynamics` instead.
+
 ### "One expression isn't enough / the signal is a sum of many effects"
 
 See `guides/additive.md` for boosting-style additive symbolic regression
