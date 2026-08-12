@@ -10,6 +10,24 @@ for details.
 
 ## [Unreleased]
 
+### Added
+- **Multivariate derivative estimation** (`jaxsr.derivatives`) — analytic partial
+  derivatives of a smoothed N-D surface, for problems whose regression needs more
+  than one partial (PDE-style discovery `u_t = F(u, u_x, u_xx, ...)`, or transform
+  laws such as `y(x, T) = f(x + s(T))` where `y_T = s'(T)·y_x`):
+  - `SurfaceDerivatives` — fits a smoother to scattered or gridded data and returns
+    requested mixed partials with standard errors. Three smoothers: `"tensor_spline"`
+    (penalized tensor-product B-splines, the default), `"local_poly"` (local
+    polynomial regression), and `"gp"` (Gaussian process with derivative posterior).
+  - `estimate_partial_derivatives` — one-call convenience wrapper.
+  - Smoothing is selected only by criteria blind to the downstream symbolic score
+    (GCV, log marginal likelihood, or a supplied noise level), and the level actually
+    used is reported via `smoothing_`, `smoothing_source_`, `effective_dof_`,
+    `residual_std_`, and `summary()`. `smoothing_scale` re-runs the estimate at a
+    deliberately different smoothing level to expose smoothing-induced bias.
+- Documentation for multivariate derivative estimation: user guide
+  (`docs/guides/surface-derivatives.md`), API reference page, and skill guide.
+
 ## [0.3.0] - 2026-07-02
 
 ### Added
