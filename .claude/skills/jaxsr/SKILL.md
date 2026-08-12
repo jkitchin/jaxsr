@@ -43,12 +43,15 @@ Based on the answers, recommend a basis library configuration:
 | Large feature space (screening) | `add_constant + add_linear + add_interactions(2)` then use `lasso_path` strategy |
 | Response surface (DOE) | `add_constant + add_linear + add_polynomials(2) + add_interactions(2)` — or use `ResponseSurface` directly |
 | Categorical factors present | Add `add_categorical_indicators() + add_categorical_interactions()` to any of the above |
+| Unknown coefficient *function* multiplying a data column (superposition, implicit dynamics) | `add_block(theta, multiply_by="<column>", block_name=...)` — see `guides/basis-library.md` |
 
 **Key guidance:**
 - Start simple. You can always add complexity.
 - `add_transcendental(safe=True)` guards against log(0), 1/0, sqrt(<0). Always use `safe=True`.
 - `add_ratios(safe=True)` adds x_i/x_j terms. Doubles the library size — only use when ratios are physically meaningful.
 - `add_parametric()` enables nonlinear parameters (e.g., `exp(-a*x)`). Powerful but slower to fit.
+- `add_block()` multiplies a whole basis by a data column, so a selected coefficient is a term of an
+  unknown coefficient function. Drop a block with `without_blocks()` to test whether it earned its place.
 - If n_features > 5, avoid `add_polynomials(degree>2)` — the library becomes enormous.
 
 ### Step 3: Recommend Selection Strategy
