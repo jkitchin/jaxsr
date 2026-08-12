@@ -414,6 +414,16 @@ See `guides/sample-weights.md` for `sample_weight`: weighted least squares appli
 consistently through selection, information criteria, constraints and uncertainty,
 plus the effective-sample-size policy and why row duplication is not a substitute.
 
+### "My curves should collapse onto a master curve"
+
+See `guides/superposition.md` for `SuperpositionRegressor`: time–temperature (and
+time–concentration, finite-size scaling, Larson–Miller) superposition, learning the
+shift law `s(c)` symbolically instead of tabulating per-curve shift factors. Two rules
+when reporting: the **transform** is the result, not `shift_expression_` (structurally
+different laws agree on the transform to ~0.01 decades), and the verdict comes from
+`validity_report_` — held-out collapse — never from a visual collapse or from expression
+stability, which is *anti*-correlated with validity.
+
 ### "One expression isn't enough / the signal is a sum of many effects"
 
 See `guides/additive.md` for boosting-style additive symbolic regression

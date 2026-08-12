@@ -11,6 +11,45 @@ for details.
 ## [Unreleased]
 
 ### Added
+- **Superposition / master curves** (`jaxsr.superposition`) — discovers a *symbolic*
+  transform that collapses a family of curves indexed by a condition
+  (time–temperature superposition and its many relatives), rather than returning a
+  table of per-curve shift factors
+  ([#14](https://github.com/jkitchin/jaxsr/issues/14)):
+  - `SuperpositionRegressor` — takes a tidy `(condition, abscissa, response[, channel])`
+    table and learns `s(c)` (and optionally `v(c)`) as a sparse symbolic law. It uses
+    the differential strategy: fit one smoothed surface per channel, use
+    `y_q = σ·s'(q)·y_x + v'(q)` to eliminate the unknown master curve, sparse-regress
+    `s'` and `v'` against structured `Θ(q) ⊙ y_x | Θ(q)` blocks, then integrate back
+    analytically with the anchor `s(c_ref) = 0`.
+  - Candidate families `"arrhenius"`, `"wlf"` (with the denominator constant fitted by
+    profile likelihood) and `"polynomial"`, each carrying an exact antiderivative so
+    the recovered law is symbolic rather than a quadrature table.
+  - `validity_report_` — the module's verdict, graded `supported` /
+    `weakly_supported` / `not_supported` from **leave-one-condition-out collapse**
+    against a measured noise floor. A withheld condition takes no part in the
+    smoothing or the discovery and is shifted by prediction alone. This is deliberately
+    the headline rather than expression stability, which is *anti*-correlated with
+    validity: a material with no valid shift factor produces a confident, stable,
+    reproducible shift law and a fine in-sample collapse.
+  - `shift_factors()`, `transform()`, `predict()`, `master_curve_` (with uncertainty
+    band), and `effective_activation_energy()` — a structure-independent physical
+    summary, since structurally different laws routinely agree on the transform to
+    ~0.01 decades while disagreeing on the equation.
+  - `stability_` — a pipeline-level ensemble (residual or whole-curve resampling) that
+    re-runs the smoother per replicate, reported via `summarize_selection_replicates`.
+  - `collapse_rmse` — public scorer for a collapse produced by hand or another tool.
+  - Rows are weighted by the precision of the estimated target
+    (`weighting="derivative_se"`, built on the `sample_weight` support below), since
+    derivative standard errors blow up at the edges of the condition range — exactly
+    where a shift law is most tempted to bend. On a synthetic Arrhenius benchmark at
+    3% noise this halves the shift error (0.023 → 0.013 decades) and tightens `E_eff`
+    from 52.9 ± 1.8 to 54.1 ± 1.2 kJ/mol against a true 55.9.
+  - Conventions are checked rather than assumed: the domain sign convention, kelvin
+    (non-positive rejected, Celsius-looking warned), and a dimensionless condition
+    coordinate so design columns stay order-one.
+- Documentation for superposition: user guide (`docs/guides/superposition.md`) and API
+  reference page.
 - **Multivariate derivative estimation** (`jaxsr.derivatives`) — analytic partial
   derivatives of a smoothed N-D surface, for problems whose regression needs more
   than one partial (PDE-style discovery `u_t = F(u, u_x, u_xx, ...)`, or transform
