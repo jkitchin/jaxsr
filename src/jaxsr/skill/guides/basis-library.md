@@ -172,6 +172,69 @@ library.add_parametric(
 - Parametric fits are slower (requires nonlinear optimization per candidate).
 - Only add parametric terms when you have physical motivation.
 
+### `add_block(library, multiply_by=None, block_name=None, complexity_offset=0, feature_map=None)`
+
+Adds every function of another library, optionally multiplied by a column of the
+data. This builds design-matrix blocks of the form `Θ(a) ⊙ b`, where `Θ` is a
+basis over one variable and `b` is another *column* — typically a measured or
+estimated derivative. A coefficient selected in such a block is literally a term
+of the unknown coefficient *function* multiplying `b`.
+
+```python
+from jaxsr import BasisLibrary
+
+# Basis over the coefficient function's argument
+theta = (BasisLibrary(n_features=1, feature_names=["c"])
+         .add_constant()
+         .add_linear()
+         .add_polynomials(max_degree=2))
+
+# y_c = s'(c)*y_x + v'(c): one block per unknown function
+library = (BasisLibrary(n_features=2, feature_names=["c", "y_x"])
+           .add_block(theta, multiply_by="y_x", block_name="horizontal")
+           .add_block(theta, block_name="vertical"))
+
+library.names
+# ['y_x', 'c*y_x', 'c^2*y_x', '1', 'c', 'c^2']
+```
+
+**What it does for you:**
+
+- **Names** are generated as `<basis>*<column>`, consistently; the constant term
+  collapses to just the column name (`1*y_x` → `y_x`), and a source name that is
+  a bare sum is parenthesized (`1+c` → `(1+c)*y_x`).
+- **Complexity** is inherited from the source, plus 1 for the multiplication,
+  plus `complexity_offset`.
+- **Feature indices** are remapped: the source is written against its own
+  columns, and `add_block` re-expresses it on this library's feature space,
+  matching features by name (use `feature_map={"src": "target"}` when the names
+  differ).
+- **Parametric terms pass through unchanged** — bounds, `log_scale` and the name
+  template are preserved, so profile-likelihood optimization still applies inside
+  the block.
+- The source library is **copied, not shared**, so one `theta` can seed several
+  blocks.
+
+**Working with blocks:**
+
+```python
+library.blocks
+# {'horizontal': [0, 1, 2], 'vertical': [3, 4, 5]}
+
+library.filter_by_block(include="horizontal")   # -> [0, 1, 2]
+library.filter_by_block(exclude=["vertical"])   # -> [0, 1, 2]
+
+# First diagnostic for a structured library: did the block earn its place?
+reduced = library.without_blocks("vertical")    # new library, original untouched
+```
+
+Comparing the fit of `library` against `library.without_blocks("vertical")` is
+the fastest way to check a horizontal/vertical identifiability trade-off, which
+is a real hazard whenever two blocks can explain the same variation.
+
+Block functions are not deserializable — like `add_custom`, the library config
+saves but the block must be re-added after `load()`.
+
 ### `add_categorical_indicators(features=None)`
 
 For categorical features, adds binary indicator (dummy) variables.
