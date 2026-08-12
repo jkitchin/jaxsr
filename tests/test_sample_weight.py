@@ -306,7 +306,15 @@ class TestMetricFunctions:
 
 
 class TestFittingPrimitives:
-    """The low-level solvers."""
+    """The low-level solvers.
+
+    These compare a JAX solve against a float64 NumPy reference.  Under JAX's
+    default float32 that is a cross-precision comparison, so the tolerances
+    carry an ``atol``: a coefficient that lands near zero has a large relative
+    error for a tiny absolute one, and judging it on ``rtol`` alone makes the
+    test fail on rounding rather than on the identity being checked.  The
+    NumPy backend runs the same assertions in float64, where they are tight.
+    """
 
     def test_fit_ols_matches_normal_equations(self):
         rng = np.random.default_rng(5)
@@ -318,11 +326,11 @@ class TestFittingPrimitives:
 
         W = np.diag(w)
         expected = np.linalg.solve(Phi.T @ W @ Phi, Phi.T @ W @ y)
-        np.testing.assert_allclose(np.asarray(coeffs), expected, rtol=1e-5)
+        np.testing.assert_allclose(np.asarray(coeffs), expected, rtol=1e-4, atol=1e-6)
 
         w_norm = w * (len(w) / w.sum())
         resid = y - Phi @ np.asarray(coeffs)
-        assert mse == pytest.approx(float(np.sum(w_norm * resid**2) / len(y)), rel=1e-5)
+        assert mse == pytest.approx(float(np.sum(w_norm * resid**2) / len(y)), rel=1e-4)
 
     def test_fit_ridge_is_weighted(self):
         rng = np.random.default_rng(6)
@@ -335,7 +343,7 @@ class TestFittingPrimitives:
 
         W = np.diag(w_norm)
         expected = np.linalg.solve(Phi.T @ W @ Phi + 0.5 * np.eye(3), Phi.T @ W @ y)
-        np.testing.assert_allclose(np.asarray(coeffs), expected, rtol=1e-5)
+        np.testing.assert_allclose(np.asarray(coeffs), expected, rtol=1e-4, atol=1e-6)
 
     def test_unweighted_calls_are_unchanged(self):
         Phi = jnp.column_stack([jnp.ones(4), jnp.array([1.0, 2.0, 3.0, 4.0])])
