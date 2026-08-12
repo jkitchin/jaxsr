@@ -39,6 +39,7 @@ from .uncertainty import (
 from .uncertainty import (
     prediction_interval as _prediction_interval,
 )
+from .utils import effective_sample_size, validate_sample_weight, whiten
 
 # =============================================================================
 # Helpers
@@ -218,6 +219,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         self._selection_path: SelectionPath | None = None
         self._X_train: jnp.ndarray | None = None
         self._y_train: jnp.ndarray | None = None
+        self._sample_weight: jnp.ndarray | None = None
         self._is_fitted = False
 
     @property
@@ -252,7 +254,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
     @property
     def metrics_(self) -> dict[str, float]:
-        """Evaluation metrics."""
+        """Evaluation metrics (weighted when the model was fitted with weights)."""
         self._check_is_fitted()
         return {
             "mse": self._result.mse,
@@ -261,6 +263,53 @@ class SymbolicRegressor(_SklearnCompatMixin):
             "aicc": self._result.aicc,
             "r2": self._compute_r2(),
         }
+
+    @property
+    def sample_weight_(self) -> jnp.ndarray | None:
+        """
+        Normalised training weights, or ``None`` if the fit was unweighted.
+
+        Returns
+        -------
+        jnp.ndarray or None
+            Weights of shape ``(n_samples,)`` scaled to sum to ``n_samples``.
+            These are the weights actually used, not the array passed to
+            :meth:`fit` -- only the ratios between weights carry meaning.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+        """
+        self._check_is_fitted()
+        return self._sample_weight
+
+    @property
+    def effective_sample_size_(self) -> float:
+        """
+        Kish effective sample size of the training weights.
+
+        Returns
+        -------
+        float
+            ``(sum w)^2 / sum w^2``, equal to ``n`` for an unweighted fit and
+            smaller when the weights are uneven.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+
+        Notes
+        -----
+        This is a diagnostic, not an input: AIC/BIC/AICc use the nominal ``n``
+        (see :func:`jaxsr.metrics.compute_information_criterion`).  When this
+        number is far below ``n``, the criteria are comparing models on much
+        less information than ``n`` suggests, and the usual asymptotic
+        intuitions about BIC's penalty are correspondingly weaker.
+        """
+        self._check_is_fitted()
+        return effective_sample_size(self._sample_weight, len(self._y_train))
 
     @property
     def pareto_front_(self) -> list[SelectionResult]:
@@ -318,11 +367,11 @@ class SymbolicRegressor(_SklearnCompatMixin):
             raise RuntimeError("Model not fitted. Call fit() first.")
 
     def _compute_r2(self) -> float:
-        """Compute R² score on training data."""
+        """Compute (weighted) R² score on training data."""
+        from .metrics import compute_r2
+
         y_pred = self.predict(self._X_train)
-        ss_res = jnp.sum((self._y_train - y_pred) ** 2)
-        ss_tot = jnp.sum((self._y_train - jnp.mean(self._y_train)) ** 2)
-        return float(1 - ss_res / (ss_tot + 1e-10))
+        return compute_r2(self._y_train, y_pred, self._sample_weight)
 
     def fit(
         self,
@@ -340,12 +389,49 @@ class SymbolicRegressor(_SklearnCompatMixin):
         y : array-like of shape (n_samples,)
             Target values.
         sample_weight : array-like of shape (n_samples,), optional
-            Sample weights (not yet implemented).
+            Per-sample weights.  Observation ``i`` is treated as having
+            variance ``sigma^2 / w_i``, so the fit minimises
+            ``sum_i w_i (y_i - f(x_i))^2``.  Typical sources are measurement
+            variances (``w = 1 / var``), replicate counts, or a smooth taper
+            that de-emphasises rows carrying little information.
 
         Returns
         -------
         self : SymbolicRegressor
             Fitted model.
+
+        Raises
+        ------
+        ValueError
+            If ``X`` and ``y`` disagree on the number of samples, if
+            ``basis_library`` is not set, if ``X`` has the wrong number of
+            features, or if ``sample_weight`` has the wrong length or
+            contains negative or non-finite values.
+
+        Notes
+        -----
+        Weights are used consistently, not just for the final coefficients:
+        term selection, the reported MSE, AIC/BIC/AICc, constraint refitting,
+        R², the classical intervals and the bootstrap all run on the weighted
+        problem.
+
+        Only the *ratios* between weights matter.  They are normalised to
+        average 1 internally, so ``w``, ``2 * w`` and ``w / 1000`` all give
+        the same model and the same information criteria, and the effective
+        sample size in AIC/BIC stays the nominal ``n``.  Weighting therefore
+        never manufactures observations -- which is also why duplicating rows
+        is *not* an equivalent trick: it inflates ``n`` and shifts every
+        criterion.  See :attr:`effective_sample_size_` for a diagnostic of how
+        much information the weights actually leave.
+
+        A weight of exactly 0 excludes a row from the fit while keeping it in
+        ``n``.  If you mean to drop the row entirely, drop it from ``X`` and
+        ``y`` instead.
+
+        Examples
+        --------
+        >>> variances = np.array([0.1, 0.1, 4.0, 4.0])  # doctest: +SKIP
+        >>> model.fit(X, y, sample_weight=1.0 / variances)  # doctest: +SKIP
         """
         # Convert to JAX arrays
         X = jnp.atleast_2d(jnp.asarray(X))
@@ -365,8 +451,11 @@ class SymbolicRegressor(_SklearnCompatMixin):
                 f"{self.basis_library.n_features}"
             )
 
+        weights = validate_sample_weight(sample_weight, len(y))
+
         self._X_train = X
         self._y_train = y
+        self._sample_weight = weights
 
         # Evaluate basis functions
         Phi = self.basis_library.evaluate(X)
@@ -419,6 +508,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             max_terms=self.max_terms,
             information_criterion=self.information_criterion,
             regularization=self.regularization,
+            sample_weight=weights,
             **extra_kw,
         )
 
@@ -503,13 +593,19 @@ class SymbolicRegressor(_SklearnCompatMixin):
             Design matrix (invalid columns already zeroed).
         y : jnp.ndarray
             Target values.
+
+        Notes
+        -----
+        Contributions are measured on the *weighted* design matrix, so a term
+        that only matters where the data was down-weighted counts as small --
+        the same convention the fit itself uses.
         """
         indices = [int(i) for i in np.asarray(self._result.selected_indices)]
         if len(indices) <= 1:
             return
 
         coeffs = np.asarray(self._result.coefficients)
-        Phi_sub = np.asarray(Phi[:, jnp.asarray(indices)])
+        Phi_sub = np.asarray(whiten(Phi[:, jnp.asarray(indices)], self._sample_weight))
         contribution = np.abs(coeffs) * np.linalg.norm(Phi_sub, axis=0)
         max_contribution = float(contribution.max())
         if max_contribution <= 0:
@@ -542,10 +638,12 @@ class SymbolicRegressor(_SklearnCompatMixin):
         -------
         SelectionResult
             Result for the retained terms with recomputed MSE and information
-            criteria.
+            criteria.  The refit honours ``sample_weight`` from :meth:`fit`,
+            and the MSE it reports is the weighted one, so the recomputed
+            criteria stay comparable with the rest of the selection path.
         """
         keep_arr = jnp.asarray(keep)
-        coeffs, mse = fit_ols(Phi[:, keep_arr], y)
+        coeffs, mse = fit_ols(Phi[:, keep_arr], y, sample_weight=self._sample_weight)
         names = [self.basis_library.names[i] for i in keep]
         complexity = int(sum(self.basis_library.complexities[i] for i in keep))
         n, k = len(y), len(coeffs)
@@ -591,6 +689,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             basis_library=self.basis_library,
             selected_indices=indices,
             enforcement=self.constraint_enforcement,
+            sample_weight=self._sample_weight,
         )
 
         # Update result with recalculated information criteria
@@ -659,7 +758,12 @@ class SymbolicRegressor(_SklearnCompatMixin):
         Phi = self.basis_library.evaluate_subset(X, self._result.selected_indices)
         return Phi @ self._result.coefficients
 
-    def score(self, X: jnp.ndarray, y: jnp.ndarray) -> float:
+    def score(
+        self,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        sample_weight: jnp.ndarray | None = None,
+    ) -> float:
         """
         Compute R² score.
 
@@ -669,18 +773,28 @@ class SymbolicRegressor(_SklearnCompatMixin):
             Test samples.
         y : array-like
             True values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Weights for *these* samples.  Not inherited from :meth:`fit` --
+            ``X`` and ``y`` here are usually different data, so their weights
+            have to come with them.
 
         Returns
         -------
         score : float
-            R² score.
+            (Weighted) R² score.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+        ValueError
+            If ``sample_weight`` is invalid.
         """
+        from .metrics import compute_r2
+
         self._check_is_fitted()
         y = jnp.asarray(y).ravel()
-        y_pred = self.predict(X)
-        ss_res = jnp.sum((y - y_pred) ** 2)
-        ss_tot = jnp.sum((y - jnp.mean(y)) ** 2)
-        return float(1 - ss_res / (ss_tot + 1e-10))
+        return compute_r2(y, self.predict(X), sample_weight)
 
     # =================================================================
     # Uncertainty Quantification
@@ -714,29 +828,36 @@ class SymbolicRegressor(_SklearnCompatMixin):
         Returns
         -------
         sigma : float
-            Noise standard deviation estimate.
+            Noise standard deviation estimate.  Under sample weights this is
+            the noise level of a *unit-weight* observation: row ``i`` is
+            modelled with variance ``sigma^2 / w_i``.
         """
         self._check_is_fitted()
         self._warn_if_constrained_or_regularized()
         Phi = self._get_Phi_train()
-        sigma_sq = compute_unbiased_variance(Phi, self._y_train, self._result.coefficients)
+        sigma_sq = compute_unbiased_variance(
+            Phi, self._y_train, self._result.coefficients, self._sample_weight
+        )
         return float(jnp.sqrt(sigma_sq))
 
     @property
     def covariance_matrix_(self) -> jnp.ndarray:
         """
-        Coefficient covariance matrix: s^2 * (Phi^T Phi)^{-1}.
+        Coefficient covariance matrix: s^2 * (Phi^T W Phi)^{-1}.
 
         Returns
         -------
         cov : jnp.ndarray
-            Covariance matrix of shape (p, p).
+            Covariance matrix of shape (p, p).  ``W`` is the diagonal matrix
+            of training weights (the identity for an unweighted fit).
         """
         self._check_is_fitted()
         self._warn_if_constrained_or_regularized()
         Phi = self._get_Phi_train()
-        sigma_sq = compute_unbiased_variance(Phi, self._y_train, self._result.coefficients)
-        return compute_coeff_covariance(Phi, sigma_sq)
+        sigma_sq = compute_unbiased_variance(
+            Phi, self._y_train, self._result.coefficients, self._sample_weight
+        )
+        return compute_coeff_covariance(Phi, sigma_sq, self._sample_weight)
 
     def coefficient_intervals(self, alpha: float = 0.05) -> dict[str, tuple]:
         """
@@ -751,6 +872,8 @@ class SymbolicRegressor(_SklearnCompatMixin):
         -------
         intervals : dict
             {name: (estimate, lower, upper, se)} for each coefficient.
+            Standard errors come from the weighted covariance matrix when the
+            model was fitted with ``sample_weight``.
         """
         self._check_is_fitted()
         self._warn_if_constrained_or_regularized()
@@ -761,6 +884,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             self._result.coefficients,
             self._result.selected_names,
             alpha,
+            self._sample_weight,
         )
 
     def predict_interval(
@@ -784,6 +908,13 @@ class SymbolicRegressor(_SklearnCompatMixin):
             Lower prediction interval bound.
         upper : jnp.ndarray
             Upper prediction interval bound.
+
+        Notes
+        -----
+        For a weighted fit the interval is for a new observation of *unit*
+        weight, i.e. one measured as precisely as an average training point.
+        Rescale by ``1 / sqrt(w_new)`` if the new observation has a known
+        precision of its own.
         """
         self._check_is_fitted()
         self._warn_if_constrained_or_regularized()
@@ -796,6 +927,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             self._result.coefficients,
             Phi_new,
             alpha,
+            self._sample_weight,
         )
         return result["y_pred"], result["pred_lower"], result["pred_upper"]
 
@@ -832,6 +964,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
             self._result.coefficients,
             Phi_new,
             alpha,
+            self._sample_weight,
         )
         return result["y_pred"], result["conf_lower"], result["conf_upper"]
 
@@ -933,6 +1066,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
         X_new: jnp.ndarray,
         y_new: jnp.ndarray,
         refit: bool = True,
+        sample_weight_new: jnp.ndarray | None = None,
     ) -> SymbolicRegressor:
         """
         Update model with new data points.
@@ -945,11 +1079,24 @@ class SymbolicRegressor(_SklearnCompatMixin):
             New target values.
         refit : bool
             If True, rerun full selection. If False, only refit coefficients.
+        sample_weight_new : array-like of shape (n_new,), optional
+            Weights for the new samples, on the same scale as the weights
+            passed to :meth:`fit`.  Defaults to 1 per new sample.  Omitting it
+            for a weighted model therefore adds the new points at unit weight,
+            which is what "as precise as an average existing point" means.
 
         Returns
         -------
         self : SymbolicRegressor
             Updated model.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted.
+        ValueError
+            If ``sample_weight_new`` has the wrong length or contains negative
+            or non-finite values.
         """
         self._check_is_fitted()
 
@@ -960,14 +1107,33 @@ class SymbolicRegressor(_SklearnCompatMixin):
         X_combined = jnp.vstack([self._X_train, X_new])
         y_combined = jnp.concatenate([self._y_train, y_new])
 
+        # Combine weights.  An unweighted model with unweighted new points
+        # stays unweighted; anything else needs an explicit weight vector.
+        # The new weights are validated but not rescaled: they are on the same
+        # scale as the stored (already normalised) ones, and normalising the
+        # fragment alone would change what it means relative to them.
+        w_new = validate_sample_weight(
+            sample_weight_new, len(y_new), "sample_weight_new", normalize=False
+        )
+        if self._sample_weight is None and w_new is None:
+            w_combined = None
+        else:
+            w_old = (
+                self._sample_weight
+                if self._sample_weight is not None
+                else jnp.ones(len(self._y_train))
+            )
+            w_new = w_new if w_new is not None else jnp.ones(len(y_new))
+            w_combined = jnp.concatenate([w_old, w_new])
+
         if refit:
             # Full refit
-            return self.fit(X_combined, y_combined)
+            return self.fit(X_combined, y_combined, sample_weight=w_combined)
         else:
             # Only refit coefficients with existing selection
             Phi = self.basis_library.evaluate_subset(X_combined, self._result.selected_indices)
-            coeffs, mse = (
-                fit_constrained_ols(
+            if self.constraints:
+                coeffs, mse = fit_constrained_ols(
                     Phi=Phi,
                     y=y_combined,
                     constraints=self.constraints or Constraints(),
@@ -977,18 +1143,10 @@ class SymbolicRegressor(_SklearnCompatMixin):
                     basis_library=self.basis_library,
                     selected_indices=self._result.selected_indices,
                     enforcement=self.constraint_enforcement,
+                    sample_weight=w_combined,
                 )
-                if self.constraints
-                else (
-                    jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0],
-                    float(
-                        jnp.mean(
-                            (y_combined - Phi @ jnp.linalg.lstsq(Phi, y_combined, rcond=None)[0])
-                            ** 2
-                        )
-                    ),
-                )
-            )
+            else:
+                coeffs, mse = fit_ols(Phi, y_combined, sample_weight=w_combined)
 
             # Recalculate IC values from the new MSE and sample count
             n_new = len(y_combined)
@@ -1009,6 +1167,7 @@ class SymbolicRegressor(_SklearnCompatMixin):
 
             self._X_train = X_combined
             self._y_train = y_combined
+            self._sample_weight = validate_sample_weight(w_combined, n_new)
 
             return self
 
@@ -1575,6 +1734,7 @@ class MultiOutputSymbolicRegressor(_SklearnCompatMixin):
         self,
         X: jnp.ndarray,
         y: jnp.ndarray,
+        sample_weight: jnp.ndarray | None = None,
     ) -> MultiOutputSymbolicRegressor:
         """
         Fit one symbolic regressor per output column.
@@ -1586,6 +1746,10 @@ class MultiOutputSymbolicRegressor(_SklearnCompatMixin):
         y : array-like of shape (n_samples, n_outputs)
             Target matrix.  Must be 2-D; for single-output problems use
             ``SymbolicRegressor`` directly.
+        sample_weight : array-like of shape (n_samples,), optional
+            Per-sample weights, shared by every output.  Weights that differ
+            per output are not supported here -- fit separate
+            :class:`SymbolicRegressor` instances for that.
 
         Returns
         -------
@@ -1595,8 +1759,9 @@ class MultiOutputSymbolicRegressor(_SklearnCompatMixin):
         Raises
         ------
         ValueError
-            If ``y`` is not 2-D, if shapes are inconsistent, or if
-            ``target_names`` length does not match the number of columns.
+            If ``y`` is not 2-D, if shapes are inconsistent, if
+            ``target_names`` length does not match the number of columns, or
+            if ``sample_weight`` is invalid.
         """
         X = jnp.atleast_2d(jnp.asarray(X))
         y = jnp.asarray(y)
@@ -1630,10 +1795,12 @@ class MultiOutputSymbolicRegressor(_SklearnCompatMixin):
             else [f"y{i}" for i in range(n_outputs)]
         )
 
+        weights = validate_sample_weight(sample_weight, X.shape[0])
+
         self._estimators = []
         for j in range(n_outputs):
             est = _clone_estimator(self.estimator)
-            est.fit(X, y[:, j])
+            est.fit(X, y[:, j], sample_weight=weights)
             self._estimators.append(est)
 
         self._is_fitted = True
@@ -1811,6 +1978,7 @@ def fit_symbolic(
     include_ratios: bool = False,
     strategy: str = "greedy_forward",
     information_criterion: str = "bic",
+    sample_weight: jnp.ndarray | None = None,
 ) -> SymbolicRegressor:
     """
     Convenience function for quick symbolic regression.
@@ -1835,11 +2003,18 @@ def fit_symbolic(
         Selection strategy.
     information_criterion : str
         Information criterion.
+    sample_weight : array-like of shape (n_samples,), optional
+        Per-sample weights; see :meth:`SymbolicRegressor.fit`.
 
     Returns
     -------
     model : SymbolicRegressor
         Fitted model.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
 
     Examples
     --------
@@ -1867,4 +2042,4 @@ def fit_symbolic(
         information_criterion=information_criterion,
     )
 
-    return model.fit(X, y)
+    return model.fit(X, y, sample_weight=sample_weight)

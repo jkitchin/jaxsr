@@ -355,3 +355,11 @@ print(f"BMA width:      {np.mean(bma_hi - bma_lo):.4f}")
 print(f"Conformal width: {np.mean(conf_hi - conf_lo):.4f}")
 print(f"Bootstrap width: {np.mean(boot['upper'] - boot['lower']):.4f}")
 ```
+
+## Weighted Fits
+
+When the model was fitted with `sample_weight`, all of the intervals above use the
+weighted covariance `s^2 (Phi^T W Phi)^{-1}` and weighted leverages, and `sigma_` is the
+noise level of a *unit-weight* observation. The one exception is split conformal
+prediction, whose calibration set is treated as unweighted. See
+`guides/sample-weights.md`.

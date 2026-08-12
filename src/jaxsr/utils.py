@@ -352,6 +352,189 @@ def compute_residuals(
 
 
 # =============================================================================
+# Sample Weights
+# =============================================================================
+
+
+def validate_sample_weight(
+    sample_weight: Any,
+    n_samples: int,
+    name: str = "sample_weight",
+    normalize: bool = True,
+) -> jnp.ndarray | None:
+    """
+    Validate sample weights and normalise them to sum to ``n_samples``.
+
+    Weights encode the *relative* precision of each observation: an
+    observation with weight ``w`` is treated as having variance
+    ``sigma^2 / w``.  Only ratios matter, so the weights are rescaled to
+    average 1.  This is the convention that keeps the effective sample size
+    equal to ``n_samples`` and makes the fit invariant to the overall scale
+    of the weights -- ``w``, ``2 * w`` and ``w / 1000`` all give the same
+    model, the same MSE and the same information criteria.
+
+    Parameters
+    ----------
+    sample_weight : array-like or None
+        Per-sample weights of shape ``(n_samples,)``.  ``None`` is passed
+        through unchanged and means "all observations equally weighted".
+    n_samples : int
+        Expected number of samples.
+    name : str
+        Argument name to use in error messages.
+    normalize : bool
+        If True (default), rescale the weights to sum to ``n_samples`` and
+        reject an all-zero vector, which cannot define a fit.  Pass False when
+        the weights are a *fragment* that will be concatenated with others --
+        rescaling a fragment on its own would change its meaning relative to
+        the rest, and an all-zero fragment is perfectly legitimate.
+
+    Returns
+    -------
+    jnp.ndarray or None
+        Validated weights of shape ``(n_samples,)``, summing to ``n_samples``
+        when ``normalize`` is True, or ``None`` if ``sample_weight`` was
+        ``None``.
+
+    Raises
+    ------
+    ValueError
+        If the weights have the wrong length, are not 1-D after ravelling,
+        contain non-finite or negative entries, or (when ``normalize``) sum
+        to zero.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> w = validate_sample_weight(np.array([1e-3, 1e-3, 2e-3, 2e-3]), 4)
+    >>> float(w.sum())
+    4.0
+    """
+    if sample_weight is None:
+        return None
+
+    w = jnp.asarray(sample_weight, dtype=float).ravel()
+
+    if w.shape[0] != n_samples:
+        raise ValueError(f"{name} has {w.shape[0]} entries but there are {n_samples} samples.")
+
+    if not bool(jnp.all(jnp.isfinite(w))):
+        raise ValueError(f"{name} must be finite; got NaN or inf entries.")
+
+    if bool(jnp.any(w < 0)):
+        raise ValueError(f"{name} must be non-negative.")
+
+    if not normalize:
+        return w
+
+    total = float(jnp.sum(w))
+    if total <= 0:
+        raise ValueError(f"{name} must have a positive sum; got {total}.")
+
+    return w * (n_samples / total)
+
+
+def whiten(array: jnp.ndarray, sample_weight: jnp.ndarray | None) -> jnp.ndarray:
+    """
+    Scale rows of an array by ``sqrt(sample_weight)``.
+
+    Weighted least squares on ``(Phi, y)`` is ordinary least squares on the
+    whitened pair ``(whiten(Phi, w), whiten(y, w))``: both minimise
+    ``sum_i w_i (y_i - phi_i @ c)^2``.  With weights normalised by
+    :func:`validate_sample_weight`, the mean squared error of the whitened
+    residuals is exactly the weighted MSE ``sum_i w_i r_i^2 / n``, so every
+    downstream quantity -- information criteria, covariance matrices,
+    intervals -- follows from the unweighted code path unchanged.
+
+    Parameters
+    ----------
+    array : jnp.ndarray
+        1-D vector of shape ``(n_samples,)`` or 2-D matrix of shape
+        ``(n_samples, n_columns)``.
+    sample_weight : jnp.ndarray or None
+        Weights of shape ``(n_samples,)``.  ``None`` returns ``array``
+        unchanged.
+
+    Returns
+    -------
+    jnp.ndarray
+        The row-scaled array, with the same shape as ``array``.
+
+    Raises
+    ------
+    ValueError
+        If ``array`` is neither 1-D nor 2-D.
+
+    Examples
+    --------
+    >>> import jax.numpy as jnp
+    >>> [float(v) for v in whiten(jnp.array([1.0, 1.0]), jnp.array([4.0, 0.0]))]
+    [2.0, 0.0]
+    """
+    if sample_weight is None:
+        return array
+
+    sqrt_w = jnp.sqrt(sample_weight)
+    if array.ndim == 1:
+        return array * sqrt_w
+    if array.ndim == 2:
+        return array * sqrt_w[:, None]
+    raise ValueError(f"whiten expects a 1-D or 2-D array, got ndim={array.ndim}.")
+
+
+def weighted_mean(values: jnp.ndarray, sample_weight: jnp.ndarray | None) -> jnp.ndarray:
+    """
+    Weighted mean of ``values``, falling back to the plain mean.
+
+    Parameters
+    ----------
+    values : jnp.ndarray
+        Values of shape ``(n_samples,)``.
+    sample_weight : jnp.ndarray or None
+        Weights of shape ``(n_samples,)``.  ``None`` gives the plain mean.
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar weighted mean ``sum(w * v) / sum(w)``.
+    """
+    if sample_weight is None:
+        return jnp.mean(values)
+    return jnp.sum(sample_weight * values) / jnp.sum(sample_weight)
+
+
+def effective_sample_size(sample_weight: jnp.ndarray | None, n_samples: int) -> float:
+    """
+    Kish effective sample size ``(sum w)^2 / sum w^2``.
+
+    This is *reported* rather than used: JAXSR's information criteria use the
+    nominal sample size ``n`` (see :func:`validate_sample_weight`).  A value
+    much smaller than ``n`` is a warning sign that most of the data is being
+    down-weighted to irrelevance, so AIC/BIC comparisons rest on far less
+    information than ``n`` suggests.
+
+    Parameters
+    ----------
+    sample_weight : jnp.ndarray or None
+        Weights of shape ``(n_samples,)``.  ``None`` returns ``n_samples``.
+    n_samples : int
+        Number of samples.
+
+    Returns
+    -------
+    float
+        Effective sample size, between 1 and ``n_samples``.
+    """
+    if sample_weight is None:
+        return float(n_samples)
+    total = float(jnp.sum(sample_weight))
+    sum_sq = float(jnp.sum(sample_weight**2))
+    if sum_sq <= 0:
+        return 0.0
+    return total**2 / sum_sq
+
+
+# =============================================================================
 # Validation Utilities
 # =============================================================================
 

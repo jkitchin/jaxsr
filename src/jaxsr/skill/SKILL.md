@@ -408,6 +408,12 @@ smoothed N-D surface (`y_x` and `y_T`, or `u_t = F(u, u_x, u_xx, ...)`), with th
 smoothing level chosen by GCV/marginal likelihood and reported. For a single time axis
 (`dX/dt`), use `estimate_derivatives` / `discover_dynamics` instead.
 
+### "My measurements aren't equally precise"
+
+See `guides/sample-weights.md` for `sample_weight`: weighted least squares applied
+consistently through selection, information criteria, constraints and uncertainty,
+plus the effective-sample-size policy and why row duplication is not a substitute.
+
 ### "One expression isn't enough / the signal is a sum of many effects"
 
 See `guides/additive.md` for boosting-style additive symbolic regression
