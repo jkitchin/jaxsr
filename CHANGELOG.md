@@ -10,6 +10,36 @@ for details.
 
 ## [Unreleased]
 
+### Added
+- `BasisLibrary.canonical_name(index)` / `BasisLibrary.canonical_names` —
+  the name a basis function was registered with, which for a parametric
+  basis is the template (`"exp(-a*x)"`) rather than the fitted rendering
+  (`"exp(-0.4913*x)"`). This is the stable identity to key on when
+  aggregating across refits.
+- `BasisLibrary.copy()` — an independent copy of a library, so repeated
+  refits cannot rewrite the caller's basis names or rebind its parametric
+  evaluation closures.
+- `bootstrap_model_selection` now returns `"parameter_distributions"`
+  (mean/sd/q05/q95/n of each parametric basis's nonlinear parameters
+  across replicates) and `"n_successful"` (the denominator of the reported
+  frequencies).
+
+### Fixed
+- `bootstrap_model_selection` could not aggregate parametric basis
+  functions: `feature_frequencies` was keyed by the rendered name, so each
+  replicate's re-optimised parameter produced a distinct key and
+  `stability_score` was 0.0 even when every replicate selected the same
+  basis. Features are now keyed by basis identity
+  ([#16](https://github.com/jkitchin/jaxsr/issues/16)).
+- `bootstrap_model_selection` fitted every replicate on the caller's own
+  basis library, which for a parametric library left the original model
+  pinned to the last replicate's parameter values and silently changed its
+  predictions. Each replicate now fits on its own copy.
+- `bootstrap_model_selection` dropped the template model's
+  `param_optimizer`, `param_optimization_budget`, `prune_tol` and
+  constraint settings when cloning it; replicates now inherit all
+  constructor parameters.
+
 ## [0.3.0] - 2026-07-02
 
 ### Added

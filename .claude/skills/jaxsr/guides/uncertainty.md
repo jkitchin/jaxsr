@@ -160,8 +160,23 @@ for name, lo, hi in zip(coeff_result["names"], coeff_result["lower"], coeff_resu
 # Model selection stability
 from jaxsr import bootstrap_model_selection
 stability = bootstrap_model_selection(model, X, y, n_bootstrap=100)
-# Shows how often each term is selected across bootstrap samples
+print(stability["feature_frequencies"])  # {basis name: fraction of refits selecting it}
+print(stability["stability_score"])      # fraction selecting exactly the same term set
+print(stability["n_successful"])         # refits that converged (the denominator above)
 ```
+
+**Parametric basis functions:** terms are keyed by the name you registered
+(`"exp(-a*x)"`), not by the fitted rendering (`"exp(-0.4913*x)"`), so a basis whose
+nonlinear parameter is re-optimised in every replicate still aggregates into a single
+frequency. The fitted values come back separately as a distribution:
+
+```python
+stability["parameter_distributions"]
+# {"exp(-a*x)": {"a": {"mean": 0.49, "sd": 0.03, "q05": 0.44, "q95": 0.54, "n": 100}}}
+```
+
+Each replicate fits on its own copy of the basis library, so the call leaves `model`
+and its library untouched.
 
 **When to use:**
 - Assess sensitivity to individual data points

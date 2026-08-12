@@ -1297,6 +1297,107 @@ class BasisLibrary:
         return [bf.name for bf in self.basis_functions]
 
     @property
+    def canonical_names(self) -> list[str]:
+        """
+        Basis function names with parametric parameters left as symbols.
+
+        Identical to :attr:`names` except for parametric basis functions, which
+        keep the template they were registered with (``"exp(-a*x)"``) instead of
+        the fitted rendering (``"exp(-0.4913*x)"``).
+
+        Returns
+        -------
+        names : list of str
+            One name per basis function, in library order.
+        """
+        templates = {p.basis_index: p.name for p in self._parametric_info}
+        return [templates.get(i, bf.name) for i, bf in enumerate(self.basis_functions)]
+
+    def canonical_name(self, index: int) -> str:
+        """
+        Name identifying a basis function independently of any fitted values.
+
+        Fitting a parametric basis rewrites its name to embed the optimised
+        parameter value, so :attr:`names` is not a stable identity across
+        refits: ``"exp(-a*x)"`` becomes ``"exp(-0.4913*x)"``, and a different
+        value on the next fit. Anything that aggregates across refits (bootstrap
+        stability, selection frequencies) must key on this name instead.
+
+        Parameters
+        ----------
+        index : int
+            Index of the basis function in the library.
+
+        Returns
+        -------
+        name : str
+            The registered template name for a parametric basis function,
+            otherwise the ordinary basis function name.
+
+        Raises
+        ------
+        IndexError
+            If ``index`` is out of range for the library.
+        """
+        n_basis = len(self.basis_functions)
+        if not 0 <= index < n_basis:
+            raise IndexError(
+                f"Basis index {index} out of range for library with {n_basis} functions."
+            )
+        for p_info in self._parametric_info:
+            if p_info.basis_index == index:
+                return p_info.name
+        return self.basis_functions[index].name
+
+    def copy(self) -> BasisLibrary:
+        """
+        Return an independent copy of this library.
+
+        Basis function *callables* are shared (they are stateless), but every
+        piece of mutable metadata is duplicated. Fitting a model on a parametric
+        library rewrites basis names and rebinds evaluation closures in place,
+        so a repeated-refit procedure (bootstrap, cross-validation) must fit on
+        a copy or it will leave the caller's library — and therefore the
+        caller's fitted model — pinned to the last refit's parameter values.
+
+        Returns
+        -------
+        library : BasisLibrary
+            A new library holding the same basis functions in the same order.
+        """
+        new = BasisLibrary(
+            n_features=self.n_features,
+            feature_names=list(self.feature_names),
+            feature_bounds=list(self.feature_bounds) if self.feature_bounds is not None else None,
+            feature_types=list(self.feature_types),
+            categories={k: list(v) for k, v in self.categories.items()},
+        )
+        new.basis_functions = [
+            BasisFunction(
+                name=bf.name,
+                func=bf.func,
+                complexity=bf.complexity,
+                feature_indices=tuple(bf.feature_indices),
+                func_type=bf.func_type,
+                func_config=dict(bf.func_config),
+            )
+            for bf in self.basis_functions
+        ]
+        new._parametric_info = [
+            ParametricBasisInfo(
+                basis_index=p.basis_index,
+                name=p.name,
+                func=p.func,
+                param_bounds=dict(p.param_bounds),
+                initial_params=dict(p.initial_params),
+                log_scale=p.log_scale,
+                resolved_params=dict(p.resolved_params) if p.resolved_params else None,
+            )
+            for p in self._parametric_info
+        ]
+        return new
+
+    @property
     def complexities(self) -> jnp.ndarray:
         """Array of complexity scores."""
         return jnp.array([bf.complexity for bf in self.basis_functions])

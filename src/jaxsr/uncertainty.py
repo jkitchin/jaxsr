@@ -737,6 +737,33 @@ def bootstrap_predict(
     }
 
 
+def _summarize_parameter_samples(values: list[float]) -> dict[str, float | int]:
+    """
+    Summarise the bootstrap distribution of one nonlinear parameter.
+
+    Parameters
+    ----------
+    values : list of float
+        Fitted values of the parameter, one per bootstrap replicate that
+        selected the basis function it belongs to.
+
+    Returns
+    -------
+    summary : dict
+        Keys ``"mean"``, ``"sd"``, ``"q05"``, ``"q95"`` and ``"n"`` (the number
+        of replicates the summary is based on). ``"sd"`` is 0.0 for a single
+        replicate.
+    """
+    arr = np.asarray(values, dtype=float)
+    return {
+        "mean": float(np.mean(arr)),
+        "sd": float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+        "q05": float(np.percentile(arr, 5)),
+        "q95": float(np.percentile(arr, 95)),
+        "n": int(arr.size),
+    }
+
+
 def bootstrap_model_selection(
     model: SymbolicRegressor,
     X: jnp.ndarray,
@@ -747,19 +774,30 @@ def bootstrap_model_selection(
     """
     Pairs bootstrap for model selection stability.
 
-    Resamples (X_i, y_i) pairs, reruns full model.fit(), and tracks
-    which features are selected across bootstrap samples.
+    Resamples (X_i, y_i) pairs, reruns full ``model.fit()``, and tracks which
+    features are selected across bootstrap samples.
+
+    Features are keyed by **basis identity**, not by the rendered name. A
+    parametric basis renders with its fitted parameter substituted in
+    (``"exp(-0.4913*x)"``), which differs in every replicate, so keying on the
+    rendered name would give each replicate a unique feature and report a
+    stability of zero even when every replicate selected the same basis. The
+    fitted values are reported separately, as a distribution over replicates,
+    in ``"parameter_distributions"``.
+
+    Each replicate is fitted on its own copy of the basis library, so this never
+    disturbs ``model`` or the library it was fitted with.
 
     Parameters
     ----------
     model : SymbolicRegressor
         Fitted model (used as template).
     X : jnp.ndarray
-        Training features.
+        Training features of shape (n_samples, n_features).
     y : jnp.ndarray
-        Training targets.
+        Training targets of shape (n_samples,).
     n_bootstrap : int
-        Number of bootstrap samples.
+        Number of bootstrap samples. Must be at least 1.
     seed : int, optional
         Random seed.
 
@@ -767,18 +805,49 @@ def bootstrap_model_selection(
     -------
     result : dict
         Dictionary with keys:
-        - "feature_frequencies": dict mapping feature name to selection frequency
-        - "stability_score": fraction of bootstraps selecting the same features
-        - "expressions": list of expressions found across bootstraps
+
+        - "feature_frequencies": dict mapping basis identity (the name as
+          registered, e.g. ``"exp(-a*x)"``) to the fraction of successful
+          replicates that selected it, in descending order of frequency
+        - "parameter_distributions": dict mapping basis identity to
+          ``{param_name: {"mean", "sd", "q05", "q95", "n"}}`` for parametric
+          basis functions; empty when the library has none
+        - "stability_score": fraction of successful replicates selecting exactly
+          the same feature set as ``model``
+        - "expressions": list of expressions found across bootstraps, with
+          parametric values rendered as fitted in that replicate
+        - "n_successful": number of replicates that fitted without error; the
+          denominator of the frequencies and of the stability score
+
+    Raises
+    ------
+    RuntimeError
+        If ``model`` is not fitted.
+    ValueError
+        If ``X`` and ``y`` have inconsistent lengths, or if ``n_bootstrap`` is
+        less than 1.
     """
+    model._check_is_fitted()
+
     X = jnp.atleast_2d(jnp.asarray(X))
     y = jnp.asarray(y).ravel()
     n = len(y)
+    if X.shape[0] != n:
+        raise ValueError(f"X has {X.shape[0]} samples but y has {n}.")
+    if n_bootstrap < 1:
+        raise ValueError(f"n_bootstrap must be at least 1, got {n_bootstrap}.")
 
     rng = np.random.RandomState(seed)
 
+    library = model.basis_library
+    original_features = {
+        library.canonical_name(int(i)) for i in np.asarray(model._result.selected_indices)
+    }
+
+    base_params = model.get_params(deep=False)
+
     feature_counts: dict[str, int] = {}
-    original_features = set(model.selected_features_)
+    param_samples: dict[str, dict[str, list[float]]] = {}
     same_count = 0
     expressions = []
 
@@ -787,36 +856,52 @@ def bootstrap_model_selection(
         X_boot = X[boot_idx]
         y_boot = y[boot_idx]
 
-        # Clone model
-        model_boot = model.__class__(
-            basis_library=model.basis_library,
-            max_terms=model.max_terms,
-            strategy=model.strategy,
-            information_criterion=model.information_criterion,
-            cv_folds=model.cv_folds,
-            regularization=model.regularization,
-            constraints=model.constraints,
-            random_state=model.random_state,
-        )
+        # Clone the model onto its own library: fitting a parametric library
+        # rebinds names and closures in place, so replicates must not share one.
+        library_boot = library.copy()
+        model_boot = model.__class__(**{**base_params, "basis_library": library_boot})
+
         try:
             model_boot.fit(X_boot, y_boot)
-            selected = set(model_boot.selected_features_)
-            for feat in selected:
-                feature_counts[feat] = feature_counts.get(feat, 0) + 1
-            if selected == original_features:
-                same_count += 1
-            expressions.append(model_boot.expression_)
+            result = model_boot._result
+            indices = [int(i) for i in np.asarray(result.selected_indices)]
+            selected = {library_boot.canonical_name(i) for i in indices}
+            expression = model_boot.expression_
         except Exception:
             continue
 
-    total = max(sum(1 for _ in expressions), 1)
-    feature_frequencies = {k: v / total for k, v in feature_counts.items()}
-    stability_score = same_count / total
+        for feat in selected:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
+        if selected == original_features:
+            same_count += 1
+
+        for idx, params in (result.parametric_params or {}).items():
+            if int(idx) not in indices:
+                continue  # optimised during the search but not in the final model
+            key = library_boot.canonical_name(int(idx))
+            per_basis = param_samples.setdefault(key, {})
+            for pname, value in params.items():
+                per_basis.setdefault(pname, []).append(float(value))
+
+        expressions.append(expression)
+
+    n_successful = len(expressions)
+    total = max(n_successful, 1)
+    feature_frequencies = {
+        name: count / total
+        for name, count in sorted(feature_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    }
+    parameter_distributions = {
+        name: {pname: _summarize_parameter_samples(vals) for pname, vals in per_basis.items()}
+        for name, per_basis in param_samples.items()
+    }
 
     return {
         "feature_frequencies": feature_frequencies,
-        "stability_score": stability_score,
+        "parameter_distributions": parameter_distributions,
+        "stability_score": same_count / total,
         "expressions": expressions,
+        "n_successful": n_successful,
     }
 
 

@@ -22,6 +22,7 @@ from jaxsr.uncertainty import (
     BayesianModelAverage,
     anova,
     bootstrap_coefficients,
+    bootstrap_model_selection,
     bootstrap_predict,
     compute_unbiased_variance,
 )
@@ -670,3 +671,145 @@ class TestAnovaWarnings:
         model.fit(X, y)
         result = anova(model)
         assert any("parametric" in w.lower() for w in result.warnings)
+
+
+class TestBootstrapModelSelection:
+    """Tests for bootstrap_model_selection, including parametric libraries."""
+
+    def _parametric_setup(self, n=120, seed=0):
+        """Data from y = 3*exp(-0.5x) + 1 and a library containing that form."""
+        rng = np.random.RandomState(seed)
+        X_np = rng.uniform(0, 5, (n, 1))
+        y_np = 3.0 * np.exp(-0.5 * X_np[:, 0]) + 1.0 + 0.05 * rng.randn(n)
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.05, 3.0)},
+                feature_indices=(0,),
+            )
+        )
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=2,
+            strategy="exhaustive",
+            information_criterion="bic",
+        )
+        model.fit(jnp.array(X_np), jnp.array(y_np))
+        return model, jnp.array(X_np), jnp.array(y_np)
+
+    def test_basic_keys_and_frequencies(self):
+        """Frequencies are in [0, 1] and the result reports its denominator."""
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=0)
+
+        assert set(result) == {
+            "feature_frequencies",
+            "parameter_distributions",
+            "stability_score",
+            "expressions",
+            "n_successful",
+        }
+        assert result["n_successful"] == len(result["expressions"]) == 5
+        assert all(0.0 < f <= 1.0 for f in result["feature_frequencies"].values())
+        assert 0.0 <= result["stability_score"] <= 1.0
+        assert result["parameter_distributions"] == {}
+
+    def test_frequencies_sorted_descending(self):
+        """feature_frequencies is ordered most-selected first."""
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        freqs = list(
+            bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=0)[
+                "feature_frequencies"
+            ].values()
+        )
+        assert freqs == sorted(freqs, reverse=True)
+
+    def test_stable_linear_model_scores_high(self):
+        """A clean linear signal reselects the same terms in every replicate."""
+        X, y = _make_linear_data(n=80, noise_std=0.1)
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=1)
+        assert result["stability_score"] == 1.0
+        assert result["feature_frequencies"]["x0"] == 1.0
+
+    def test_parametric_basis_aggregates_under_one_key(self):
+        """A parametric basis is counted once, not once per fitted value.
+
+        Regression test for the case where keying on the rendered name gave every
+        replicate a unique feature and a stability score of 0.
+        """
+        model, X, y = self._parametric_setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        assert "exp(-a*x)" in result["feature_frequencies"]
+        assert result["feature_frequencies"]["exp(-a*x)"] == 1.0
+        # No key carries a substituted value.
+        assert not any(
+            k.startswith("exp(-") and k != "exp(-a*x)" for k in result["feature_frequencies"]
+        )
+        assert result["stability_score"] > 0.0
+
+    def test_parametric_parameter_distribution(self):
+        """The fitted nonlinear parameter is reported as a distribution."""
+        model, X, y = self._parametric_setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        dists = result["parameter_distributions"]
+        assert set(dists) == {"exp(-a*x)"}
+        summary = dists["exp(-a*x)"]["a"]
+        assert set(summary) == {"mean", "sd", "q05", "q95", "n"}
+        assert summary["n"] == 6
+        assert 0.3 < summary["mean"] < 0.7  # true value is 0.5
+        assert summary["q05"] <= summary["mean"] <= summary["q95"]
+        assert summary["sd"] >= 0.0
+
+    def test_does_not_mutate_the_original_model(self):
+        """Bootstrapping must leave the caller's model and library untouched."""
+        model, X, y = self._parametric_setup()
+        expression_before = model.expression_
+        names_before = list(model.basis_library.names)
+        pred_before = np.asarray(model.predict(X))
+
+        bootstrap_model_selection(model, X, y, n_bootstrap=4, seed=0)
+
+        assert model.expression_ == expression_before
+        assert model.basis_library.names == names_before
+        assert np.allclose(np.asarray(model.predict(X)), pred_before)
+
+    def test_seed_is_reproducible(self):
+        """The same seed gives the same replicates."""
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        first = bootstrap_model_selection(model, X, y, n_bootstrap=4, seed=7)
+        second = bootstrap_model_selection(model, X, y, n_bootstrap=4, seed=7)
+        assert first["expressions"] == second["expressions"]
+        assert first["feature_frequencies"] == second["feature_frequencies"]
+
+    def test_unfitted_model_raises(self):
+        """An unfitted template model is an error."""
+        X, y = _make_linear_data(n=40)
+        library = BasisLibrary(n_features=1).add_constant().add_linear()
+        model = SymbolicRegressor(basis_library=library, max_terms=2)
+        with pytest.raises(RuntimeError, match="not fitted"):
+            bootstrap_model_selection(model, X, y, n_bootstrap=2)
+
+    def test_mismatched_lengths_raise(self):
+        """X and y must have the same number of samples."""
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="samples"):
+            bootstrap_model_selection(model, X, y[:30], n_bootstrap=2)
+
+    def test_invalid_n_bootstrap_raises(self):
+        """n_bootstrap below 1 is an error."""
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="n_bootstrap"):
+            bootstrap_model_selection(model, X, y, n_bootstrap=0)
