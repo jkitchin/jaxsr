@@ -27,6 +27,32 @@ for details.
     deliberately different smoothing level to expose smoothing-induced bias.
 - Documentation for multivariate derivative estimation: user guide
   (`docs/guides/surface-derivatives.md`), API reference page, and skill guide.
+- `BasisLibrary.canonical_name(index)` / `BasisLibrary.canonical_names` —
+  the name a basis function was registered with, which for a parametric
+  basis is the template (`"exp(-a*x)"`) rather than the fitted rendering
+  (`"exp(-0.4913*x)"`). This is the stable identity to key on when
+  aggregating across refits.
+- `BasisLibrary.copy()` — an independent copy of a library, so repeated
+  refits cannot rewrite the caller's basis names or rebind its parametric
+  evaluation closures.
+- `summarize_selection_replicates` (and therefore
+  `bootstrap_model_selection`) now returns `"parameter_distributions"`:
+  mean/sd/q05/q95/n of each parametric basis's nonlinear parameters across
+  replicates.
+
+### Fixed
+- `bootstrap_model_selection` could not aggregate parametric basis
+  functions: `feature_frequencies` was keyed by the rendered name, so each
+  replicate's re-optimised parameter produced a distinct key and
+  `stability_score` was 0.0 even when every replicate selected the same
+  basis. Features are now keyed by basis identity
+  ([#16](https://github.com/jkitchin/jaxsr/issues/16)).
+- Cloning an estimator (`bootstrap_model_selection`,
+  `MultiOutputSymbolicRegressor`) shared the template's basis library. Fitting
+  a parametric library rewrites basis names and rebinds evaluation closures in
+  place, so clones overwrote each other's fitted parameters and left the
+  original model predicting with the last clone's values. Clones now get their
+  own `BasisLibrary.copy()`.
 
 ## [0.3.0] - 2026-07-02
 

@@ -878,3 +878,92 @@ class TestSummarizeSelectionReplicates:
     def test_unsupported_replicate_type_raises(self):
         with pytest.raises(TypeError, match="Cannot read selected features"):
             summarize_selection_replicates([42])
+
+
+class TestParametricSelectionStability:
+    """Selection stability for libraries with parametric basis functions."""
+
+    def _setup(self, n=120, seed=0):
+        """Data from y = 3*exp(-0.5x) + 1 and a library containing that form."""
+        rng = np.random.RandomState(seed)
+        X_np = rng.uniform(0, 5, (n, 1))
+        y_np = 3.0 * np.exp(-0.5 * X_np[:, 0]) + 1.0 + 0.05 * rng.randn(n)
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.05, 3.0)},
+                feature_indices=(0,),
+            )
+        )
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=2,
+            strategy="exhaustive",
+            information_criterion="bic",
+        )
+        model.fit(jnp.array(X_np), jnp.array(y_np))
+        return model, jnp.array(X_np), jnp.array(y_np)
+
+    def test_parametric_basis_aggregates_under_one_key(self):
+        """A parametric basis is counted once, not once per fitted value.
+
+        Regression test for keying on the rendered name, which gave every
+        replicate a unique feature and a stability score of 0.
+        """
+        model, X, y = self._setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        assert result["feature_frequencies"]["exp(-a*x)"] == 1.0
+        # No key carries a substituted value.
+        assert not any(
+            k.startswith("exp(-") and k != "exp(-a*x)" for k in result["feature_frequencies"]
+        )
+        assert result["n_distinct_structures"] == 1
+        assert result["stability_score"] == 1.0
+
+    def test_parameter_distribution_reported(self):
+        """The fitted nonlinear parameter comes back as a distribution."""
+        model, X, y = self._setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        dists = result["parameter_distributions"]
+        assert set(dists) == {"exp(-a*x)"}
+        summary = dists["exp(-a*x)"]["a"]
+        assert set(summary) == {"mean", "sd", "q05", "q95", "n"}
+        assert summary["n"] == 6
+        assert 0.3 < summary["mean"] < 0.7  # true value is 0.5
+        assert summary["q05"] <= summary["mean"] <= summary["q95"]
+        assert summary["sd"] >= 0.0
+
+    def test_no_distributions_without_parametric_bases(self):
+        """An ordinary library reports an empty parameter_distributions."""
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=0)
+        assert result["parameter_distributions"] == {}
+
+    def test_does_not_mutate_the_original_model(self):
+        """Bootstrapping leaves the caller's model and library untouched."""
+        model, X, y = self._setup()
+        expression_before = model.expression_
+        names_before = list(model.basis_library.names)
+        pred_before = np.asarray(model.predict(X))
+
+        bootstrap_model_selection(model, X, y, n_bootstrap=4, seed=0)
+
+        assert model.expression_ == expression_before
+        assert model.basis_library.names == names_before
+        assert np.allclose(np.asarray(model.predict(X)), pred_before)
+
+    def test_summarize_replicates_reads_canonical_names(self):
+        """Passing fitted models straight to the summariser keys them the same."""
+        model, X, y = self._setup()
+        summary = summarize_selection_replicates([model], reference=model)
+        assert "exp(-a*x)" in summary["feature_frequencies"]
+        assert summary["stability_score"] == 1.0
+        assert set(summary["parameter_distributions"]) == {"exp(-a*x)"}

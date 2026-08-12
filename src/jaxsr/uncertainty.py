@@ -738,9 +738,103 @@ def bootstrap_predict(
     }
 
 
+def _summarize_parameter_samples(values: list[float]) -> dict[str, float | int]:
+    """
+    Summarise the distribution of one nonlinear parameter over replicates.
+
+    Parameters
+    ----------
+    values : list of float
+        Fitted values of the parameter, one per replicate that selected the
+        basis function it belongs to.
+
+    Returns
+    -------
+    summary : dict
+        Keys ``"mean"``, ``"sd"``, ``"q05"``, ``"q95"`` and ``"n"`` (the number
+        of replicates the summary is based on). ``"sd"`` is 0.0 for a single
+        replicate.
+    """
+    arr = np.asarray(values, dtype=float)
+    return {
+        "mean": float(np.mean(arr)),
+        "sd": float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+        "q05": float(np.percentile(arr, 5)),
+        "q95": float(np.percentile(arr, 95)),
+        "n": int(arr.size),
+    }
+
+
+def _model_feature_names(model: Any) -> list[str] | None:
+    """
+    Selected feature names of a fitted model, keyed by basis identity.
+
+    A parametric basis renders its name with the fitted parameter substituted
+    in (``"exp(-0.4913*x)"``), and that value is re-optimised in every
+    replicate, so the rendered name is not a stable key: aggregating on it
+    gives every replicate a unique feature. The library's canonical name (the
+    template ``"exp(-a*x)"``) is used instead. Non-parametric bases are
+    unaffected.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        A fitted model.
+
+    Returns
+    -------
+    features : list of str or None
+        Canonical names of the selected features, or None if the model does not
+        expose the library and indices needed to resolve them (in which case
+        the caller falls back to ``selected_features_``).
+    """
+    library = getattr(model, "basis_library", None)
+    result = getattr(model, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return None
+    return [library.canonical_name(int(i)) for i in np.asarray(result.selected_indices)]
+
+
+def _replicate_parametric_params(replicate: Any) -> dict[str, dict[str, float]]:
+    """
+    Fitted nonlinear parameters of one replicate, keyed by basis identity.
+
+    Parameters
+    ----------
+    replicate : SymbolicRegressor or Mapping or sequence of str
+        A replicate in any of the forms :func:`_replicate_terms` accepts.
+
+    Returns
+    -------
+    params : dict
+        ``{basis identity: {param_name: fitted value}}``, restricted to bases
+        the replicate actually selected. Empty for replicates that are not
+        fitted models or whose library has no parametric basis functions.
+    """
+    library = getattr(replicate, "basis_library", None)
+    result = getattr(replicate, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return {}
+
+    fitted = getattr(result, "parametric_params", None)
+    if not fitted:
+        return {}
+
+    selected = {int(i) for i in np.asarray(result.selected_indices)}
+    return {
+        library.canonical_name(int(idx)): {k: float(v) for k, v in params.items()}
+        for idx, params in fitted.items()
+        if int(idx) in selected  # optimised during the search but not in the final model
+    }
+
+
 def _replicate_terms(replicate: Any) -> tuple[list[str], str]:
     """
     Extract ``(selected feature names, expression)`` from one replicate.
+
+    Feature names come from basis identity where the replicate is a fitted
+    model, so that a parametric basis aggregates across replicates instead of
+    appearing once per fitted parameter value. See :func:`_model_feature_names`.
 
     Parameters
     ----------
@@ -766,7 +860,10 @@ def _replicate_terms(replicate: Any) -> tuple[list[str], str]:
     if hasattr(replicate, "selected_features_"):
         if not getattr(replicate, "_is_fitted", True):
             raise ValueError("Replicate models must be fitted before summarising.")
-        features = [str(f) for f in replicate.selected_features_]
+        canonical = _model_feature_names(replicate)
+        features = (
+            canonical if canonical is not None else [str(f) for f in replicate.selected_features_]
+        )
         expression = str(getattr(replicate, "expression_", "") or " + ".join(features))
         return features, expression
 
@@ -824,10 +921,17 @@ def summarize_selection_replicates(
         Dictionary with keys:
 
         - "feature_frequencies": dict mapping feature name to the fraction of
-          replicates that selected it, highest first
+          replicates that selected it, highest first. Model replicates are
+          keyed by basis identity, so a parametric basis appears once (as the
+          registered ``"exp(-a*x)"``) rather than once per fitted value
+        - "parameter_distributions": dict mapping basis identity to
+          ``{param_name: {"mean", "sd", "q05", "q95", "n"}}`` for parametric
+          basis functions; empty unless the replicates are fitted models with
+          parametric bases
         - "stability_score": fraction of replicates whose selected feature set
           equals ``reference`` (or the modal structure's frequency)
-        - "expressions": list of expressions, one per replicate
+        - "expressions": list of expressions, one per replicate, with
+          parametric values rendered as fitted in that replicate
         - "structures": list of dicts with "features", "count", "frequency",
           one per distinct selected feature set, most frequent first
         - "n_replicates", "n_distinct_structures", "n_distinct_expressions"
@@ -855,6 +959,7 @@ def summarize_selection_replicates(
 
     feature_counts: dict[str, int] = {}
     structure_counts: dict[tuple[str, ...], int] = {}
+    param_samples: dict[str, dict[str, list[float]]] = {}
     expressions: list[str] = []
     same_count = 0
 
@@ -871,6 +976,11 @@ def summarize_selection_replicates(
 
         if reference_set is not None and selected == reference_set:
             same_count += 1
+
+        for name, params in _replicate_parametric_params(replicate).items():
+            per_basis = param_samples.setdefault(name, {})
+            for pname, value in params.items():
+                per_basis.setdefault(pname, []).append(value)
 
     n_replicates = len(expressions)
     total = max(n_replicates, 1)
@@ -890,8 +1000,14 @@ def summarize_selection_replicates(
     else:
         stability_score = 0.0
 
+    parameter_distributions = {
+        name: {pname: _summarize_parameter_samples(vals) for pname, vals in per_basis.items()}
+        for name, per_basis in param_samples.items()
+    }
+
     return {
         "feature_frequencies": feature_frequencies,
+        "parameter_distributions": parameter_distributions,
         "stability_score": stability_score,
         "expressions": expressions,
         "structures": structures,

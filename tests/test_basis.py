@@ -399,6 +399,118 @@ class TestSafeExponential:
         assert np.all(np.isfinite(np.asarray(model.predict(X))))
 
 
+class TestCanonicalNames:
+    """Tests for basis identity that survives a parametric fit."""
+
+    def _parametric_library(self):
+        return (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.01, 5.0)},
+                feature_indices=(0,),
+            )
+        )
+
+    def test_canonical_name_matches_name_for_ordinary_basis(self):
+        """Non-parametric basis functions keep their ordinary name."""
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        assert library.canonical_names == library.names
+        assert library.canonical_name(1) == "x"
+
+    def test_canonical_name_keeps_parameter_symbol(self):
+        """A parametric basis reports its registered template, not the rendering."""
+        library = self._parametric_library()
+        assert library.names[2] == "exp(-2.505*x)"
+        assert library.canonical_name(2) == "exp(-a*x)"
+        assert library.canonical_names[:2] == library.names[:2]
+
+    def test_canonical_name_stable_across_fits(self):
+        """Fitting rewrites names but leaves the canonical name unchanged."""
+        from jaxsr import SymbolicRegressor
+
+        rng = np.random.RandomState(0)
+        X = jnp.array(rng.uniform(0, 5, (60, 1)))
+        y = jnp.array(3.0 * np.exp(-0.5 * np.asarray(X)[:, 0]) + 1.0)
+
+        library = self._parametric_library()
+        SymbolicRegressor(basis_library=library, max_terms=3).fit(X, y)
+
+        assert library.names[2] != "exp(-a*x)"  # rendered with the fitted value
+        assert library.canonical_name(2) == "exp(-a*x)"
+
+    def test_canonical_name_out_of_range(self):
+        """An index outside the library raises IndexError."""
+        library = BasisLibrary(n_features=1).add_constant()
+        with pytest.raises(IndexError, match="out of range"):
+            library.canonical_name(5)
+
+
+class TestBasisLibraryCopy:
+    """Tests for BasisLibrary.copy()."""
+
+    def test_copy_is_independent(self):
+        """Mutating the copy leaves the original alone."""
+        library = BasisLibrary(n_features=2, feature_names=["a", "b"]).add_constant().add_linear()
+        other = library.copy()
+
+        assert other.names == library.names
+        assert other.feature_names == library.feature_names
+
+        other.basis_functions[0].name = "renamed"
+        other.add_polynomials(max_degree=2)
+        assert library.names[0] == "1"
+        assert len(library) == 3
+
+    def test_copy_preserves_block_labels(self):
+        """Block membership survives a copy, so blocks/filter_by_block still work."""
+        theta = BasisLibrary(n_features=1, feature_names=["q"]).add_constant().add_linear()
+        library = BasisLibrary(n_features=2, feature_names=["q", "y_x"]).add_block(
+            theta, multiply_by="y_x", block_name="horizontal"
+        )
+        assert library.copy().blocks == library.blocks
+
+    def test_copy_evaluates_identically(self):
+        """The copy shares the basis callables, so it evaluates the same."""
+        rng = np.random.RandomState(1)
+        X = jnp.array(rng.uniform(-1, 1, (20, 2)))
+        library = (
+            BasisLibrary(n_features=2).add_constant().add_linear().add_polynomials(max_degree=2)
+        )
+        assert np.allclose(np.asarray(library.copy().evaluate(X)), np.asarray(library.evaluate(X)))
+
+    def test_copy_isolates_parametric_state(self):
+        """Fitting on a copy must not repin the original's parametric basis."""
+        from jaxsr import SymbolicRegressor
+
+        rng = np.random.RandomState(0)
+        X = jnp.array(rng.uniform(0, 5, (60, 1)))
+        y = jnp.array(3.0 * np.exp(-0.5 * np.asarray(X)[:, 0]) + 1.0)
+
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.01, 5.0)},
+                feature_indices=(0,),
+            )
+        )
+        before_name = library.names[2]
+        before_column = np.asarray(library.evaluate(X)[:, 2])
+
+        SymbolicRegressor(basis_library=library.copy(), max_terms=3).fit(X, y)
+
+        assert library.names[2] == before_name
+        assert np.allclose(np.asarray(library.evaluate(X)[:, 2]), before_column)
+        assert library._parametric_info[0].resolved_params is None
+
+
 class TestAddBlock:
     """Tests for structured basis blocks (Theta(a) times a data column)."""
 

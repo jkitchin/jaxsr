@@ -168,6 +168,20 @@ for s in stability["structures"]:          # each distinct structure, most commo
     print(f"  {s['frequency']:.2f}  {s['features']}")
 ```
 
+**Parametric basis functions:** terms are keyed by the name you registered
+(`"exp(-a*x)"`), not by the fitted rendering (`"exp(-0.4913*x)"`), so a basis whose
+nonlinear parameter is re-optimised in every replicate aggregates into a single
+frequency instead of one entry per replicate. The fitted values come back separately
+as a distribution:
+
+```python
+stability["parameter_distributions"]
+# {"exp(-a*x)": {"a": {"mean": 0.49, "sd": 0.03, "q05": 0.44, "q95": 0.54, "n": 100}}}
+```
+
+Each replicate fits on its own copy of the basis library, so the call leaves `model`
+and its library untouched.
+
 **When to use:**
 - Assess sensitivity to individual data points
 - No distributional assumptions needed
