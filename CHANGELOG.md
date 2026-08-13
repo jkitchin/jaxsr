@@ -48,8 +48,14 @@ for details.
   - Conventions are checked rather than assumed: the domain sign convention, kelvin
     (non-positive rejected, Celsius-looking warned), and a dimensionless condition
     coordinate so design columns stay order-one.
-- Documentation for superposition: user guide (`docs/guides/superposition.md`) and API
-  reference page.
+- Documentation for superposition: user guide (`docs/guides/superposition.md`), API
+  reference page, matching skill guide, and a worked notebook
+  (`docs/examples/superposition_master_curves.ipynb`) that walks the whole story on
+  synthetic rheology — recovery against a known answer, the negative control that no
+  scalar shift can collapse, and the stability trap.
+- New guides `docs/guides/structured-blocks.md` and `docs/guides/resampling.md`, giving
+  published coverage to the structured-block and grouped/pipeline-resampling features
+  above, which previously existed only in the skill guides.
 - **Multivariate derivative estimation** (`jaxsr.derivatives`) — analytic partial
   derivatives of a smoothed N-D surface, for problems whose regression needs more
   than one partial (PDE-style discovery `u_t = F(u, u_x, u_xx, ...)`, or transform
@@ -66,6 +72,43 @@ for details.
     deliberately different smoothing level to expose smoothing-induced bias.
 - Documentation for multivariate derivative estimation: user guide
   (`docs/guides/surface-derivatives.md`), API reference page, and skill guide.
+- **Structured basis blocks** (`jaxsr.basis`) — design-matrix blocks of the form
+  `Θ(a) ⊙ b`, where `Θ` is a basis over one variable and `b` is another column of the
+  data, typically a measured or estimated derivative. A coefficient selected inside
+  such a block is literally a term of the unknown coefficient *function* multiplying
+  `b`, which is what makes shift laws and implicit dynamics discoverable at all
+  ([#18](https://github.com/jkitchin/jaxsr/issues/18)):
+  - `BasisLibrary.add_block(library, multiply_by=..., block_name=...)` — copies another
+    library's functions, optionally times a data column. Parametric bases carry over as
+    parametric, so profile-likelihood optimisation still applies inside the block.
+  - `BasisLibrary.blocks` — block label mapped to the indices it owns.
+  - `BasisLibrary.filter_by_block(include=..., exclude=...)` — select indices by block
+    membership.
+  - `BasisLibrary.without_blocks(*names)` — a copy with whole blocks dropped, with
+    parametric bookkeeping re-indexed. Dropping a block and refitting is the first
+    diagnostic for a structured library: it answers whether the block earned its place.
+  - `BasisFunction.block` records the label, and is included in `to_dict()`.
+- **Grouped and pipeline-level resampling** — a stability score computed at the wrong
+  level always looks better than the truth, so the resampling unit is now explicit
+  ([#17](https://github.com/jkitchin/jaxsr/issues/17)):
+  - `bootstrap_model_selection(..., groups=...)` resamples whole groups rather than
+    rows, for data where several rows share one experimental condition, one measured
+    curve, or one subject. Row resampling there reports a spread far narrower than the
+    real between-group variability.
+  - `bootstrap_model_selection(..., resample_fn=...)` regenerates the data per
+    replicate, for rows that are themselves outputs of an upstream step — a smoother,
+    an estimated derivative, a simulation. Resampling such rows perturbs nothing about
+    the step that produced them, so the dominant error source is invisible to a
+    row-wise bootstrap. The two are mutually exclusive, and the result reports which
+    was used via `"resampling"`.
+  - `summarize_selection_replicates(replicates, reference=..., resampling=...)` is now
+    public and exported, so replicates produced outside JAXSR can be reported the same
+    way.
+  - `cross_validate(..., groups=..., strategy=...)` with strategies `"kfold"`,
+    `"group-kfold"` and `"leave-one-group-out"`. Passing `groups` promotes `strategy`
+    to `"group-kfold"`, so a row-level split cannot silently leak a group across the
+    train/test boundary.
+  - `jaxsr.metrics.group_indices(groups)` — the shared group-labelling helper.
 - `BasisLibrary.canonical_name(index)` / `BasisLibrary.canonical_names` —
   the name a basis function was registered with, which for a parametric
   basis is the template (`"exp(-a*x)"`) rather than the fitted rendering

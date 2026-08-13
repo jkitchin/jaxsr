@@ -367,6 +367,8 @@ print(model.shift_factors([305.0]))                          # a condition never
 
 ## See also
 
+- [Worked notebook: time–temperature superposition](../examples/superposition_master_curves.ipynb)
+  — the full story end to end, including the negative control and the stability trap
 - [Multivariate derivative estimation](surface-derivatives.md) — the derivative stage
-- `BasisLibrary.add_block` — the structured `Theta(a) ⊙ column` blocks the regression uses
-- `jaxsr.uncertainty.summarize_selection_replicates` — how the stability ensemble is summarised
+- [Structured basis blocks](structured-blocks.md) — the `Θ(a) ⊙ column` machinery underneath
+- [Resampling and stability](resampling.md) — why the ensemble re-runs the smoother
