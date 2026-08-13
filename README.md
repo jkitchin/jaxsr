@@ -23,6 +23,7 @@ JAXSR is a fully open-source symbolic regression library built on JAX that disco
 - **Symbolic Classification**: Discover interpretable logistic models for binary and multiclass problems via IRLS + sparse selection
 - **Additive Symbolic Regression**: Boosting-style ensembles of small symbolic expressions — fit residuals stagewise for many simple, interpretable terms (`jaxsr.additive`)
 - **Derivative Estimation**: Time derivatives for ODE discovery (`estimate_derivatives`, `discover_dynamics`), and analytic partial derivatives of a smoothed N-D surface for PDE-style or shift-law discovery (`SurfaceDerivatives`)
+- **Superposition / Master Curves**: Learn the *shift law* that collapses a family of curves — time–temperature superposition and relatives — as a symbolic function of the condition, with a graded held-out-collapse verdict (`SuperpositionRegressor`)
 - **Scikit-learn Compatible**: Full estimator protocol (`get_params`/`set_params`/`clone`) — works with `cross_val_score`, `GridSearchCV`, `Pipeline`
 - **Symbolic Export**: Export to SymPy, LaTeX, or pure Python/NumPy functions
 
@@ -399,6 +400,9 @@ for packaging).
 | `guides/rsm.md` | Response Surface Methodology designs and analysis |
 | `guides/known-model-fitting.md` | Fitting known model forms (Langmuir, Arrhenius, etc.) |
 | `guides/sklearn-integration.md` | Using JAXSR with sklearn (cross_val_score, GridSearchCV, Pipeline) |
+| `guides/surface-derivatives.md` | Partial derivatives of a smoothed N-D surface |
+| `guides/superposition.md` | Master curves: learning a shift law and testing whether the collapse holds |
+| `guides/additive.md` | Boosting-style additive symbolic regression |
 | `guides/cli.md` | CLI reference for code-free DOE workflows |
 
 **Templates** (ready-to-run starter scripts in `templates/`):

@@ -19,3 +19,4 @@ Full API documentation generated from source docstrings.
    classifier
    additive
    derivatives
+   superposition

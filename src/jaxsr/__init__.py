@@ -115,6 +115,15 @@ from .selection import (
 from .simplify import SimplificationResult, simplify_expression
 from .study import DOEStudy
 
+# Superposition / master curves
+from .superposition import (
+    MasterCurve,
+    ShiftTerm,
+    SuperpositionRegressor,
+    ValidityReport,
+    collapse_rmse,
+)
+
 # Uncertainty Quantification
 from .uncertainty import (
     AnovaResult,
@@ -251,6 +260,12 @@ __all__ = [
     # Simplification
     "SimplificationResult",
     "simplify_expression",
+    # Superposition / master curves
+    "MasterCurve",
+    "ShiftTerm",
+    "SuperpositionRegressor",
+    "ValidityReport",
+    "collapse_rmse",
     # Uncertainty Quantification
     "AnovaResult",
     "AnovaRow",

@@ -14,8 +14,11 @@ parts:
       - file: guides/cli_guide
       - file: guides/claude_code_skills
       - file: guides/performance
+      - file: guides/resampling
       - file: guides/sample-weights
       - file: guides/sklearn-integration
+      - file: guides/structured-blocks
+      - file: guides/superposition
       - file: guides/surface-derivatives
 
   - caption: Examples
@@ -37,6 +40,7 @@ parts:
       - file: examples/rsm_formulation
       - file: examples/serialization_and_sharing
       - file: examples/ode_discovery
+      - file: examples/superposition_master_curves
       - file: examples/symbolic_classification
       - file: examples/gpu_benchmarks
       - file: examples/cli_workflow
