@@ -8,7 +8,7 @@ authors:
     given-names: John R.
     affiliation: Carnegie Mellon University
 repository-code: "https://github.com/jkitchin/jaxsr"
-url: "https://jkitchin.github.io/jaxsr/"
+url: "https://kitchingroup.cheme.cmu.edu/jaxsr/"
 doi: 10.5281/zenodo.19542160
 license: MIT
 version: 0.3.0

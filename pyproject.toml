@@ -75,8 +75,9 @@ all = ["jaxsr[dev,docs,cli,excel,reports,app,qp,sklearn]"]
 jaxsr = "jaxsr.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jkitchin/jaxsr"
-Documentation = "https://github.com/jkitchin/jaxsr#readme"
+Homepage = "https://kitchingroup.cheme.cmu.edu/jaxsr/"
+Documentation = "https://kitchingroup.cheme.cmu.edu/jaxsr/"
+"Web app" = "https://kitchingroup.cheme.cmu.edu/jaxsr/app/"
 Repository = "https://github.com/jkitchin/jaxsr"
 Issues = "https://github.com/jkitchin/jaxsr/issues"
 
