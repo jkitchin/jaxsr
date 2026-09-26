@@ -127,6 +127,24 @@ class TestJaxContract:
             """)
         assert np.allclose(result["got"], result["want"], rtol=1e-5, atol=1e-6)
 
+    def test_jvp_matches_analytic_derivatives(self):
+        """Nested jvp (used for second derivatives in constraints.py) stays accurate."""
+        result = run_under_shim("""
+            import jax, jax.numpy as jnp
+            f = lambda X: jnp.exp(3 * X[:, 0]) * X[:, 1]
+            X = jnp.array([[0.2, 1.5], [-0.7, 2.0], [0.9, -0.5]])
+            t = jnp.zeros_like(X).at[:, 0].set(1.0)
+            y, d1 = jax.jvp(f, (X,), (t,))
+            d2 = jax.jvp(lambda Z: jax.jvp(f, (Z,), (t,))[1], (X,), (t,))[1]
+            print(json.dumps({"y": np.asarray(y).tolist(), "d1": np.asarray(d1).tolist(),
+                              "d2": np.asarray(d2).tolist()}))
+            """)
+        X = np.array([[0.2, 1.5], [-0.7, 2.0], [0.9, -0.5]])
+        base = np.exp(3 * X[:, 0]) * X[:, 1]
+        assert np.allclose(result["y"], base, rtol=1e-12)
+        assert np.allclose(result["d1"], 3 * base, rtol=1e-7)
+        assert np.allclose(result["d2"], 9 * base, rtol=1e-6)
+
     def test_jit_is_transparent(self):
         """``@jit`` decorated helpers still work, with and without arguments."""
         result = run_under_shim("""

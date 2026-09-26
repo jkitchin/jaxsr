@@ -65,9 +65,7 @@ Always run `black` and `ruff check` locally before committing.
 
 ### Modules that still need dedicated test files:
 - `simplify.py` → needs `tests/test_simplify.py`
-- `sampling.py` → needs `tests/test_sampling.py`
 - `plotting.py` → needs `tests/test_plotting.py`
-- `utils.py` → needs `tests/test_utils.py`
 
 When modifying any of these modules, add tests for the code you touch.
 

@@ -15,6 +15,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.stats import qmc
 
+from .utils import feature_derivative
+
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
 
@@ -309,29 +311,18 @@ class AdaptiveSampler:
         """
         Score based on gradient magnitude.
 
-        Regions with high gradient may have rapid function changes.
+        Regions with high gradient may have rapid function changes.  The
+        gradient of the fitted model is computed exactly by forward-mode
+        autodiff, one batched pass per feature over all candidates.
         """
-        eps = 1e-5
-        n_features = len(self.bounds)
+        candidates = jnp.atleast_2d(jnp.asarray(candidates))
+        grad_sq = jnp.zeros(candidates.shape[0])
 
-        scores = jnp.zeros(len(candidates))
+        for j in range(candidates.shape[1]):
+            grad_j = feature_derivative(self.model.predict, candidates, j, order=1)
+            grad_sq = grad_sq + grad_j**2
 
-        for i, cand in enumerate(candidates):
-            grad_norm = 0.0
-
-            for j in range(n_features):
-                cand_plus = cand.at[j].add(eps)
-                cand_minus = cand.at[j].add(-eps)
-
-                y_plus = self.model.predict(cand_plus.reshape(1, -1))[0]
-                y_minus = self.model.predict(cand_minus.reshape(1, -1))[0]
-
-                grad_j = (y_plus - y_minus) / (2 * eps)
-                grad_norm += grad_j**2
-
-            scores = scores.at[i].set(jnp.sqrt(grad_norm))
-
-        return scores
+        return jnp.sqrt(grad_sq)
 
     def _score_space_filling(self, candidates: jnp.ndarray) -> jnp.ndarray:
         """

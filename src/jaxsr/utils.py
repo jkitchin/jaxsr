@@ -7,6 +7,7 @@ and helper functions used throughout the library.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import jax
@@ -261,6 +262,75 @@ def normalize(
 
     X_norm = (X - min_val) / range_val
     return X_norm, min_val, max_val
+
+
+# =============================================================================
+# Differentiation
+# =============================================================================
+
+
+def feature_derivative(
+    fn: Callable[[jnp.ndarray], jnp.ndarray],
+    X: jnp.ndarray,
+    feature_idx: int,
+    order: int = 1,
+) -> jnp.ndarray:
+    """
+    Exact partial derivative of a row-wise function with respect to one input feature.
+
+    Uses forward-mode automatic differentiation (``jax.jvp``) with the tangent
+    set to the unit vector along ``feature_idx`` in every row, so one pass
+    yields the derivative at all rows.  Forward mode is used rather than
+    ``jax.grad`` because ``fn`` is vector-valued (one output per row, or a
+    design matrix) and because it passes cleanly through the
+    ``jnp.where(ok, f(x), nan)`` guards in the basis functions, where a
+    reverse-mode gradient would turn the discarded branch into ``0 * inf``.
+
+    Parameters
+    ----------
+    fn : callable
+        Function mapping ``X`` of shape ``(n_samples, n_features)`` to an array
+        whose leading axis is ``n_samples`` (e.g. predictions ``(n_samples,)``
+        or a design matrix ``(n_samples, n_basis)``).  Row ``i`` of the output
+        must depend only on row ``i`` of ``X``.
+    X : jnp.ndarray of shape (n_samples, n_features)
+        Points at which to differentiate.
+    feature_idx : int
+        Column of ``X`` to differentiate with respect to.
+    order : int
+        Derivative order, 1 or 2.
+
+    Returns
+    -------
+    derivative : jnp.ndarray
+        ``d^order fn / d X[:, feature_idx]^order``, same shape as ``fn(X)``.
+        Entries can be non-finite where ``fn`` is outside its domain or has an
+        infinite slope (e.g. ``sqrt`` at 0).
+
+    Raises
+    ------
+    ValueError
+        If ``X`` is not 2-D, ``feature_idx`` is out of range, or ``order`` is
+        not 1 or 2.
+    """
+    X = jnp.asarray(X)
+    if X.ndim != 2:
+        raise ValueError(f"X must be 2-D, got shape {X.shape}")
+    if not 0 <= feature_idx < X.shape[1]:
+        raise ValueError(f"feature_idx {feature_idx} out of range for {X.shape[1]} features")
+    if order not in (1, 2):
+        raise ValueError(f"order must be 1 or 2, got {order}")
+    if not jnp.issubdtype(X.dtype, jnp.floating):
+        X = X.astype(jnp.result_type(float))
+
+    tangent = jnp.zeros_like(X).at[:, feature_idx].set(1.0)
+
+    def first(X_eval: jnp.ndarray) -> jnp.ndarray:
+        return jax.jvp(fn, (X_eval,), (tangent,))[1]
+
+    if order == 1:
+        return first(X)
+    return jax.jvp(first, (X,), (tangent,))[1]
 
 
 # =============================================================================

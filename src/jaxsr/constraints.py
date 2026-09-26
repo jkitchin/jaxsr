@@ -21,7 +21,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .utils import validate_sample_weight, whiten
+from .utils import feature_derivative, validate_sample_weight, whiten
 
 # =============================================================================
 # Constraint Types
@@ -86,6 +86,81 @@ class Constraint:
             weight=data["weight"],
             hard=data["hard"],
         )
+
+
+def _grid_params(grid: int | None, grid_range: tuple[float, float] | None) -> dict[str, Any]:
+    """Validate the dense-grid options of a shape constraint and return them as params."""
+    params: dict[str, Any] = {}
+    if grid is not None:
+        if isinstance(grid, bool) or not isinstance(grid, int | np.integer) or grid < 2:
+            raise ValueError(f"grid must be an integer >= 2, got {grid!r}")
+        params["grid"] = int(grid)
+    if grid_range is not None:
+        if grid is None:
+            raise ValueError("grid_range requires grid")
+        try:
+            low, high = (float(v) for v in grid_range)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"grid_range must be a (low, high) pair, got {grid_range!r}") from exc
+        if not (np.isfinite(low) and np.isfinite(high) and low < high):
+            raise ValueError(f"grid_range must satisfy low < high (finite), got {grid_range!r}")
+        params["grid_range"] = [low, high]  # a list keeps to_dict() JSON-serializable
+    return params
+
+
+# Upper bound on the rows a single constraint's grid adds.  Each row is a linear
+# inequality; enforcement="constrained" (trust-constr) slows sharply as they grow.
+_MAX_GRID_ROWS = 1000
+
+
+def _grid_penalty_scale(X: jnp.ndarray, X_c: jnp.ndarray) -> float:
+    """
+    Factor that keeps a shape-constraint penalty on the same scale with or without a grid.
+
+    Penalties sum squared violations over the constraint points, so adding a
+    grid would otherwise inflate them (and the fixed hard-penalty weight of the
+    ``"penalty"`` solver) by ``len(X_c) / len(X)``, badly conditioning the fit.
+    """
+    return X.shape[0] / X_c.shape[0] if X_c.shape[0] else 1.0
+
+
+def _constraint_points(constraint: Constraint, X: jnp.ndarray, feature_idx: int) -> jnp.ndarray:
+    """
+    Points at which a shape constraint is imposed: the rows of ``X``, plus its grid.
+
+    The grid holds ``constraint.params["grid"]`` evenly spaced values of the
+    constrained feature, repeated for every distinct combination of the other
+    features in ``X`` so interaction terms are constrained where the data live.
+    """
+    X = jnp.asarray(X)
+    grid = constraint.params.get("grid")
+    if grid is None or X.shape[0] == 0:
+        return X
+
+    X_np = np.asarray(X)
+    column = X_np[:, feature_idx]
+    low, high = constraint.params.get("grid_range") or (column.min(), column.max())
+    values = np.linspace(low, high, int(grid))
+
+    others = np.unique(np.delete(X_np, feature_idx, axis=1), axis=0)
+    max_others = max(1, _MAX_GRID_ROWS // len(values))
+    if len(others) > max_others:
+        warnings.warn(
+            f"{constraint.constraint_type.value} constraint on {constraint.target!r}: "
+            f"grid={len(values)} over {len(others)} distinct combinations of the other "
+            f"features would add {len(values) * len(others)} constraint rows; using "
+            f"{max_others} evenly spaced combinations ({_MAX_GRID_ROWS} rows max).",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        others = others[np.linspace(0, len(others) - 1, max_others).round().astype(int)]
+    grid_rows = np.insert(
+        np.repeat(others, len(values), axis=0),
+        feature_idx,
+        np.tile(values, len(others)),
+        axis=1,
+    )
+    return jnp.concatenate([X, jnp.asarray(grid_rows, dtype=X.dtype)])
 
 
 # =============================================================================
@@ -158,6 +233,8 @@ class Constraints:
         direction: str = "increasing",
         weight: float = 1.0,
         hard: bool = False,
+        grid: int | None = None,
+        grid_range: tuple[float, float] | None = None,
     ) -> Constraints:
         """
         Add monotonicity constraint.
@@ -172,10 +249,30 @@ class Constraints:
             Penalty weight.
         hard : bool
             If True, enforce strictly.
+        grid : int, optional
+            Also impose the constraint on ``grid`` evenly spaced values of
+            ``feature`` (in addition to the training rows).  Without it the
+            constraint only holds at the training rows and the fitted curve can
+            violate it between them.  With several features, the grid is laid
+            along ``feature`` for every distinct combination of the other
+            features in the training data; if that would add more than 1000
+            rows, those combinations are evenly subsampled (with a warning).
+            ``enforcement="exact"`` handles many rows cheaply; ``"constrained"``
+            slows down noticeably as they grow.
+        grid_range : tuple of (float, float), optional
+            ``(low, high)`` span of the grid.  Defaults to the range of
+            ``feature`` in the training data; widen it to constrain the model
+            where you intend to extrapolate.
 
         Returns
         -------
         self : Constraints
+
+        Raises
+        ------
+        ValueError
+            If ``direction`` is invalid, ``grid`` is not an integer >= 2 or
+            ``grid_range`` is not an increasing pair of finite numbers.
         """
         if direction not in ["increasing", "decreasing"]:
             raise ValueError(f"direction must be 'increasing' or 'decreasing', got {direction}")
@@ -184,7 +281,7 @@ class Constraints:
             Constraint(
                 constraint_type=ConstraintType.MONOTONIC,
                 target=feature,
-                params={"direction": direction},
+                params={"direction": direction, **_grid_params(grid, grid_range)},
                 weight=weight,
                 hard=hard,
             )
@@ -196,6 +293,8 @@ class Constraints:
         feature: str,
         weight: float = 1.0,
         hard: bool = False,
+        grid: int | None = None,
+        grid_range: tuple[float, float] | None = None,
     ) -> Constraints:
         """
         Add convexity constraint (positive second derivative).
@@ -208,16 +307,36 @@ class Constraints:
             Penalty weight.
         hard : bool
             If True, enforce strictly.
+        grid : int, optional
+            Also impose the constraint on ``grid`` evenly spaced values of
+            ``feature`` (in addition to the training rows).  Without it the
+            constraint only holds at the training rows and the fitted curve can
+            violate it between them.  With several features, the grid is laid
+            along ``feature`` for every distinct combination of the other
+            features in the training data; if that would add more than 1000
+            rows, those combinations are evenly subsampled (with a warning).
+            ``enforcement="exact"`` handles many rows cheaply; ``"constrained"``
+            slows down noticeably as they grow.
+        grid_range : tuple of (float, float), optional
+            ``(low, high)`` span of the grid.  Defaults to the range of
+            ``feature`` in the training data; widen it to constrain the model
+            where you intend to extrapolate.
 
         Returns
         -------
         self : Constraints
+
+        Raises
+        ------
+        ValueError
+            If ``grid`` is not an integer >= 2 or ``grid_range`` is not an
+            increasing pair of finite numbers.
         """
         self.constraints.append(
             Constraint(
                 constraint_type=ConstraintType.CONVEX,
                 target=feature,
-                params={},
+                params=_grid_params(grid, grid_range),
                 weight=weight,
                 hard=hard,
             )
@@ -229,6 +348,8 @@ class Constraints:
         feature: str,
         weight: float = 1.0,
         hard: bool = False,
+        grid: int | None = None,
+        grid_range: tuple[float, float] | None = None,
     ) -> Constraints:
         """
         Add concavity constraint (negative second derivative).
@@ -241,16 +362,36 @@ class Constraints:
             Penalty weight.
         hard : bool
             If True, enforce strictly.
+        grid : int, optional
+            Also impose the constraint on ``grid`` evenly spaced values of
+            ``feature`` (in addition to the training rows).  Without it the
+            constraint only holds at the training rows and the fitted curve can
+            violate it between them.  With several features, the grid is laid
+            along ``feature`` for every distinct combination of the other
+            features in the training data; if that would add more than 1000
+            rows, those combinations are evenly subsampled (with a warning).
+            ``enforcement="exact"`` handles many rows cheaply; ``"constrained"``
+            slows down noticeably as they grow.
+        grid_range : tuple of (float, float), optional
+            ``(low, high)`` span of the grid.  Defaults to the range of
+            ``feature`` in the training data; widen it to constrain the model
+            where you intend to extrapolate.
 
         Returns
         -------
         self : Constraints
+
+        Raises
+        ------
+        ValueError
+            If ``grid`` is not an integer >= 2 or ``grid_range`` is not an
+            increasing pair of finite numbers.
         """
         self.constraints.append(
             Constraint(
                 constraint_type=ConstraintType.CONCAVE,
                 target=feature,
-                params={},
+                params=_grid_params(grid, grid_range),
                 weight=weight,
                 hard=hard,
             )
@@ -547,6 +688,8 @@ class ConstraintEvaluator:
             Current coefficients.
         predict_fn : callable
             Function that predicts y given X.
+            Monotonic/convex/concave constraints differentiate it with
+            ``jax.jvp``, so it must be written with ``jax.numpy`` operations.
         X : jnp.ndarray
             Input points to check constraints.
         y : jnp.ndarray, optional
@@ -618,7 +761,7 @@ class ConstraintEvaluator:
         predict_fn: Callable[[jnp.ndarray], jnp.ndarray],
         X: jnp.ndarray,
     ) -> float:
-        """Evaluate monotonicity constraint via finite differences."""
+        """Evaluate monotonicity constraint from the exact partial derivative."""
         feature = constraint.target
         direction = constraint.params["direction"]
 
@@ -626,17 +769,10 @@ class ConstraintEvaluator:
             return 0.0
 
         feature_idx = self._feature_name_to_idx[feature]
-
-        # Compute gradient with respect to feature at each point
-        # Use eps=1e-3 for float32 safety (avoids catastrophic cancellation)
-        eps = 1e-3
-        X_plus = X.at[:, feature_idx].add(eps)
-        X_minus = X.at[:, feature_idx].add(-eps)
-
-        y_plus = predict_fn(X_plus)
-        y_minus = predict_fn(X_minus)
-
-        gradient = (y_plus - y_minus) / (2 * eps)
+        X_c = _constraint_points(constraint, X, feature_idx)
+        row_scale = _grid_penalty_scale(X, X_c)
+        X = X_c
+        gradient = _finite_or_zero(feature_derivative(predict_fn, X, feature_idx, order=1))
 
         if direction == "increasing":
             # Penalize negative gradients
@@ -645,7 +781,7 @@ class ConstraintEvaluator:
             # Penalize positive gradients
             violations = jnp.maximum(gradient, 0)
 
-        return float(jnp.sum(violations**2))
+        return float(row_scale * jnp.sum(violations**2))
 
     def _eval_convex(
         self,
@@ -653,30 +789,22 @@ class ConstraintEvaluator:
         predict_fn: Callable[[jnp.ndarray], jnp.ndarray],
         X: jnp.ndarray,
     ) -> float:
-        """Evaluate convexity constraint via second derivatives."""
+        """Evaluate convexity constraint from the exact second derivative."""
         feature = constraint.target
 
         if feature not in self._feature_name_to_idx:
             return 0.0
 
         feature_idx = self._feature_name_to_idx[feature]
-
-        # Compute second derivative via finite differences
-        # Use eps=1e-2 for float32 safety (second differences need larger eps)
-        eps = 1e-2
-        X_plus = X.at[:, feature_idx].add(eps)
-        X_minus = X.at[:, feature_idx].add(-eps)
-
-        y_center = predict_fn(X)
-        y_plus = predict_fn(X_plus)
-        y_minus = predict_fn(X_minus)
-
-        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps**2)
+        X_c = _constraint_points(constraint, X, feature_idx)
+        row_scale = _grid_penalty_scale(X, X_c)
+        X = X_c
+        second_deriv = _finite_or_zero(feature_derivative(predict_fn, X, feature_idx, order=2))
 
         # Convex means second derivative >= 0
         violations = jnp.maximum(-second_deriv, 0)
 
-        return float(jnp.sum(violations**2))
+        return float(row_scale * jnp.sum(violations**2))
 
     def _eval_concave(
         self,
@@ -684,29 +812,22 @@ class ConstraintEvaluator:
         predict_fn: Callable[[jnp.ndarray], jnp.ndarray],
         X: jnp.ndarray,
     ) -> float:
-        """Evaluate concavity constraint."""
+        """Evaluate concavity constraint from the exact second derivative."""
         feature = constraint.target
 
         if feature not in self._feature_name_to_idx:
             return 0.0
 
         feature_idx = self._feature_name_to_idx[feature]
-
-        # Use eps=1e-2 for float32 safety (second differences need larger eps)
-        eps = 1e-2
-        X_plus = X.at[:, feature_idx].add(eps)
-        X_minus = X.at[:, feature_idx].add(-eps)
-
-        y_center = predict_fn(X)
-        y_plus = predict_fn(X_plus)
-        y_minus = predict_fn(X_minus)
-
-        second_deriv = (y_plus - 2 * y_center + y_minus) / (eps**2)
+        X_c = _constraint_points(constraint, X, feature_idx)
+        row_scale = _grid_penalty_scale(X, X_c)
+        X = X_c
+        second_deriv = _finite_or_zero(feature_derivative(predict_fn, X, feature_idx, order=2))
 
         # Concave means second derivative <= 0
         violations = jnp.maximum(second_deriv, 0)
 
-        return float(jnp.sum(violations**2))
+        return float(row_scale * jnp.sum(violations**2))
 
     def _eval_sign(
         self,
@@ -943,6 +1064,8 @@ class ConstraintEvaluator:
             Current coefficients.
         predict_fn : callable
             Function that predicts y given X.
+            Monotonic/convex/concave constraints differentiate it with
+            ``jax.jvp``, so it must be written with ``jax.numpy`` operations.
         X : jnp.ndarray
             Input points to check constraints.
 
@@ -983,6 +1106,8 @@ class ConstraintEvaluator:
             Current coefficients.
         predict_fn : callable
             Prediction function.
+            Monotonic/convex/concave constraints differentiate it with
+            ``jax.jvp``, so it must be written with ``jax.numpy`` operations.
         X : jnp.ndarray
             Test points.
         tolerance : float
@@ -1082,6 +1207,34 @@ def _build_scipy_bounds(
     return bounds
 
 
+def _finite_or_zero(values: jnp.ndarray) -> jnp.ndarray:
+    """Replace non-finite derivative values (out-of-domain points) by zero."""
+    return jnp.where(jnp.isfinite(values), values, 0.0)
+
+
+def _drop_nonfinite_rows(dPhi: jnp.ndarray, constraint: Constraint) -> jnp.ndarray:
+    """
+    Remove sample rows whose design-matrix derivative is not finite.
+
+    A basis function can have an infinite or undefined derivative at a sample
+    (``sqrt(x)`` at ``x = 0``, a guarded ``log`` outside its domain).  Such a row
+    cannot be imposed as a constraint, so it is dropped with a warning rather
+    than passed on to the optimizer as ``nan``/``inf``.
+    """
+    finite = np.asarray(jnp.all(jnp.isfinite(dPhi), axis=1))
+    n_bad = int(np.sum(~finite))
+    if n_bad:
+        warnings.warn(
+            f"{constraint.constraint_type.value} constraint on {constraint.target!r}: "
+            f"derivative is not finite at {n_bad} of {len(finite)} points; "
+            "the constraint is not imposed there.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        return dPhi[finite]
+    return dPhi
+
+
 def _precompute_constraint_data(
     evaluator: ConstraintEvaluator,
     X_jax: jnp.ndarray,
@@ -1090,7 +1243,7 @@ def _precompute_constraint_data(
     Phi: jnp.ndarray,
 ) -> dict:
     """
-    Pre-compute Phi matrices at perturbed X for constraint evaluation.
+    Pre-compute design-matrix derivatives and other data for constraint evaluation.
 
     This allows the penalty to be computed as pure JAX operations on
     coefficients, making it differentiable with jax.grad.
@@ -1101,53 +1254,36 @@ def _precompute_constraint_data(
         """Evaluate design matrix at given X."""
         if basis_library is not None and selected_indices is not None:
             return basis_library.evaluate_subset(X_eval, selected_indices)
+        # Without a library Phi is a fixed matrix, so its derivative in X is zero.
         return Phi
+
+    derivative_order = {
+        ConstraintType.MONOTONIC: 1,
+        ConstraintType.CONVEX: 2,
+        ConstraintType.CONCAVE: 2,
+    }
 
     for constraint in evaluator.constraints:
         ctype = constraint.constraint_type
         entry = {"constraint": constraint}
 
-        if ctype == ConstraintType.MONOTONIC:
+        if ctype in derivative_order:
             feature = constraint.target
             if feature not in evaluator._feature_name_to_idx:
                 continue
             fidx = evaluator._feature_name_to_idx[feature]
-            eps = 1e-3
-            X_plus = X_jax.at[:, fidx].add(eps)
-            X_minus = X_jax.at[:, fidx].add(-eps)
-            entry["type"] = "monotonic"
-            entry["direction"] = constraint.params["direction"]
-            entry["Phi_plus"] = _eval_phi(X_plus)
-            entry["Phi_minus"] = _eval_phi(X_minus)
-            entry["eps"] = eps
-
-        elif ctype == ConstraintType.CONVEX:
-            feature = constraint.target
-            if feature not in evaluator._feature_name_to_idx:
-                continue
-            fidx = evaluator._feature_name_to_idx[feature]
-            eps = 1e-2
-            X_plus = X_jax.at[:, fidx].add(eps)
-            X_minus = X_jax.at[:, fidx].add(-eps)
-            entry["type"] = "convex"
-            entry["Phi_center"] = _eval_phi(X_jax)
-            entry["Phi_plus"] = _eval_phi(X_plus)
-            entry["Phi_minus"] = _eval_phi(X_minus)
-            entry["eps"] = eps
-
-        elif ctype == ConstraintType.CONCAVE:
-            feature = constraint.target
-            if feature not in evaluator._feature_name_to_idx:
-                continue
-            fidx = evaluator._feature_name_to_idx[feature]
-            eps = 1e-2
-            X_plus = X_jax.at[:, fidx].add(eps)
-            X_minus = X_jax.at[:, fidx].add(-eps)
-            entry["type"] = "concave"
-            entry["Phi_center"] = _eval_phi(X_jax)
-            entry["Phi_plus"] = _eval_phi(X_plus)
-            entry["Phi_minus"] = _eval_phi(X_minus)
-            entry["eps"] = eps
+            # dPhi[i, k] = d^m phi_k / d x_fidx^m at row i, so the model's derivative
+            # is dPhi @ coeffs -- still linear in the coefficients.
+            # Grid points need the basis functions themselves; a bare Phi only
+            # covers the training rows (and has zero derivative anyway).
+            has_library = basis_library is not None and selected_indices is not None
+            X_c = _constraint_points(constraint, X_jax, fidx) if has_library else X_jax
+            dPhi = feature_derivative(_eval_phi, X_c, fidx, order=derivative_order[ctype])
+            entry["type"] = ctype.value
+            entry["dPhi"] = _drop_nonfinite_rows(dPhi, constraint)
+            entry["row_scale"] = _grid_penalty_scale(X_jax, X_c)
+            if ctype == ConstraintType.MONOTONIC:
+                entry["direction"] = constraint.params["direction"]
 
         elif ctype == ConstraintType.BOUND:
             entry["type"] = "bound"
@@ -1243,30 +1379,22 @@ def _compute_jax_penalty(
         ctype = entry.get("type")
 
         if ctype == "monotonic":
-            y_plus = entry["Phi_plus"] @ coeffs
-            y_minus = entry["Phi_minus"] @ coeffs
-            gradient = (y_plus - y_minus) / (2 * entry["eps"])
+            gradient = entry["dPhi"] @ coeffs
             if entry["direction"] == "increasing":
                 violations = jnp.maximum(-gradient, 0)
             else:
                 violations = jnp.maximum(gradient, 0)
-            total = total + weight * jnp.sum(violations**2)
+            total = total + weight * entry["row_scale"] * jnp.sum(violations**2)
 
         elif ctype == "convex":
-            y_center = entry["Phi_center"] @ coeffs
-            y_plus = entry["Phi_plus"] @ coeffs
-            y_minus = entry["Phi_minus"] @ coeffs
-            second_deriv = (y_plus - 2 * y_center + y_minus) / (entry["eps"] ** 2)
+            second_deriv = entry["dPhi"] @ coeffs
             violations = jnp.maximum(-second_deriv, 0)
-            total = total + weight * jnp.sum(violations**2)
+            total = total + weight * entry["row_scale"] * jnp.sum(violations**2)
 
         elif ctype == "concave":
-            y_center = entry["Phi_center"] @ coeffs
-            y_plus = entry["Phi_plus"] @ coeffs
-            y_minus = entry["Phi_minus"] @ coeffs
-            second_deriv = (y_plus - 2 * y_center + y_minus) / (entry["eps"] ** 2)
+            second_deriv = entry["dPhi"] @ coeffs
             violations = jnp.maximum(second_deriv, 0)
-            total = total + weight * jnp.sum(violations**2)
+            total = total + weight * entry["row_scale"] * jnp.sum(violations**2)
 
         elif ctype == "bound":
             y_pred = entry["Phi"] @ coeffs
@@ -1396,11 +1524,8 @@ def _build_scipy_linear_constraints(
         ctype = entry.get("type")
 
         if ctype == "monotonic":
-            # Gradient row: (Phi_plus - Phi_minus) / (2*eps) per sample
-            Phi_plus = np.array(entry["Phi_plus"])
-            Phi_minus = np.array(entry["Phi_minus"])
-            eps = entry["eps"]
-            G = (Phi_plus - Phi_minus) / (2 * eps)
+            # One row per sample: dPhi @ coeffs is the exact d y / d x there.
+            G = np.array(entry["dPhi"])
             n_rows = G.shape[0]
             if entry["direction"] == "increasing":
                 lb_list.extend([0.0] * n_rows)
@@ -1411,22 +1536,14 @@ def _build_scipy_linear_constraints(
             G_rows.append(G)
 
         elif ctype == "convex":
-            Phi_plus = np.array(entry["Phi_plus"])
-            Phi_minus = np.array(entry["Phi_minus"])
-            Phi_center = np.array(entry["Phi_center"])
-            eps = entry["eps"]
-            G = (Phi_plus - 2 * Phi_center + Phi_minus) / (eps**2)
+            G = np.array(entry["dPhi"])
             n_rows = G.shape[0]
             lb_list.extend([0.0] * n_rows)
             ub_list.extend([np.inf] * n_rows)
             G_rows.append(G)
 
         elif ctype == "concave":
-            Phi_plus = np.array(entry["Phi_plus"])
-            Phi_minus = np.array(entry["Phi_minus"])
-            Phi_center = np.array(entry["Phi_center"])
-            eps = entry["eps"]
-            G = (Phi_plus - 2 * Phi_center + Phi_minus) / (eps**2)
+            G = np.array(entry["dPhi"])
             n_rows = G.shape[0]
             lb_list.extend([-np.inf] * n_rows)
             ub_list.extend([0.0] * n_rows)
