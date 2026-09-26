@@ -27,10 +27,12 @@ pytest tests/test_numpy_shim.py               # shim contract + agreement with r
 ```
 
 Two differences are deliberate. NumPy defaults to float64 where JAX defaults to
-float32, which puts `selection.py` on its closed-form MSE path and makes the
-finite-difference steps in `constraints.py` more accurate. And NumPy's linalg raises
+float32, which puts `selection.py` on its closed-form MSE path. And NumPy's linalg raises
 where JAX returns NaN, so `py/jax_shim.py` wraps `jnp.linalg` to return NaN — without
 that, the `solve` → `isfinite` → `lstsq` fallback in `selection.py:290` never runs.
+One difference is a compromise: `jax.grad` and `jax.jvp` are exact under JAX but central
+finite differences in the shim, so constraint derivatives and the gradient sampling score
+match a JAX run to a few significant digits rather than exactly.
 
 ## Layout
 
