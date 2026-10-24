@@ -13,6 +13,10 @@ MILP-representable, most usefully **hinge** terms `max(0, x - k)` that give a
 MARS-style piecewise-linear fit. Then you hand the fitted model to `to_pyomo` or
 `to_discopt`, which writes the variables and constraints for you.
 
+For a worked example with plots, a refine-and-resolve loop and a design problem
+solved in both backends, see the notebook
+`docs/examples/mip_surrogate_optimization.ipynb` in the JAXSR repository.
+
 Install the optional dependencies with `pip install jaxsr[mip]` (Pyomo and the
 HiGHS solver). For discopt, `pip install discopt`.
 

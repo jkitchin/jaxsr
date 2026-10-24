@@ -34,6 +34,7 @@ parts:
       - file: examples/langmuir_doe_active_learning
       - file: examples/model_comparison_isotherms
       - file: examples/rsm_formulation
+      - file: examples/mip_surrogate_optimization
       - file: examples/serialization_and_sharing
       - file: examples/ode_discovery
       - file: examples/symbolic_classification
