@@ -18,5 +18,6 @@ Full API documentation generated from source docstrings.
    plotting
    classifier
    additive
+   mip
    derivatives
    superposition

@@ -399,6 +399,90 @@ class TestSafeExponential:
         assert np.all(np.isfinite(np.asarray(model.predict(X))))
 
 
+class TestHinges:
+    """Tests for add_hinges and hinge-name parsing."""
+
+    def test_explicit_knots_and_values(self):
+        lib = BasisLibrary(n_features=2, feature_names=["x", "y"]).add_hinges(
+            knots={"x": [0.5], 1: [-1.0]}
+        )
+        assert lib.names == ["max(0,x-0.5)", "max(0,0.5-x)", "max(0,y+1)", "max(0,-1-y)"]
+        X = jnp.array([[0.0, 0.0], [2.0, -3.0]])
+        Phi = np.asarray(lib.evaluate(X))
+        np.testing.assert_allclose(Phi[0], [0.0, 0.5, 1.0, 0.0])
+        np.testing.assert_allclose(Phi[1], [1.5, 0.0, 0.0, 2.0])
+
+    def test_no_mirror(self):
+        lib = BasisLibrary(n_features=1, feature_names=["x"]).add_hinges(
+            knots={0: [0.0, 1.0]}, mirror=False
+        )
+        assert lib.names == ["max(0,x-0)", "max(0,x-1)"]
+
+    def test_quantile_and_bounds_knots(self):
+        X = np.linspace(0, 4, 101).reshape(-1, 1)
+        lib = BasisLibrary(n_features=1, feature_names=["x"]).add_hinges(
+            X=X, n_knots=3, mirror=False
+        )
+        assert lib.names == ["max(0,x-1)", "max(0,x-2)", "max(0,x-3)"]
+
+        lib = BasisLibrary(1, ["x"], feature_bounds=[(0.0, 4.0)]).add_hinges(
+            n_knots=1, mirror=False
+        )
+        assert lib.names == ["max(0,x-2)"]
+
+    def test_parse_round_trip(self):
+        from jaxsr.basis import _hinge_name, _parse_hinge_name
+
+        names = ["x", "x1", "temp"]
+        for i, fname in enumerate(names):
+            for knot in [0.0, 0.5, -2.25, 1e6, -3e-5]:
+                for d in (1.0, -1.0):
+                    assert _parse_hinge_name(_hinge_name(fname, knot, d), names) == (i, knot, d)
+        assert _parse_hinge_name("max(x,y)", names) is None
+        assert _parse_hinge_name("x", names) is None
+
+    def test_serialization_round_trip(self):
+        lib = BasisLibrary(1, ["x"]).add_constant().add_hinges(knots={0: [0.3]})
+        lib2 = BasisLibrary.from_dict(lib.to_dict())
+        X = jnp.linspace(-1, 1, 7).reshape(-1, 1)
+        assert lib2.names == lib.names
+        np.testing.assert_allclose(np.asarray(lib2.evaluate(X)), np.asarray(lib.evaluate(X)))
+
+    def test_validation(self):
+        with pytest.raises(ValueError, match="needs knot locations"):
+            BasisLibrary(1, ["x"]).add_hinges()
+        with pytest.raises(ValueError, match="n_knots"):
+            BasisLibrary(1, ["x"]).add_hinges(n_knots=0)
+        with pytest.raises(ValueError, match="Unknown feature"):
+            BasisLibrary(1, ["x"]).add_hinges(knots={"z": [0.0]})
+        with pytest.raises(ValueError, match="not finite"):
+            BasisLibrary(1, ["x"]).add_hinges(knots={0: [np.inf]})
+        with pytest.raises(ValueError, match="not continuous"):
+            BasisLibrary(
+                1, ["c"], feature_types=["categorical"], categories={0: ["a", "b"]}
+            ).add_hinges(knots={0: [0.5]})
+        with pytest.raises(ValueError, match="columns"):
+            BasisLibrary(2, ["x", "y"]).add_hinges(X=np.zeros((5, 3)))
+
+    def test_fitted_model_exports(self):
+        from jaxsr import SymbolicRegressor
+
+        rng = np.random.default_rng(0)
+        X = rng.uniform(-2, 2, size=(80, 1))
+        y = 2.0 * np.maximum(0, X[:, 0] - 0.5) + 1.0
+        lib = BasisLibrary(1, ["x"]).add_constant().add_linear().add_hinges(knots={0: [0.5]})
+        model = SymbolicRegressor(basis_library=lib, max_terms=3).fit(X, y)
+        assert "max(0,x-0.5)" in model.selected_features_
+        np.testing.assert_allclose(
+            model.to_callable()(X), np.asarray(model.predict(X)), rtol=1e-5, atol=1e-5
+        )
+        import sympy
+
+        expr = model.to_sympy()
+        f = sympy.lambdify(sympy.Symbol("x"), expr, "numpy")
+        np.testing.assert_allclose(f(X[:, 0]), np.asarray(model.predict(X)), atol=1e-4)
+
+
 class TestCanonicalNames:
     """Tests for basis identity that survives a parametric fit."""
 

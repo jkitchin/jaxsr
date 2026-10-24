@@ -118,6 +118,18 @@ Adds `x_i / x_j` for all feature pairs (both orderings).
 - If features are not meaningfully divisible
 - If library is already large (this doubles the size)
 
+### `add_hinges(knots=None, n_knots=3, X=None, features=None, mirror=True)`
+
+Adds piecewise-linear hinge terms `max(0,x-k)` and, with `mirror=True`, `max(0,k-x)`.
+Knots come from `knots` (dict of feature index or name to list of knots), else
+quantiles of `X`, else evenly spaced inside `feature_bounds`.
+
+**Count:** 2 * n_knots per continuous feature (n_knots with `mirror=False`).
+
+**When to use:**
+- The model will be embedded in a MILP (see `guides/mip-embedding.md`)
+- Responses with kinks, thresholds or saturation (MARS-style fits)
+
 ### `add_custom(name, func, complexity=3, feature_indices=None)`
 
 Add any arbitrary function as a basis function.

@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._compat import _SklearnCompatMixin
-from .basis import BasisLibrary
+from .basis import BasisLibrary, _parse_hinge_name
 from .constraints import Constraints, build_constraint_scorer, fit_constrained_ols
 from .metrics import compute_information_criterion
 from .selection import (
@@ -1212,6 +1212,13 @@ class SymbolicRegressor(_SklearnCompatMixin):
         if name in symbols:
             return symbols[name]
 
+        # Handle hinge: max(0,x-0.5) or max(0,0.5-x)
+        hinge = _parse_hinge_name(name, self.basis_library.feature_names)
+        if hinge is not None:
+            idx, knot, direction = hinge
+            x = symbols[self.basis_library.feature_names[idx]]
+            return sympy.Max(0, direction * (x - sympy.Float(knot)))
+
         # Handle categorical interaction: I(catalyst=Pd)*temperature
         if name.startswith("I(") and ")*" in name:
             indicator_part, cont_part = name.split(")*", 1)
@@ -1325,6 +1332,62 @@ class SymbolicRegressor(_SklearnCompatMixin):
         expr = self.to_sympy()
         return sympy.latex(expr)
 
+    def to_pyomo(self, block: Any = None, **kwargs: Any) -> Any:
+        """
+        Embed the model in a Pyomo block as MILP (or MINLP) constraints.
+
+        Parameters
+        ----------
+        block : pyomo Block, optional
+            Block to populate. If None, a new ``ConcreteModel`` is returned.
+        **kwargs
+            ``inputs``, ``output``, ``bounds``, ``output_sense`` and
+            ``allow_nonlinear``; see :func:`jaxsr.mip.to_pyomo`.
+
+        Returns
+        -------
+        block : pyomo Block
+            The populated block.
+
+        Raises
+        ------
+        ImportError
+            If Pyomo is not installed.
+        ValueError
+            If the model cannot be embedded; see :func:`jaxsr.mip.to_pyomo`.
+        """
+        from .mip import to_pyomo
+
+        return to_pyomo(self, block, **kwargs)
+
+    def to_discopt(self, dm_model: Any, **kwargs: Any) -> Any:
+        """
+        Embed the model in a discopt model as MILP (or MINLP) constraints.
+
+        Parameters
+        ----------
+        dm_model : discopt.Model
+            Model to add variables and constraints to.
+        **kwargs
+            ``inputs``, ``output``, ``bounds``, ``output_sense``,
+            ``allow_nonlinear`` and ``prefix``; see :func:`jaxsr.mip.to_discopt`.
+
+        Returns
+        -------
+        embedding : DiscoptEmbedding
+            The input, output and binary variables created.
+
+        Raises
+        ------
+        ImportError
+            If discopt is not installed.
+        ValueError
+            If the model cannot be embedded; see :func:`jaxsr.mip.to_discopt`.
+        """
+        from .mip import to_discopt
+
+        return to_discopt(self, dm_model, **kwargs)
+
     def to_callable(self) -> Callable[[np.ndarray], np.ndarray]:  # noqa: C901
         """
         Convert to pure Python/NumPy callable (no JAX dependency).
@@ -1364,6 +1427,9 @@ class SymbolicRegressor(_SklearnCompatMixin):
                     else:
                         power = float(power_str)
                     term = X[:, idx] ** power
+                elif (hinge := _parse_hinge_name(name, feature_names)) is not None:
+                    idx, knot, direction = hinge
+                    term = np.maximum(0.0, direction * (X[:, idx] - knot))
                 elif name.startswith("I(") and ")*" in name:
                     # Categorical interaction: I(catalyst=Pd)*temperature
                     indicator_part, cont_part = name.split(")*", 1)

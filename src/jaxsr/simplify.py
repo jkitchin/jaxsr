@@ -11,6 +11,8 @@ from typing import Any
 
 import jax.numpy as jnp
 
+from .basis import _parse_hinge_name
+
 
 @dataclass
 class SimplificationResult:
@@ -224,6 +226,13 @@ def _parse_term_to_sympy(name: str, symbols: dict):
     # Linear term
     if name in symbols:
         return symbols[name]
+
+    # Hinge: max(0,x-0.5) or max(0,0.5-x)
+    hinge = _parse_hinge_name(name, list(symbols))
+    if hinge is not None:
+        idx, knot, direction = hinge
+        x = symbols[list(symbols)[idx]]
+        return sympy.Max(0, direction * (x - sympy.Float(knot)))
 
     # Power: x^2
     if "^" in name and "*" not in name and "/" not in name:
