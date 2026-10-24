@@ -69,6 +69,9 @@ from .metrics import (
     cross_validate_classification,
     format_comparison_table,
 )
+
+# Optimization embedding (Pyomo / discopt are imported lazily)
+from .mip import DiscoptEmbedding, milp_incompatible_terms, to_discopt, to_pyomo
 from .regressor import MultiOutputSymbolicRegressor, SymbolicRegressor, fit_symbolic
 
 # Response Surface Methodology
@@ -216,6 +219,11 @@ __all__ = [
     "compute_rmse",
     "cross_validate",
     "format_comparison_table",
+    # Optimization embedding
+    "DiscoptEmbedding",
+    "milp_incompatible_terms",
+    "to_discopt",
+    "to_pyomo",
     # Response Surface Methodology
     "CanonicalAnalysis",
     "ResponseSurface",

@@ -382,6 +382,13 @@ Generalizes to Arrhenius, Michaelis-Menten, power laws, and other known models.
 
 See `guides/rsm.md` for RSM designs, canonical analysis, and optimization.
 
+### "I want to optimize over the model / embed it in a MILP (Pyomo, discopt)"
+
+See `guides/mip-embedding.md`. Fit with a piecewise-linear library (`add_linear`,
+`add_hinges`, `add_transcendental(["abs"])`, categorical terms), check
+`milp_incompatible_terms(model) == []`, then `model.to_pyomo(block)` or
+`model.to_discopt(dm_model)`. Input bounds are required and enforced.
+
 ### "How do I set up active learning?"
 
 See `guides/active-learning.md` for acquisition functions and adaptive sampling.

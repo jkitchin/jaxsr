@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -36,7 +37,7 @@ class BasisFunction:
         Indices of features used by this basis function.
     func_type : str
         Type of function (for serialization): "constant", "linear", "polynomial",
-        "interaction", "transcendental", "ratio", "custom".
+        "interaction", "transcendental", "ratio", "hinge", "custom".
     func_config : dict
         Configuration for reconstructing the function (for serialization).
     """
@@ -134,6 +135,43 @@ def _safe_inv(x: jnp.ndarray) -> jnp.ndarray:
 def _safe_div(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """Safe division that handles zero denominator."""
     return jnp.where(jnp.abs(y) > 1e-10, x / y, jnp.nan)
+
+
+def _hinge(X: jnp.ndarray, idx: int, knot: float, direction: float) -> jnp.ndarray:
+    """Hinge ``max(0, direction * (x_idx - knot))``."""
+    return jnp.maximum(0.0, direction * (X[:, idx] - knot))
+
+
+def _hinge_name(feature_name: str, knot: float, direction: float) -> str:
+    """Name of a hinge term: ``max(0,x-0.5)`` or the mirrored ``max(0,0.5-x)``."""
+    if direction > 0:
+        return f"max(0,{feature_name}{-knot:+.6g})"
+    return f"max(0,{knot:.6g}-{feature_name})"
+
+
+_FLOAT_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _parse_hinge_name(name: str, feature_names: list[str]) -> tuple[int, float, float] | None:
+    """
+    Parse a hinge name produced by :func:`_hinge_name`.
+
+    Returns
+    -------
+    parsed : tuple of (int, float, float) or None
+        ``(feature_index, knot, direction)``, or None if ``name`` is not a hinge.
+    """
+    if not (name.startswith("max(0,") and name.endswith(")")):
+        return None
+    inner = name[len("max(0,") : -1]
+    for i, fname in enumerate(feature_names):
+        rest = inner[len(fname) :]
+        if inner.startswith(fname) and rest[:1] in ("+", "-") and _FLOAT_RE.fullmatch(rest):
+            return i, -float(rest), 1.0
+        head = inner[: -len(fname) - 1]
+        if inner.endswith("-" + fname) and _FLOAT_RE.fullmatch(head):
+            return i, float(head), -1.0
+    return None
 
 
 class BasisLibrary:
@@ -407,6 +445,120 @@ class BasisLibrary:
                                 func_config={"numerator_index": i, "denominator_index": j},
                             )
                         )
+        self._compiled_evaluate = None
+        return self
+
+    def add_hinges(
+        self,
+        knots: dict[int | str, list[float]] | None = None,
+        n_knots: int = 3,
+        X: jnp.ndarray | np.ndarray | None = None,
+        features: list[int] | None = None,
+        mirror: bool = True,
+    ) -> BasisLibrary:
+        """
+        Add piecewise-linear hinge terms ``max(0, x - k)`` (and ``max(0, k - x)``).
+
+        A model built only from constant, linear, hinge, ``abs`` and categorical
+        terms is piecewise linear, so it can be embedded exactly in a
+        mixed-integer linear program (see :mod:`jaxsr.mip`).
+
+        Parameters
+        ----------
+        knots : dict, optional
+            Explicit knot locations, mapping a continuous feature (index or name)
+            to a list of knots. Features not in the dict get no hinges.
+        n_knots : int
+            Number of knots per feature when ``knots`` is not given (default 3).
+            Knots are placed at evenly spaced quantiles of ``X`` if it is given,
+            otherwise evenly spaced inside ``feature_bounds``.
+        X : array-like, optional
+            Training inputs of shape (n_samples, n_features), used to place
+            knots at data quantiles.
+        features : list of int, optional
+            Continuous feature indices to add hinges for when ``knots`` is not
+            given. Defaults to all continuous features.
+        mirror : bool
+            If True (default), add both ``max(0, x - k)`` and ``max(0, k - x)``
+            for each knot. If False, add only ``max(0, x - k)``.
+
+        Returns
+        -------
+        self : BasisLibrary
+            For method chaining.
+
+        Raises
+        ------
+        ValueError
+            If a feature is not continuous or unknown, a knot is not finite,
+            ``n_knots < 1``, ``X`` has the wrong shape, or no knot source
+            (``knots``, ``X`` or ``feature_bounds``) is available.
+
+        Notes
+        -----
+        Knots are rounded to 6 significant digits so that term names
+        round-trip exactly through :meth:`SymbolicRegressor.to_callable` and
+        :meth:`SymbolicRegressor.to_sympy`.
+        """
+        if knots is not None:
+            knot_map: dict[int, list[float]] = {}
+            for key, values in knots.items():
+                if isinstance(key, str):
+                    if key not in self.feature_names:
+                        raise ValueError(f"Unknown feature name {key!r}")
+                    key = self.feature_names.index(key)
+                knot_map[int(key)] = [float(v) for v in values]
+        else:
+            if n_knots < 1:
+                raise ValueError(f"n_knots must be >= 1, got {n_knots}")
+            features = features if features is not None else self.continuous_indices
+            probs = np.arange(1, n_knots + 1) / (n_knots + 1)
+            knot_map = {}
+            if X is not None:
+                X_np = np.atleast_2d(np.asarray(X, dtype=float))
+                if X_np.shape[1] != self.n_features:
+                    raise ValueError(
+                        f"Expected X with {self.n_features} columns, got {X_np.shape[1]}"
+                    )
+                for i in features:
+                    knot_map[i] = np.quantile(X_np[:, i], probs).tolist()
+            elif self.feature_bounds is not None:
+                for i in features:
+                    lo, hi = self.feature_bounds[i]
+                    knot_map[i] = (lo + probs * (hi - lo)).tolist()
+            else:
+                raise ValueError(
+                    "add_hinges needs knot locations: pass knots=..., X=..., or "
+                    "construct the library with feature_bounds."
+                )
+
+        directions = (1.0, -1.0) if mirror else (1.0,)
+        seen_names = set(self.names)
+        for i, feature_knots in knot_map.items():
+            if not 0 <= i < self.n_features:
+                raise ValueError(f"Feature index {i} out of range")
+            if self.feature_types[i] != "continuous":
+                raise ValueError(f"Feature {i} ('{self.feature_names[i]}') is not continuous")
+            for k in feature_knots:
+                if not np.isfinite(k):
+                    raise ValueError(f"Knot {k} for feature {i} is not finite")
+                k = float(f"{k:.6g}")
+                for d in directions:
+                    name = _hinge_name(self.feature_names[i], k, d)
+                    if name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    self.basis_functions.append(
+                        BasisFunction(
+                            name=name,
+                            func=partial(_hinge, idx=i, knot=k, direction=d),
+                            complexity=2,
+                            feature_indices=(i,),
+                            func_type="hinge",
+                            func_config={"feature_index": i, "knot": k, "direction": d},
+                        )
+                    )
+
         self._compiled_evaluate = None
         return self
 
@@ -1543,6 +1695,18 @@ class BasisLibrary:
                         complexity=bf_config["complexity"],
                         feature_indices=(num, den),
                         func_type="ratio",
+                        func_config=fc,
+                    )
+                )
+            elif func_type == "hinge":
+                i = fc["feature_index"]
+                library.basis_functions.append(
+                    BasisFunction(
+                        name=bf_config["name"],
+                        func=partial(_hinge, idx=i, knot=fc["knot"], direction=fc["direction"]),
+                        complexity=bf_config["complexity"],
+                        feature_indices=(i,),
+                        func_type="hinge",
                         func_config=fc,
                     )
                 )
