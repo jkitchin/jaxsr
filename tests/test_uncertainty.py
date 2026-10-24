@@ -22,8 +22,10 @@ from jaxsr.uncertainty import (
     BayesianModelAverage,
     anova,
     bootstrap_coefficients,
+    bootstrap_model_selection,
     bootstrap_predict,
     compute_unbiased_variance,
+    summarize_selection_replicates,
 )
 
 # =============================================================================
@@ -670,3 +672,298 @@ class TestAnovaWarnings:
         model.fit(X, y)
         result = anova(model)
         assert any("parametric" in w.lower() for w in result.warnings)
+
+
+# =============================================================================
+# Resampling Level Tests (grouped / pipeline bootstrap)
+# =============================================================================
+
+
+class _RecordingRegressor(SymbolicRegressor):
+    """SymbolicRegressor that records the design matrix of every fit call.
+
+    ``_clone_estimator`` rebuilds the estimator via ``type(est)(**params)``, so
+    a subclass survives cloning and lets a test inspect what each replicate
+    was actually trained on.
+    """
+
+    fit_calls: list = []
+
+    def fit(self, X, y, sample_weight=None):
+        type(self).fit_calls.append(np.asarray(X))
+        return super().fit(X, y, sample_weight=sample_weight)
+
+
+def _make_grouped_data(n_groups=6, per_group=10, seed=0):
+    """Rows sharing a group label share an offset, so groups are not exchangeable."""
+    rng = np.random.RandomState(seed)
+    X_parts, y_parts, group_parts = [], [], []
+    for g in range(n_groups):
+        x = rng.uniform(0, 5, (per_group, 1))
+        offset = 3.0 * g
+        y = 2.0 * x[:, 0] + offset + 0.1 * rng.randn(per_group)
+        X_parts.append(x)
+        y_parts.append(y)
+        group_parts.append(np.full(per_group, g))
+    return (
+        jnp.array(np.vstack(X_parts)),
+        jnp.array(np.concatenate(y_parts)),
+        np.concatenate(group_parts),
+    )
+
+
+class TestGroupedBootstrapModelSelection:
+    def test_replicates_contain_whole_groups_only(self):
+        """Every group appears 0, 1, 2, ... times over -- never partially."""
+        X, y, groups = _make_grouped_data(n_groups=5, per_group=8)
+        library = BasisLibrary(n_features=1).add_constant().add_linear()
+        model = SymbolicRegressor(basis_library=library, max_terms=2)
+        model.fit(X, y)
+
+        _RecordingRegressor.fit_calls = []
+        template = _RecordingRegressor(basis_library=library, max_terms=2)
+        template.fit(X, y)
+        _RecordingRegressor.fit_calls = []
+
+        bootstrap_model_selection(template, X, y, n_bootstrap=10, seed=0, groups=groups)
+
+        assert len(_RecordingRegressor.fit_calls) == 10
+        X_np = np.asarray(X)
+        per_group = 8
+        row_to_group = {tuple(row): int(g) for row, g in zip(X_np, groups, strict=True)}
+        for X_boot in _RecordingRegressor.fit_calls:
+            assert X_boot.shape[0] == X_np.shape[0]
+            counts: dict[int, int] = {}
+            for row in X_boot:
+                g = row_to_group[tuple(row)]
+                counts[g] = counts.get(g, 0) + 1
+            # A group is drawn whole or not at all, never split.
+            assert all(c % per_group == 0 for c in counts.values())
+
+    def test_reports_group_resampling(self):
+        X, y, groups = _make_grouped_data()
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=8, seed=1, groups=groups)
+        assert result["resampling"] == "groups"
+        assert result["n_replicates"] + result["n_failed"] == 8
+
+    def test_length_mismatch_raises(self):
+        X, y, groups = _make_grouped_data()
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="labels"):
+            bootstrap_model_selection(model, X, y, n_bootstrap=2, groups=groups[:-3])
+
+    def test_single_group_raises(self):
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="at least 2 distinct groups"):
+            bootstrap_model_selection(model, X, y, n_bootstrap=2, groups=np.zeros(40))
+
+    def test_groups_and_resample_fn_conflict(self):
+        X, y, groups = _make_grouped_data()
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="not both"):
+            bootstrap_model_selection(
+                model, X, y, n_bootstrap=2, groups=groups, resample_fn=lambda rng: (X, y)
+            )
+
+
+class TestPipelineBootstrapModelSelection:
+    def test_resample_fn_drives_every_replicate(self):
+        X, y = _make_linear_data(n=60, seed=3)
+        model = _fit_model(X, y, max_terms=2)
+
+        calls = []
+
+        def regenerate(rng):
+            # Stands in for re-running an upstream stage (smoother, simulation).
+            calls.append(rng.randint(0, 1000))
+            noise = rng.randn(len(y))
+            return X, y + 0.1 * noise
+
+        result = bootstrap_model_selection(
+            model, None, None, n_bootstrap=6, seed=7, resample_fn=regenerate
+        )
+        assert len(calls) == 6
+        assert result["resampling"] == "pipeline"
+        assert result["n_replicates"] == 6
+
+    def test_seed_makes_pipeline_replicates_reproducible(self):
+        X, y = _make_linear_data(n=60, seed=3)
+        model = _fit_model(X, y, max_terms=2)
+
+        def regenerate(rng):
+            return X, y + 0.2 * rng.randn(len(y))
+
+        a = bootstrap_model_selection(
+            model, None, None, n_bootstrap=5, seed=11, resample_fn=regenerate
+        )
+        b = bootstrap_model_selection(
+            model, None, None, n_bootstrap=5, seed=11, resample_fn=regenerate
+        )
+        assert a["expressions"] == b["expressions"]
+
+    def test_bad_resample_fn_return_raises(self):
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(TypeError, match=r"\(X_b, y_b\)"):
+            bootstrap_model_selection(model, None, None, n_bootstrap=1, resample_fn=lambda rng: X)
+
+    def test_missing_data_without_resample_fn_raises(self):
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="X and y are required"):
+            bootstrap_model_selection(model, None, None, n_bootstrap=2)
+
+    def test_invalid_n_bootstrap_raises(self):
+        X, y = _make_linear_data(n=40)
+        model = _fit_model(X, y, max_terms=2)
+        with pytest.raises(ValueError, match="n_bootstrap"):
+            bootstrap_model_selection(model, X, y, n_bootstrap=0)
+
+
+class TestRowBootstrapBackwardCompatibility:
+    def test_legacy_keys_present(self):
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=10, seed=0)
+        assert set(result) >= {"feature_frequencies", "stability_score", "expressions"}
+        assert result["resampling"] == "rows"
+        assert 0.0 <= result["stability_score"] <= 1.0
+        assert all(0.0 <= f <= 1.0 for f in result["feature_frequencies"].values())
+
+
+class TestSummarizeSelectionReplicates:
+    def test_counts_distinct_structures(self):
+        replicates = [["a", "b"], ["b", "a"], ["a"], ["a", "c"]]
+        summary = summarize_selection_replicates(replicates)
+        assert summary["n_replicates"] == 4
+        # ("a", "b") and ("b", "a") are the same structure.
+        assert summary["n_distinct_structures"] == 3
+        assert summary["structures"][0]["features"] == ["a", "b"]
+        assert summary["structures"][0]["count"] == 2
+        assert summary["feature_frequencies"]["a"] == 1.0
+        assert summary["feature_frequencies"]["b"] == 0.5
+
+    def test_stability_is_modal_frequency_without_reference(self):
+        summary = summarize_selection_replicates([["a"], ["a"], ["b"], ["c"]])
+        assert summary["stability_score"] == 0.5
+        assert summary["reference_features"] is None
+
+    def test_stability_measured_against_reference(self):
+        summary = summarize_selection_replicates([["a"], ["a"], ["b"], ["c"]], reference=["b"])
+        assert summary["stability_score"] == 0.25
+        assert summary["reference_features"] == ["b"]
+
+    def test_accepts_mappings_and_models(self):
+        X, y = _make_linear_data(n=50)
+        model = _fit_model(X, y, max_terms=2)
+        summary = summarize_selection_replicates(
+            [model, {"features": model.selected_features_, "expression": "custom"}],
+            reference=model,
+        )
+        assert summary["stability_score"] == 1.0
+        assert summary["expressions"][1] == "custom"
+
+    def test_records_resampling_label(self):
+        summary = summarize_selection_replicates([["a"]], resampling="pipeline")
+        assert summary["resampling"] == "pipeline"
+
+    def test_empty_replicates(self):
+        summary = summarize_selection_replicates([])
+        assert summary["n_replicates"] == 0
+        assert summary["stability_score"] == 0.0
+        assert summary["feature_frequencies"] == {}
+
+    def test_unsupported_replicate_type_raises(self):
+        with pytest.raises(TypeError, match="Cannot read selected features"):
+            summarize_selection_replicates([42])
+
+
+class TestParametricSelectionStability:
+    """Selection stability for libraries with parametric basis functions."""
+
+    def _setup(self, n=120, seed=0):
+        """Data from y = 3*exp(-0.5x) + 1 and a library containing that form."""
+        rng = np.random.RandomState(seed)
+        X_np = rng.uniform(0, 5, (n, 1))
+        y_np = 3.0 * np.exp(-0.5 * X_np[:, 0]) + 1.0 + 0.05 * rng.randn(n)
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=2)
+            .add_parametric(
+                name="exp(-a*x)",
+                func=lambda X, a: jnp.exp(-a * X[:, 0]),
+                param_bounds={"a": (0.05, 3.0)},
+                feature_indices=(0,),
+            )
+        )
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=2,
+            strategy="exhaustive",
+            information_criterion="bic",
+        )
+        model.fit(jnp.array(X_np), jnp.array(y_np))
+        return model, jnp.array(X_np), jnp.array(y_np)
+
+    def test_parametric_basis_aggregates_under_one_key(self):
+        """A parametric basis is counted once, not once per fitted value.
+
+        Regression test for keying on the rendered name, which gave every
+        replicate a unique feature and a stability score of 0.
+        """
+        model, X, y = self._setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        assert result["feature_frequencies"]["exp(-a*x)"] == 1.0
+        # No key carries a substituted value.
+        assert not any(
+            k.startswith("exp(-") and k != "exp(-a*x)" for k in result["feature_frequencies"]
+        )
+        assert result["n_distinct_structures"] == 1
+        assert result["stability_score"] == 1.0
+
+    def test_parameter_distribution_reported(self):
+        """The fitted nonlinear parameter comes back as a distribution."""
+        model, X, y = self._setup()
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=6, seed=0)
+
+        dists = result["parameter_distributions"]
+        assert set(dists) == {"exp(-a*x)"}
+        summary = dists["exp(-a*x)"]["a"]
+        assert set(summary) == {"mean", "sd", "q05", "q95", "n"}
+        assert summary["n"] == 6
+        assert 0.3 < summary["mean"] < 0.7  # true value is 0.5
+        assert summary["q05"] <= summary["mean"] <= summary["q95"]
+        assert summary["sd"] >= 0.0
+
+    def test_no_distributions_without_parametric_bases(self):
+        """An ordinary library reports an empty parameter_distributions."""
+        X, y = _make_linear_data(n=60)
+        model = _fit_model(X, y, max_terms=2)
+        result = bootstrap_model_selection(model, X, y, n_bootstrap=5, seed=0)
+        assert result["parameter_distributions"] == {}
+
+    def test_does_not_mutate_the_original_model(self):
+        """Bootstrapping leaves the caller's model and library untouched."""
+        model, X, y = self._setup()
+        expression_before = model.expression_
+        names_before = list(model.basis_library.names)
+        pred_before = np.asarray(model.predict(X))
+
+        bootstrap_model_selection(model, X, y, n_bootstrap=4, seed=0)
+
+        assert model.expression_ == expression_before
+        assert model.basis_library.names == names_before
+        assert np.allclose(np.asarray(model.predict(X)), pred_before)
+
+    def test_summarize_replicates_reads_canonical_names(self):
+        """Passing fitted models straight to the summariser keys them the same."""
+        model, X, y = self._setup()
+        summary = summarize_selection_replicates([model], reference=model)
+        assert "exp(-a*x)" in summary["feature_frequencies"]
+        assert summary["stability_score"] == 1.0
+        assert set(summary["parameter_distributions"]) == {"exp(-a*x)"}

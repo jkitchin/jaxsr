@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 import jax.numpy as jnp
 import numpy as np
 
+from .utils import validate_sample_weight, weighted_mean, whiten
+
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
 
@@ -23,6 +25,27 @@ _np_trapezoid = getattr(np, "trapezoid", getattr(np, "trapz", None))
 # =============================================================================
 # Information Criteria
 # =============================================================================
+#
+# Effective sample size under sample weights
+# ------------------------------------------
+# JAXSR treats ``sample_weight`` as *relative precision*: observation ``i`` is
+# assumed to have variance ``sigma^2 / w_i``.  Weights are normalised to sum to
+# ``n`` (see :func:`jaxsr.utils.validate_sample_weight`) and the ``n_samples``
+# passed to every criterion below stays the nominal ``n`` -- the number of
+# observations actually measured.  Consequences worth knowing:
+#
+# * The criteria are invariant to the overall scale of the weights, so ``w`` and
+#   ``1000 * w`` select the same model.
+# * Weighting does not manufacture or destroy observations.  ``k * log(n)`` in
+#   BIC penalises complexity by how much data was collected, not by how much of
+#   it happened to be precise.  This is why row duplication is *not* a valid way
+#   to emulate weights: it inflates ``n`` and shifts every criterion.
+# * The MSE fed to the criteria is the weighted MSE ``sum_i w_i r_i^2 / n``.
+#
+# If most of the weight sits on a handful of rows, the nominal ``n`` overstates
+# how much information the comparison rests on;
+# :func:`jaxsr.utils.effective_sample_size` reports the Kish effective sample
+# size for that diagnosis.
 
 # Smallest MSE that still produces a finite log-likelihood.
 _MSE_FLOOR = float(np.finfo(float).tiny)
@@ -271,6 +294,12 @@ def compute_information_criterion(
     -------
     ic : float
         Information criterion value (lower is better).
+
+    Notes
+    -----
+    Under sample weights, pass the *nominal* number of observations as
+    ``n_samples`` and the weighted MSE ``sum_i w_i r_i^2 / n`` as ``mse``.
+    See the effective-sample-size note at the top of this module.
     """
     criteria = {
         "aic": compute_aic,
@@ -290,6 +319,92 @@ def compute_information_criterion(
 # Cross-Validation
 # =============================================================================
 
+CV_STRATEGIES = ("kfold", "group-kfold", "leave-one-group-out")
+
+
+def _group_label(value: Any) -> Any:
+    """Convert a numpy scalar group label to a plain Python object."""
+    return value.item() if hasattr(value, "item") else value
+
+
+def group_indices(groups: Any) -> tuple[np.ndarray, list[np.ndarray]]:
+    """
+    Split row indices by group label.
+
+    Parameters
+    ----------
+    groups : array-like of shape (n_samples,)
+        Group label for each row. Labels may be integers, floats, or strings.
+
+    Returns
+    -------
+    unique : np.ndarray
+        Unique group labels, sorted.
+    row_indices : list of np.ndarray
+        ``row_indices[i]`` holds the row indices belonging to ``unique[i]``.
+
+    Raises
+    ------
+    ValueError
+        If ``groups`` is empty or not one-dimensional after raveling.
+    """
+    groups_arr = np.asarray(groups).ravel()
+    if groups_arr.size == 0:
+        raise ValueError("groups must contain at least one label.")
+    unique = np.unique(groups_arr)
+    return unique, [np.flatnonzero(groups_arr == g) for g in unique]
+
+
+def _kfold_splits(
+    n_samples: int, cv: int, rng: np.random.RandomState
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Build shuffled k-fold (train, test) index pairs over rows."""
+    indices = rng.permutation(n_samples)
+    fold_size = n_samples // cv
+    splits = []
+    for i in range(cv):
+        start_idx = i * fold_size
+        end_idx = start_idx + fold_size if i < cv - 1 else n_samples
+        test_idx = indices[start_idx:end_idx]
+        train_idx = np.concatenate([indices[:start_idx], indices[end_idx:]])
+        splits.append((train_idx, test_idx))
+    return splits
+
+
+def _group_kfold_splits(
+    row_indices: list[np.ndarray], cv: int
+) -> list[tuple[np.ndarray, np.ndarray, list[int]]]:
+    """
+    Assign whole groups to ``cv`` folds, balancing rows per fold.
+
+    Groups are placed largest-first into the fold that currently holds the
+    fewest rows, so no group is split across the train/test boundary.
+    """
+    fold_groups: list[list[int]] = [[] for _ in range(cv)]
+    fold_sizes = np.zeros(cv, dtype=int)
+    order = sorted(range(len(row_indices)), key=lambda g: (-len(row_indices[g]), g))
+    for g in order:
+        target = int(np.argmin(fold_sizes))
+        fold_groups[target].append(g)
+        fold_sizes[target] += len(row_indices[g])
+
+    all_rows = np.arange(sum(len(idx) for idx in row_indices))
+    splits = []
+    for members in fold_groups:
+        test_idx = np.sort(np.concatenate([row_indices[g] for g in members]))
+        train_idx = np.setdiff1d(all_rows, test_idx)
+        splits.append((train_idx, test_idx, sorted(members)))
+    return splits
+
+
+def _logo_splits(row_indices: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray, list[int]]]:
+    """Build leave-one-group-out (train, test, held-out groups) triples."""
+    all_rows = np.arange(sum(len(idx) for idx in row_indices))
+    splits = []
+    for g, test_idx in enumerate(row_indices):
+        splits.append((np.setdiff1d(all_rows, test_idx), test_idx, [g]))
+    return splits
+
 
 def cross_validate(
     model: SymbolicRegressor,
@@ -298,81 +413,187 @@ def cross_validate(
     cv: int = 5,
     scoring: str = "neg_mse",
     random_state: int | None = None,
+    groups: Any | None = None,
+    strategy: str = "kfold",
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, Any]:
     """
-    Perform k-fold cross-validation.
+    Perform cross-validation, optionally holding out whole groups.
+
+    When rows are not independent observations -- replicates of one
+    experimental condition, points along one measured curve, samples from one
+    subject -- splitting at the row level leaks information from the training
+    set into the test set and reports an optimistic score. Passing ``groups``
+    keeps every row of a group on the same side of the split.
 
     Parameters
     ----------
     model : SymbolicRegressor
-        Model to evaluate.
+        Model to evaluate. Cloned (unfitted) for every fold.
     X : jnp.ndarray
-        Feature matrix.
+        Feature matrix of shape (n_samples, n_features).
     y : jnp.ndarray
-        Target values.
+        Target values of shape (n_samples,) or (n_samples, n_outputs).
     cv : int
-        Number of folds.
+        Number of folds. Ignored when ``strategy="leave-one-group-out"``.
     scoring : str
         Scoring metric: "neg_mse", "neg_mae", "r2".
     random_state : int, optional
-        Random seed for fold splitting.
+        Random seed for fold splitting (used by ``strategy="kfold"`` only;
+        the group strategies are deterministic).
+    groups : array-like of shape (n_samples,), optional
+        Group label for each row. Required by the group strategies. If given
+        with the default ``strategy="kfold"``, the strategy is promoted to
+        ``"group-kfold"``.
+    strategy : str
+        One of ``"kfold"`` (random rows), ``"group-kfold"`` (whole groups
+        distributed over ``cv`` folds), or ``"leave-one-group-out"`` (one fold
+        per group).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Weights follow their rows into the folds under
+        every strategy: each fold is fitted on its training weights and scored
+        with its test weights, so down-weighted observations neither drive the
+        fit nor dominate the score.  Per-group scores are weighted the same
+        way.
 
     Returns
     -------
     results : dict
         Dictionary with keys:
+
         - "test_scores": array of test scores for each fold
         - "train_scores": array of train scores for each fold
-        - "mean_test_score": mean test score
-        - "std_test_score": std of test scores
+        - "mean_test_score", "std_test_score": summary of the test scores
+        - "mean_train_score", "std_train_score": summary of the train scores
+        - "strategy": the strategy actually used
+        - "n_splits": number of folds evaluated
+        - "groups_out": list of the held-out group labels per fold (empty
+          lists for ``"kfold"``)
+        - "per_group_scores": dict mapping group label to the score on that
+          group's rows while it was held out (empty for ``"kfold"``)
+        - "edge_groups": the lowest and highest group labels when labels are
+          numeric, else an empty list. These are the extrapolation cases --
+          read their entries in "per_group_scores" separately from the mean,
+          since interpolation and extrapolation carry different risk.
+        - "edge_group_scores": "per_group_scores" restricted to "edge_groups"
+
+    Raises
+    ------
+    ValueError
+        If ``scoring`` or ``strategy`` is unknown, if ``cv < 2`` for a k-fold
+        strategy, if ``groups`` is missing for a group strategy or has the
+        wrong length, if there are fewer groups than folds, if
+        ``sample_weight`` is invalid, or if a fold ends up with zero total
+        weight on either side of its split.
+
+    Examples
+    --------
+    >>> result = cross_validate(model, X, y, cv=5)  # doctest: +SKIP
+    >>> result = cross_validate(  # doctest: +SKIP
+    ...     model, X, y, groups=temperature_id, strategy="leave-one-group-out"
+    ... )
     """
     from .regressor import _clone_estimator
 
-    n_samples = X.shape[0]
-    rng = np.random.RandomState(random_state)
-    indices = rng.permutation(n_samples)
-
-    fold_size = n_samples // cv
-    test_scores = []
-    train_scores = []
-
     scoring_funcs = {
-        "neg_mse": lambda y_true, y_pred: -float(jnp.mean((y_true - y_pred) ** 2)),
-        "neg_mae": lambda y_true, y_pred: -float(jnp.mean(jnp.abs(y_true - y_pred))),
-        "r2": lambda y_true, y_pred: float(
-            1
-            - jnp.sum((y_true - y_pred) ** 2)
-            / jnp.maximum(jnp.sum((y_true - jnp.mean(y_true)) ** 2), 1e-10)
-        ),
+        "neg_mse": lambda y_true, y_pred, w: -compute_mse(y_true, y_pred, w),
+        "neg_mae": lambda y_true, y_pred, w: -compute_mae(y_true, y_pred, w),
+        "r2": lambda y_true, y_pred, w: compute_r2(y_true, y_pred, w),
     }
-
     if scoring not in scoring_funcs:
         raise ValueError(f"Unknown scoring: {scoring}. Available: {list(scoring_funcs.keys())}")
-
     score_func = scoring_funcs[scoring]
 
-    for i in range(cv):
-        start_idx = i * fold_size
-        end_idx = start_idx + fold_size if i < cv - 1 else n_samples
+    if strategy not in CV_STRATEGIES:
+        raise ValueError(f"Unknown strategy: {strategy}. Available: {list(CV_STRATEGIES)}")
+    if groups is not None and strategy == "kfold":
+        strategy = "group-kfold"
+    if groups is None and strategy != "kfold":
+        raise ValueError(f"strategy={strategy!r} requires groups.")
 
-        test_idx = indices[start_idx:end_idx]
-        train_idx = np.concatenate([indices[:start_idx], indices[end_idx:]])
+    n_samples = X.shape[0]
+    weights = validate_sample_weight(sample_weight, n_samples)
+    rng = np.random.RandomState(random_state)
 
+    unique_groups: np.ndarray | None = None
+    if groups is None:
+        if cv < 2:
+            raise ValueError(f"cv must be at least 2, got {cv}.")
+        if cv > n_samples:
+            raise ValueError(f"cv={cv} exceeds the number of samples ({n_samples}).")
+        splits = [(tr, te, []) for tr, te in _kfold_splits(n_samples, cv, rng)]
+    else:
+        unique_groups, row_indices = group_indices(groups)
+        n_grouped_rows = sum(len(idx) for idx in row_indices)
+        if n_grouped_rows != n_samples:
+            raise ValueError(
+                f"groups has {np.asarray(groups).ravel().size} labels "
+                f"but X has {n_samples} rows."
+            )
+        if len(unique_groups) < 2:
+            raise ValueError("Group-based cross-validation requires at least 2 distinct groups.")
+        if strategy == "leave-one-group-out":
+            splits = _logo_splits(row_indices)
+        else:
+            if cv < 2:
+                raise ValueError(f"cv must be at least 2, got {cv}.")
+            if cv > len(unique_groups):
+                raise ValueError(
+                    f"cv={cv} exceeds the number of distinct groups ({len(unique_groups)}). "
+                    f"Use a smaller cv or strategy='leave-one-group-out'."
+                )
+            splits = _group_kfold_splits(row_indices, cv)
+
+    test_scores = []
+    train_scores = []
+    groups_out: list[list[Any]] = []
+    per_group_scores: dict[Any, float] = {}
+
+    for fold, (train_idx, test_idx, held_out) in enumerate(splits):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
+        w_train = None if weights is None else weights[train_idx]
+        w_test = None if weights is None else weights[test_idx]
+        for split, w_split in (("train", w_train), ("test", w_test)):
+            if w_split is not None and float(jnp.sum(w_split)) <= 0:
+                raise ValueError(
+                    f"Fold {fold} has zero total sample_weight in its {split} split; "
+                    "cross-validation cannot score it. Drop the zero-weight rows, "
+                    "use fewer folds, or group differently."
+                )
 
         # Clone and fit model
         model_clone = _clone_estimator(model)
-        model_clone.fit(X_train, y_train)
+        model_clone.fit(X_train, y_train, sample_weight=w_train)
 
         y_pred_test = model_clone.predict(X_test)
         y_pred_train = model_clone.predict(X_train)
 
-        test_scores.append(score_func(y_test, y_pred_test))
-        train_scores.append(score_func(y_train, y_pred_train))
+        test_scores.append(score_func(y_test, y_pred_test, w_test))
+        train_scores.append(score_func(y_train, y_pred_train, w_train))
+
+        fold_labels = []
+        for g in held_out:
+            label = _group_label(unique_groups[g])
+            fold_labels.append(label)
+            # Score each held-out group on its own rows, so a group that the
+            # model extrapolates badly to is not averaged away by its fold.
+            rows = np.flatnonzero(np.isin(test_idx, row_indices[g]))
+            w_rows = None if w_test is None else w_test[rows]
+            if w_rows is not None and float(jnp.sum(w_rows)) <= 0:
+                # Every row of this group was zero-weighted; scoring it would
+                # divide by zero, and reporting 0.0 would read as a real score.
+                per_group_scores[label] = float("nan")
+            else:
+                per_group_scores[label] = score_func(y_test[rows], y_pred_test[rows], w_rows)
+        groups_out.append(fold_labels)
 
     test_scores = np.array(test_scores)
     train_scores = np.array(train_scores)
+
+    edge_groups: list[Any] = []
+    if unique_groups is not None and np.issubdtype(unique_groups.dtype, np.number):
+        edge_groups = [_group_label(unique_groups[0]), _group_label(unique_groups[-1])]
 
     return {
         "test_scores": test_scores,
@@ -381,6 +602,12 @@ def cross_validate(
         "std_test_score": float(np.std(test_scores)),
         "mean_train_score": float(np.mean(train_scores)),
         "std_train_score": float(np.std(train_scores)),
+        "strategy": strategy,
+        "n_splits": len(splits),
+        "groups_out": groups_out,
+        "per_group_scores": per_group_scores,
+        "edge_groups": edge_groups,
+        "edge_group_scores": {g: per_group_scores[g] for g in edge_groups if g in per_group_scores},
     }
 
 
@@ -389,6 +616,7 @@ def compute_cv_score(
     y: jnp.ndarray,
     cv: int = 5,
     random_state: int | None = None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute cross-validation MSE for a design matrix.
@@ -405,13 +633,22 @@ def compute_cv_score(
         Number of folds.
     random_state : int, optional
         Random seed.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Each fold is fitted by weighted least squares on
+        its training weights and scored by weighted MSE on its test weights.
 
     Returns
     -------
     cv_mse : float
         Mean cross-validation MSE.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n_samples = Phi.shape[0]
+    weights = validate_sample_weight(sample_weight, n_samples)
     rng = np.random.RandomState(random_state)
     indices = rng.permutation(n_samples)
 
@@ -427,12 +664,15 @@ def compute_cv_score(
 
         Phi_train, Phi_test = Phi[train_idx], Phi[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
+        w_train = None if weights is None else weights[train_idx]
+        w_test = None if weights is None else weights[test_idx]
 
-        # Solve least squares
-        coeffs, _, _, _ = jnp.linalg.lstsq(Phi_train, y_train, rcond=None)
+        # Solve (weighted) least squares
+        coeffs, _, _, _ = jnp.linalg.lstsq(
+            whiten(Phi_train, w_train), whiten(y_train, w_train), rcond=None
+        )
         y_pred = Phi_test @ coeffs
-        mse = float(jnp.mean((y_test - y_pred) ** 2))
-        mse_scores.append(mse)
+        mse_scores.append(compute_mse(y_test, y_pred, w_test))
 
     return float(np.mean(mse_scores))
 
@@ -441,6 +681,7 @@ def compute_loo_mse(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute leave-one-out MSE efficiently using Sherman-Morrison formula.
@@ -455,32 +696,41 @@ def compute_loo_mse(
         Target values.
     coefficients : jnp.ndarray
         Fitted coefficients.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  The leverages become the weighted-least-squares
+        leverages ``w_i * phi_i^T (Phi^T W Phi)^-1 phi_i`` and the LOO
+        residuals are averaged with the same weights.
 
     Returns
     -------
     loo_mse : float
         Leave-one-out mean squared error.
-    """
-    y_pred = Phi @ coefficients
-    residuals = y - y_pred
 
-    # Hat matrix diagonal: h_ii = Phi_i @ (Phi.T @ Phi)^-1 @ Phi_i.T
-    # Using pseudo-inverse for numerical stability
-    Phi_pinv = jnp.linalg.pinv(Phi)
-    H = Phi @ Phi_pinv
-    h_diag = jnp.diag(H)
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y))
+    residuals = y - Phi @ coefficients
+
+    # Hat matrix diagonal of the whitened problem:
+    #   h_ii = w_i * phi_i^T (Phi^T W Phi)^-1 phi_i
+    # which reduces to the ordinary leverage when the weights are all 1.
+    Phi_w = whiten(Phi, w)
+    h_diag = jnp.sum(Phi_w * jnp.linalg.pinv(Phi_w).T, axis=1)
 
     # LOO residual: e_i / (1 - h_ii)
     loo_residuals = residuals / (1 - h_diag + 1e-10)
-    loo_mse = jnp.mean(loo_residuals**2)
 
-    return float(loo_mse)
+    return float(weighted_mean(loo_residuals**2, w))
 
 
 def compute_press(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute PRESS (Predicted Residual Error Sum of Squares).
@@ -495,13 +745,20 @@ def compute_press(
         Target values.
     coefficients : jnp.ndarray
         Fitted coefficients.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights; see :func:`compute_loo_mse`.
 
     Returns
     -------
     press : float
         PRESS statistic.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
-    return compute_loo_mse(Phi, y, coefficients) * len(y)
+    return compute_loo_mse(Phi, y, coefficients, sample_weight) * len(y)
 
 
 # =============================================================================
@@ -509,25 +766,134 @@ def compute_press(
 # =============================================================================
 
 
-def compute_mse(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute mean squared error."""
-    return float(jnp.mean((y_true - y_pred) ** 2))
+def compute_mse(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute mean squared error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values of shape ``(n_samples,)``.
+    y_pred : jnp.ndarray
+        Predicted values of shape ``(n_samples,)``.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Weights are normalised to sum to ``n_samples``,
+        so the result is ``sum_i w_i r_i^2 / n``.
+
+    Returns
+    -------
+    float
+        (Weighted) mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` has the wrong length or contains negative or
+        non-finite values.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    return float(weighted_mean((y_true - y_pred) ** 2, w))
 
 
-def compute_rmse(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute root mean squared error."""
-    return float(jnp.sqrt(jnp.mean((y_true - y_pred) ** 2)))
+def compute_rmse(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute root mean squared error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) root mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    return float(np.sqrt(compute_mse(y_true, y_pred, sample_weight)))
 
 
-def compute_mae(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute mean absolute error."""
-    return float(jnp.mean(jnp.abs(y_true - y_pred)))
+def compute_mae(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute mean absolute error, optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) mean absolute error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    return float(weighted_mean(jnp.abs(y_true - y_pred), w))
 
 
-def compute_r2(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute R-squared (coefficient of determination)."""
-    ss_res = jnp.sum((y_true - y_pred) ** 2)
-    ss_tot = jnp.sum((y_true - jnp.mean(y_true)) ** 2)
+def compute_r2(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
+    """
+    Compute R-squared (coefficient of determination), optionally weighted.
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Both the residual and the total sum of squares
+        are weighted, and the total is taken about the *weighted* mean of
+        ``y_true``.
+
+    Returns
+    -------
+    float
+        (Weighted) R-squared.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
+    """
+    w = validate_sample_weight(sample_weight, len(y_true))
+    weights = jnp.ones_like(y_true) if w is None else w
+    y_bar = weighted_mean(y_true, w)
+    ss_res = jnp.sum(weights * (y_true - y_pred) ** 2)
+    ss_tot = jnp.sum(weights * (y_true - y_bar) ** 2)
     return float(1 - ss_res / (ss_tot + 1e-10))
 
 
@@ -535,6 +901,7 @@ def compute_adjusted_r2(
     y_true: jnp.ndarray,
     y_pred: jnp.ndarray,
     n_params: int,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute adjusted R-squared.
@@ -549,15 +916,23 @@ def compute_adjusted_r2(
         Predicted values.
     n_params : int
         Number of model parameters.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  ``n`` remains the nominal sample count; only R²
+        itself is weighted.
 
     Returns
     -------
     adj_r2 : float
         Adjusted R-squared.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n = len(y_true)
     k = n_params
-    r2 = compute_r2(y_true, y_pred)
+    r2 = compute_r2(y_true, y_pred, sample_weight)
 
     if n - k - 1 <= 0:
         return float("-inf")
@@ -566,26 +941,55 @@ def compute_adjusted_r2(
 
 
 def compute_max_error(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
-    """Compute maximum absolute error."""
+    """Compute maximum absolute error (unweighted -- a max is not an average)."""
     return float(jnp.max(jnp.abs(y_true - y_pred)))
 
 
-def compute_mape(y_true: jnp.ndarray, y_pred: jnp.ndarray) -> float:
+def compute_mape(
+    y_true: jnp.ndarray,
+    y_pred: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
+) -> float:
     """
-    Compute mean absolute percentage error.
+    Compute mean absolute percentage error, optionally weighted.
 
     MAPE = mean(|y_true - y_pred| / |y_true|) * 100
+
+    Parameters
+    ----------
+    y_true : jnp.ndarray
+        True values.  Entries with ``|y_true| <= 1e-10`` are skipped.
+    y_pred : jnp.ndarray
+        Predicted values.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.
+
+    Returns
+    -------
+    float
+        (Weighted) MAPE in percent, or ``inf`` if every target is ~0.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
+    w = validate_sample_weight(sample_weight, len(y_true))
     mask = jnp.abs(y_true) > 1e-10
-    if not jnp.any(mask):
+    if not bool(jnp.any(mask)):
         return float("inf")
-    return float(jnp.mean(jnp.abs((y_true - y_pred) / y_true)[mask]) * 100)
+    pct = jnp.abs((y_true - y_pred) / y_true)[mask]
+    w_masked = None if w is None else w[mask]
+    if w_masked is not None and float(jnp.sum(w_masked)) <= 0:
+        return float("inf")
+    return float(weighted_mean(pct, w_masked) * 100)
 
 
 def compute_all_metrics(
     y_true: jnp.ndarray,
     y_pred: jnp.ndarray,
     n_params: int,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, float]:
     """
     Compute all standard regression metrics.
@@ -598,23 +1002,43 @@ def compute_all_metrics(
         Predicted values.
     n_params : int
         Number of model parameters.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Every averaged metric is weighted;
+        ``"max_error"`` is taken over the samples with non-zero weight, since
+        a maximum has no weighted analogue.
 
     Returns
     -------
     metrics : dict
         Dictionary containing all metrics.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n = len(y_true)
-    mse = compute_mse(y_true, y_pred)
+    w = validate_sample_weight(sample_weight, n)
+    mse = compute_mse(y_true, y_pred, w)
+
+    if w is None:
+        max_error = compute_max_error(y_true, y_pred)
+    else:
+        nonzero = w > 0
+        max_error = (
+            compute_max_error(y_true[nonzero], y_pred[nonzero])
+            if bool(jnp.any(nonzero))
+            else float("nan")
+        )
 
     return {
         "mse": mse,
-        "rmse": compute_rmse(y_true, y_pred),
-        "mae": compute_mae(y_true, y_pred),
-        "r2": compute_r2(y_true, y_pred),
-        "adjusted_r2": compute_adjusted_r2(y_true, y_pred, n_params),
-        "max_error": compute_max_error(y_true, y_pred),
-        "mape": compute_mape(y_true, y_pred),
+        "rmse": compute_rmse(y_true, y_pred, w),
+        "mae": compute_mae(y_true, y_pred, w),
+        "r2": compute_r2(y_true, y_pred, w),
+        "adjusted_r2": compute_adjusted_r2(y_true, y_pred, n_params, w),
+        "max_error": max_error,
+        "mape": compute_mape(y_true, y_pred, w),
         "aic": compute_aic(n, n_params, mse),
         "aicc": compute_aicc(n, n_params, mse),
         "bic": compute_bic(n, n_params, mse),

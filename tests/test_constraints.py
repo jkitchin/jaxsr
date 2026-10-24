@@ -646,9 +646,14 @@ class TestConstraintEnforcementLevels:
             selected_indices=p["selected_indices"],
             enforcement="exact",
         )
-        y_pred = np.array(p["Phi"] @ coeffs)
-        diffs = np.diff(y_pred)
-        assert np.all(diffs >= -1e-5), f"QP not monotonic: min diff = {diffs.min()}"
+        # The constraint is imposed pointwise, at the rows of X, so that is what the QP
+        # guarantees: dy/dx >= 0 there (to solver tolerance).  Between rows a cubic can
+        # still dip slightly, so secant differences of y_pred are not a valid check.
+        c = np.asarray(coeffs, dtype=float)
+        x = np.asarray(p["X"][:, 0], dtype=float)
+        slope = c[1] + 2 * c[2] * x + 3 * c[3] * x**2
+        assert p["basis_names"] == ["1", "x", "x^2", "x^3"]
+        assert np.all(slope >= -1e-6), f"QP not monotonic: min slope = {slope.min()}"
 
     def test_exact_convex(self):
         """enforcement='exact' enforces convexity."""
@@ -1106,3 +1111,274 @@ class TestConstraintAwareSelection:
         model = SymbolicRegressor(basis_library=library)
         model.set_params(constraint_selection_weight=3.0)
         assert model.constraint_selection_weight == 3.0
+
+
+# =============================================================================
+# Exact (autodiff) shape-constraint derivatives
+# =============================================================================
+
+
+class TestShapeConstraintDerivatives:
+    """Monotonic/convex/concave constraints use exact derivatives of the basis."""
+
+    @staticmethod
+    def _library():
+        return (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_custom("exp(3*x)", lambda X: jnp.exp(3 * X[:, 0]), feature_indices=(0,))
+        )
+
+    def test_precomputed_rows_are_exact(self):
+        """dPhi rows equal the analytic derivatives of each basis function.
+
+        A central second difference with the old step of 1e-2 is off by ~7.5e-5
+        (relative) for exp(3x), which the tolerance below would reject.
+        """
+        from jaxsr.constraints import _precompute_constraint_data
+
+        library = self._library()
+        X = jnp.linspace(-1.0, 1.0, 25).reshape(-1, 1)
+        Phi = library.evaluate(X)
+        constraints = Constraints().add_monotonic("x", direction="increasing").add_convex("x")
+        evaluator = ConstraintEvaluator(constraints, library.names, ["x"])
+
+        data = _precompute_constraint_data(evaluator, X, library, list(range(3)), Phi)
+        by_type = {entry["type"]: entry for entry in data["constraints"]}
+
+        x = np.asarray(X[:, 0])
+        want_d1 = np.column_stack([np.zeros_like(x), np.ones_like(x), 3 * np.exp(3 * x)])
+        want_d2 = np.column_stack([np.zeros_like(x), np.zeros_like(x), 9 * np.exp(3 * x)])
+        np.testing.assert_allclose(by_type["monotonic"]["dPhi"], want_d1, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(by_type["convex"]["dPhi"], want_d2, rtol=1e-5, atol=1e-6)
+
+    def test_penalty_uses_exact_second_derivative(self):
+        """Concavity penalty on y = exp(3x) is sum((9 exp(3x))^2)."""
+        library = self._library()
+        X = jnp.linspace(-1.0, 1.0, 11).reshape(-1, 1)
+        coefficients = jnp.array([0.0, 0.0, 1.0])
+
+        def predict_fn(X_eval):
+            return library.evaluate(X_eval) @ coefficients
+
+        constraints = Constraints().add_concave("x", weight=1.0)
+        evaluator = ConstraintEvaluator(constraints, library.names, ["x"])
+        penalty = evaluator.compute_penalty(coefficients, predict_fn, X)
+
+        want = float(np.sum((9 * np.exp(3 * np.asarray(X[:, 0]))) ** 2))
+        assert penalty == pytest.approx(want, rel=1e-5)
+
+    def test_nonfinite_derivative_rows_are_dropped(self):
+        """sqrt(x) has an infinite slope at 0; that row is dropped with a warning."""
+        from jaxsr.constraints import _precompute_constraint_data
+
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_custom(
+            "sqrt(x)", lambda X: jnp.sqrt(X[:, 0]), feature_indices=(0,)
+        )
+        X = jnp.linspace(0.0, 1.0, 6).reshape(-1, 1)
+        constraints = Constraints().add_monotonic("x", direction="increasing", hard=True)
+        evaluator = ConstraintEvaluator(constraints, library.names, ["x"])
+
+        with pytest.warns(RuntimeWarning, match="not finite at 1 of 6"):
+            data = _precompute_constraint_data(evaluator, X, library, [0], library.evaluate(X))
+
+        dPhi = np.asarray(data["constraints"][0]["dPhi"])
+        assert dPhi.shape == (5, 1)
+        assert np.all(np.isfinite(dPhi))
+
+    def test_exact_enforcement_satisfies_true_derivative(self):
+        """With exact rows, the QP solution satisfies the analytic convexity condition."""
+        pytest.importorskip("cvxpy")
+        library = self._library().add_polynomials(max_degree=2)
+        X = jnp.linspace(-1.0, 1.0, 30).reshape(-1, 1)
+        x = np.asarray(X[:, 0])
+        y = jnp.array(-2.0 * x**2 + 0.1 * np.exp(3 * x))  # concave on most of the range
+        Phi = library.evaluate(X)
+        names = library.names
+
+        coeffs, _ = fit_constrained_ols(
+            Phi,
+            y,
+            Constraints().add_convex("x", hard=True),
+            names,
+            ["x"],
+            X,
+            basis_library=library,
+            selected_indices=list(range(len(names))),
+            enforcement="exact",
+        )
+        c = dict(zip(names, np.asarray(coeffs), strict=True))
+        second = 9 * c["exp(3*x)"] * np.exp(3 * x) + 2 * c["x^2"]
+        assert np.all(second >= -1e-6 * np.max(np.abs(second)) - 1e-8)
+
+
+# =============================================================================
+# Dense-grid shape constraints
+# =============================================================================
+
+
+def _dense_min_slope(coeffs, x_max=3.0):
+    """Minimum of d/dx (c0 + c1 x + c2 x^2 + c3 x^3) on a fine grid over [0, x_max]."""
+    c = np.asarray(coeffs, dtype=float)
+    x = np.linspace(0.0, x_max, 3001)
+    return float(np.min(c[1] + 2 * c[2] * x + 3 * c[3] * x**2))
+
+
+class TestConstraintGrid:
+    """The ``grid`` option imposes shape constraints between the training rows."""
+
+    @pytest.mark.parametrize("method", ["add_monotonic", "add_convex", "add_concave"])
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"grid": 1}, "grid must be an integer >= 2"),
+            ({"grid": 2.5}, "grid must be an integer >= 2"),
+            ({"grid": True}, "grid must be an integer >= 2"),
+            ({"grid_range": (0.0, 1.0)}, "grid_range requires grid"),
+            ({"grid": 10, "grid_range": (1.0, 0.0)}, "low < high"),
+            ({"grid": 10, "grid_range": (0.0, np.inf)}, "low < high"),
+            ({"grid": 10, "grid_range": 5.0}, r"\(low, high\) pair"),
+        ],
+    )
+    def test_invalid_grid_options(self, method, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            getattr(Constraints(), method)("x", **kwargs)
+
+    def test_grid_options_round_trip_through_json(self):
+        import json
+
+        constraints = (
+            Constraints()
+            .add_monotonic("x", direction="increasing", grid=np.int64(25))
+            .add_convex("x", grid=10, grid_range=(0, 5))
+            .add_concave("x")
+        )
+        loaded = Constraints.from_dict(json.loads(json.dumps(constraints.to_dict())))
+        params = [c.params for c in loaded.constraints]
+        assert params == [
+            {"direction": "increasing", "grid": 25},
+            {"grid": 10, "grid_range": [0.0, 5.0]},
+            {},
+        ]
+
+    def test_constraint_points_single_feature(self):
+        from jaxsr.constraints import _constraint_points
+
+        X = jnp.array([[0.5], [2.0]])
+        c = Constraints().add_monotonic("x", grid=4).constraints[0]
+        np.testing.assert_allclose(
+            np.asarray(_constraint_points(c, X, 0))[:, 0], [0.5, 2.0, 0.5, 1.0, 1.5, 2.0]
+        )
+
+        c_range = Constraints().add_monotonic("x", grid=3, grid_range=(-1, 3)).constraints[0]
+        np.testing.assert_allclose(
+            np.asarray(_constraint_points(c_range, X, 0))[:, 0], [0.5, 2.0, -1.0, 1.0, 3.0]
+        )
+
+        no_grid = Constraints().add_monotonic("x").constraints[0]
+        assert _constraint_points(no_grid, X, 0).shape == (2, 1)
+
+    def test_constraint_points_repeat_grid_per_distinct_other_row(self):
+        from jaxsr.constraints import _constraint_points
+
+        X = jnp.array([[0.0, 1.0], [1.0, 1.0], [2.0, 3.0], [0.5, 3.0]])
+        c = Constraints().add_convex("x", grid=3).constraints[0]
+        points = np.asarray(_constraint_points(c, X, 0))
+
+        grid_rows = points[4:]
+        assert grid_rows.shape == (6, 2)  # 2 distinct values of the other feature x 3
+        np.testing.assert_allclose(grid_rows[:, 0], [0.0, 1.0, 2.0, 0.0, 1.0, 2.0])
+        np.testing.assert_allclose(grid_rows[:, 1], [1.0, 1.0, 1.0, 3.0, 3.0, 3.0])
+
+    def test_grid_rows_are_capped(self):
+        from jaxsr.constraints import _MAX_GRID_ROWS, _constraint_points
+
+        rng = np.random.default_rng(0)
+        X = jnp.array(rng.uniform(size=(300, 2)))
+        c = Constraints().add_monotonic("x", grid=50).constraints[0]
+        with pytest.warns(RuntimeWarning, match="evenly spaced combinations"):
+            points = _constraint_points(c, X, 0)
+        assert points.shape[0] - X.shape[0] <= _MAX_GRID_ROWS
+
+    def test_grid_does_not_change_penalty_scale(self):
+        """A uniform violation costs the same with or without a grid."""
+        library = BasisLibrary(n_features=1, feature_names=["x"]).add_constant().add_linear()
+        X = jnp.linspace(0.0, 1.0, 10).reshape(-1, 1)
+        coefficients = jnp.array([0.0, -2.0])  # slope -2 everywhere
+
+        def predict_fn(X_eval):
+            return library.evaluate(X_eval) @ coefficients
+
+        penalties = []
+        for grid in (None, 200):
+            constraints = Constraints().add_monotonic("x", direction="increasing", grid=grid)
+            evaluator = ConstraintEvaluator(constraints, library.names, ["x"])
+            penalties.append(evaluator.compute_penalty(coefficients, predict_fn, X))
+        assert penalties[0] == pytest.approx(40.0, rel=1e-5)  # 10 rows * 2^2
+        assert penalties[1] == pytest.approx(penalties[0], rel=1e-5)
+
+    def test_constrained_grid_removes_between_sample_violation(self):
+        """Without a grid the cubic dips below zero slope between samples; with one it doesn't."""
+        p = _make_monotonic_test_problem()
+        common = {
+            "Phi": p["Phi"],
+            "y": p["y"],
+            "basis_names": p["basis_names"],
+            "feature_names": ["x"],
+            "X": p["X"],
+            "basis_library": p["library"],
+            "selected_indices": p["selected_indices"],
+            "enforcement": "constrained",
+        }
+        coeffs_rows, _ = fit_constrained_ols(
+            constraints=Constraints().add_monotonic("x", "increasing", hard=True), **common
+        )
+        coeffs_grid, mse_grid = fit_constrained_ols(
+            constraints=Constraints().add_monotonic("x", "increasing", hard=True, grid=200),
+            **common,
+        )
+        assert _dense_min_slope(coeffs_rows) < -1e-4
+        assert _dense_min_slope(coeffs_grid) > -2e-5
+        assert np.isfinite(mse_grid)
+
+    def test_exact_grid_removes_between_sample_violation(self):
+        pytest.importorskip("cvxpy")
+        p = _make_monotonic_test_problem()
+        coeffs, _ = fit_constrained_ols(
+            Phi=p["Phi"],
+            y=p["y"],
+            constraints=Constraints().add_monotonic("x", "increasing", hard=True, grid=200),
+            basis_names=p["basis_names"],
+            feature_names=["x"],
+            X=p["X"],
+            basis_library=p["library"],
+            selected_indices=p["selected_indices"],
+            enforcement="exact",
+        )
+        assert _dense_min_slope(coeffs) > -5e-5
+
+    def test_regressor_with_grid(self):
+        """The grid option flows through SymbolicRegressor.fit."""
+        pytest.importorskip("cvxpy")
+        from jaxsr import SymbolicRegressor
+        from jaxsr.utils import feature_derivative
+
+        X = np.linspace(0, 3, 50).reshape(-1, 1)
+        y = -X[:, 0] ** 2 + 3 * X[:, 0]
+        library = (
+            BasisLibrary(n_features=1, feature_names=["x"])
+            .add_constant()
+            .add_linear()
+            .add_polynomials(max_degree=3)
+        )
+        model = SymbolicRegressor(
+            basis_library=library,
+            max_terms=4,
+            constraints=Constraints().add_monotonic("x", "increasing", hard=True, grid=200),
+            constraint_enforcement="exact",
+        ).fit(X, y)
+
+        dense = jnp.linspace(0.0, 3.0, 3001).reshape(-1, 1)
+        slope = np.asarray(feature_derivative(model.predict, dense, 0))
+        assert slope.min() > -5e-5

@@ -74,6 +74,51 @@ Constrain the model to be concave in a feature (curves downward, d²y/dx² <= 0)
 
 **Use when:** Diminishing returns, saturation effects, inverted-U relationships.
 
+### Enforcing Shape Between Data Points: `grid=`
+
+Monotonicity, convexity and concavity are imposed **pointwise**, at the training rows.
+The fitted curve can still bend the wrong way between two rows. That's usually a
+small dip, but it's a real violation. Pass `grid=` to also impose the constraint on
+that many evenly spaced values of the feature. Add `grid_range=(low, high)` to cover
+a region you plan to extrapolate into (the default is the feature's range in the
+training data).
+
+```python
+import numpy as np
+from jaxsr import BasisLibrary, Constraints, SymbolicRegressor
+
+X = np.linspace(0, 3, 50).reshape(-1, 1)
+y = -X[:, 0] ** 2 + 3 * X[:, 0]          # rises, then falls after x = 1.5
+
+library = (
+    BasisLibrary(n_features=1, feature_names=["x"])
+    .add_constant()
+    .add_linear()
+    .add_polynomials(max_degree=3)
+)
+constraints = Constraints().add_monotonic(
+    "x", direction="increasing", hard=True, grid=200, grid_range=(0, 3.5)
+)
+model = SymbolicRegressor(
+    basis_library=library,
+    max_terms=4,
+    constraints=constraints,
+    constraint_enforcement="constrained",  # "exact" is faster if cvxpy is installed
+)
+model.fit(X, y)
+print(model.expression_)
+```
+
+Notes:
+- With several features, the grid runs along the constrained feature for each
+  distinct combination of the other features in the data. It is capped at 1000
+  added rows (evenly subsampled, with a warning).
+- Each grid point is one more linear inequality. `constraint_enforcement="exact"`
+  (cvxpy) handles thousands cheaply; `"constrained"` slows down noticeably past a few
+  hundred.
+- Soft-constraint penalties are rescaled so a grid doesn't change their overall
+  weight.
+
 ### Sign Constraints: `add_sign_constraint()`
 
 Force a specific basis function's coefficient to be positive or negative.
@@ -197,9 +242,10 @@ print(model.expression_)
    print(f"Min prediction: {y_pred.min()}")  # Should be >= 0 if lower bound is 0
    ```
 
-3. **Monotonicity is checked at data points.** The constraint is enforced at training
-   points, not globally. For interpolation this is fine; for extrapolation, verify
-   behavior in the region of interest.
+3. **Shape constraints are checked at points.** Monotonicity, convexity and concavity
+   are enforced at the training rows, and also at grid points if you pass `grid=`.
+   They are not enforced globally. For extrapolation, set `grid_range` to cover the
+   region of interest, and verify behavior there.
 
 4. **Constraints affect the Pareto front.** Constrained models may have slightly higher
    MSE than unconstrained ones. This is expected — you're trading accuracy for physical

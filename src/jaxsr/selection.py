@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .metrics import compute_classification_ic, compute_information_criterion
+from .utils import validate_sample_weight, whiten
 
 # =============================================================================
 # Data Structures
@@ -128,9 +129,10 @@ class SelectionPath:
 def fit_ols(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, float]:
     """
-    Fit ordinary least squares.
+    Fit ordinary (or weighted) least squares.
 
     Parameters
     ----------
@@ -138,17 +140,29 @@ def fit_ols(
         Design matrix of shape (n_samples, n_features).
     y : jnp.ndarray
         Target vector.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights of shape ``(n_samples,)``.  When given, minimises
+        ``sum_i w_i (y_i - phi_i @ c)^2`` and returns the weighted MSE.
+        Weights are normalised to sum to ``n_samples`` first, so the returned
+        MSE stays on the same scale as the unweighted one.
 
     Returns
     -------
     coefficients : jnp.ndarray
         Fitted coefficients.
     mse : float
-        Mean squared error.
+        (Weighted) mean squared error.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` has the wrong length or contains negative or
+        non-finite values.
     """
-    coeffs, residuals, rank, s = jnp.linalg.lstsq(Phi, y, rcond=None)
-    y_pred = Phi @ coeffs
-    mse = float(jnp.mean((y - y_pred) ** 2))
+    w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi_w, y_w = whiten(Phi, w), whiten(y, w)
+    coeffs, residuals, rank, s = jnp.linalg.lstsq(Phi_w, y_w, rcond=None)
+    mse = float(jnp.mean((y_w - Phi_w @ coeffs) ** 2))
     return coeffs, mse
 
 
@@ -156,6 +170,7 @@ def fit_ridge(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     alpha: float,
+    sample_weight: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, float]:
     """
     Fit ridge regression (L2 regularized OLS).
@@ -170,23 +185,33 @@ def fit_ridge(
         Target vector.
     alpha : float
         L2 regularization strength.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights of shape ``(n_samples,)``.  When given, the data
+        term becomes ``sum_i w_i (y_i - phi_i @ c)^2``.
 
     Returns
     -------
     coefficients : jnp.ndarray
         Fitted coefficients.
     mse : float
-        Mean squared error (without regularization term).
+        (Weighted) mean squared error (without regularization term).
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` has the wrong length or contains negative or
+        non-finite values.
     """
-    n_samples, n_features = Phi.shape
+    w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi_w, y_w = whiten(Phi, w), whiten(y, w)
+    n_samples, n_features = Phi_w.shape
 
     # Ridge solution: (Phi^T Phi + alpha*I)^{-1} Phi^T y
-    PhiTPhi = Phi.T @ Phi
+    PhiTPhi = Phi_w.T @ Phi_w
     regularized = PhiTPhi + alpha * jnp.eye(n_features)
-    coeffs = jnp.linalg.solve(regularized, Phi.T @ y)
+    coeffs = jnp.linalg.solve(regularized, Phi_w.T @ y_w)
 
-    y_pred = Phi @ coeffs
-    mse = float(jnp.mean((y - y_pred) ** 2))
+    mse = float(jnp.mean((y_w - Phi_w @ coeffs) ** 2))
     return coeffs, mse
 
 
@@ -389,14 +414,28 @@ def _fit_subset_parametric(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     _param_cache: dict | None = None,
+    sqrt_sample_weight: jnp.ndarray | None = None,
 ) -> SelectionResult:
-    """Profile-likelihood fit: optimise nonlinear params, solve OLS inside."""
+    """Profile-likelihood fit: optimise nonlinear params, solve OLS inside.
+
+    ``Phi`` and ``y`` are expected to be *already whitened* by the caller when
+    sample weights are in play; ``sqrt_sample_weight`` is the same
+    ``sqrt(w)`` factor, needed here because parametric columns are rebuilt
+    from the raw ``X`` at every trial value and must be whitened to match.
+    """
     import re
 
     from scipy.optimize import minimize as sp_minimize
     from scipy.optimize import minimize_scalar
 
     param_index_set = {p.basis_index for p in parametric_in_subset}
+
+    def _parametric_column(pi, params):
+        """Evaluate a parametric basis at ``X``, whitened to match ``Phi``."""
+        col = pi.func(X, **params)
+        if sqrt_sample_weight is None:
+            return col
+        return col * sqrt_sample_weight
 
     # ---- cache check ----
     cache_key = tuple(sorted(indices_list))
@@ -409,7 +448,7 @@ def _fit_subset_parametric(
             for idx in indices_list:
                 if idx in param_index_set:
                     pi = next(p for p in parametric_in_subset if p.basis_index == idx)
-                    cols.append(pi.func(X, **all_pv[idx]))
+                    cols.append(_parametric_column(pi, all_pv[idx]))
                 else:
                     cols.append(Phi[:, idx])
             return jnp.column_stack(cols)
@@ -531,7 +570,7 @@ def _fit_subset_parametric(
     for idx in indices_list:
         if idx in param_index_set:
             pi = next(p for p in parametric_in_subset if p.basis_index == idx)
-            cols.append(pi.func(X, **best_params[idx]))
+            cols.append(_parametric_column(pi, best_params[idx]))
         else:
             cols.append(Phi[:, idx])
     Phi_subset = jnp.column_stack(cols)
@@ -584,6 +623,7 @@ def fit_subset(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     _param_cache: dict | None = None,
+    sqrt_sample_weight: jnp.ndarray | None = None,
 ) -> SelectionResult:
     """
     Fit model using only selected basis functions.
@@ -612,6 +652,10 @@ def fit_subset(
         Number of optuna trials (ignored for scipy).
     _param_cache : dict, optional
         Cache for optimised parametric parameter values.
+    sqrt_sample_weight : jnp.ndarray, optional
+        ``sqrt(sample_weight)`` already applied to ``Phi`` and ``y`` by the
+        caller.  Only needed for parametric libraries, whose columns are
+        rebuilt from the raw ``X`` and must be whitened to match.
 
     Returns
     -------
@@ -640,6 +684,7 @@ def fit_subset(
                 param_optimizer,
                 param_optimization_budget,
                 _param_cache,
+                sqrt_sample_weight,
             )
 
     Phi_subset = Phi[:, indices]
@@ -686,6 +731,7 @@ def greedy_forward_selection(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     constraint_scorer=None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> SelectionPath:
     """
     Greedy forward stepwise selection.
@@ -713,12 +759,25 @@ def greedy_forward_selection(
         Indices of candidate basis functions to consider.
     regularization : float, optional
         L2 regularization strength (ridge penalty).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  Every candidate model is fitted by weighted least
+        squares and scored by the weighted MSE, so the weights steer term
+        selection, not just the final coefficients.
 
     Returns
     -------
     path : SelectionPath
         Selection path with all intermediate results.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
+    _w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi, y = whiten(Phi, _w), whiten(y, _w)
+    _sqrt_w = None if _w is None else jnp.sqrt(_w)
+
     n_basis = Phi.shape[1]
 
     if candidate_indices is None:
@@ -740,6 +799,7 @@ def greedy_forward_selection(
         "param_optimizer": param_optimizer,
         "param_optimization_budget": param_optimization_budget,
         "_param_cache": _param_cache,
+        "sqrt_sample_weight": _sqrt_w,
     }
 
     # Precompute Gram matrix when no parametric basis functions are present
@@ -858,6 +918,7 @@ def greedy_backward_elimination(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     constraint_scorer=None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> SelectionPath:
     """
     Greedy backward elimination.
@@ -881,12 +942,24 @@ def greedy_backward_elimination(
         Criterion for selection.
     start_indices : list of int, optional
         Starting indices. If None, uses all basis functions.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights; every candidate model is fitted and scored by
+        weighted least squares.
 
     Returns
     -------
     path : SelectionPath
         Selection path.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
+    _w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi, y = whiten(Phi, _w), whiten(y, _w)
+    _sqrt_w = None if _w is None else jnp.sqrt(_w)
+
     n_basis = Phi.shape[1]
 
     if start_indices is None:
@@ -905,6 +978,7 @@ def greedy_backward_elimination(
         "param_optimizer": param_optimizer,
         "param_optimization_budget": param_optimization_budget,
         "_param_cache": _param_cache,
+        "sqrt_sample_weight": _sqrt_w,
     }
 
     # Precompute Gram matrix when no parametric basis functions are present
@@ -992,6 +1066,7 @@ def exhaustive_search(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     constraint_scorer=None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> SelectionPath:
     """
     Exhaustive search over all combinations.
@@ -1019,6 +1094,10 @@ def exhaustive_search(
     regularization : float, optional
         L2 regularization strength (ridge penalty).
 
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights; every subset is fitted and scored by weighted
+        least squares.
+
     Returns
     -------
     path : SelectionPath
@@ -1027,8 +1106,13 @@ def exhaustive_search(
     Raises
     ------
     ValueError
-        If too many combinations would be evaluated.
+        If too many combinations would be evaluated, or if ``sample_weight``
+        is invalid.
     """
+    _w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi, y = whiten(Phi, _w), whiten(y, _w)
+    _sqrt_w = None if _w is None else jnp.sqrt(_w)
+
     if candidate_indices is None:
         candidate_indices = list(range(Phi.shape[1]))
 
@@ -1050,6 +1134,7 @@ def exhaustive_search(
         "param_optimizer": param_optimizer,
         "param_optimization_budget": param_optimization_budget,
         "_param_cache": _param_cache,
+        "sqrt_sample_weight": _sqrt_w,
     }
 
     # Precompute Gram matrix when no parametric basis functions are present
@@ -1181,6 +1266,7 @@ def lasso_path_selection(
     param_optimizer: str = "scipy",
     param_optimization_budget: int = 50,
     constraint_scorer=None,
+    sample_weight: jnp.ndarray | None = None,
 ) -> SelectionPath:
     """
     LASSO path screening for variable selection.
@@ -1206,12 +1292,25 @@ def lasso_path_selection(
         Number of regularization values.
     alpha_min_ratio : float
         Ratio of min to max alpha.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  The screening LASSO and the OLS refit of each
+        active set both run on the weighted problem.
 
     Returns
     -------
     path : SelectionPath
         Selection path.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
+    _w = validate_sample_weight(sample_weight, Phi.shape[0])
+    _Phi_raw, _y_raw = Phi, y  # kept unwhitened for the greedy fallback below
+    Phi, y = whiten(Phi, _w), whiten(y, _w)
+    _sqrt_w = None if _w is None else jnp.sqrt(_w)
+
     n_samples, n_features = Phi.shape
 
     # Standardize features
@@ -1247,6 +1346,7 @@ def lasso_path_selection(
         "param_optimizer": param_optimizer,
         "param_optimization_budget": param_optimization_budget,
         "_param_cache": _param_cache,
+        "sqrt_sample_weight": _sqrt_w,
     }
 
     # Precompute Gram matrix when no parametric basis functions are present
@@ -1297,10 +1397,12 @@ def lasso_path_selection(
             best_index = len(results) - 1
 
     if not results:
-        # Fallback to greedy forward if LASSO finds nothing
+        # Fallback to greedy forward if LASSO finds nothing.  Pass the
+        # unwhitened matrices plus the weights -- greedy_forward_selection
+        # whitens for itself, and whitening twice would square the weights.
         return greedy_forward_selection(
-            Phi,
-            y,
+            _Phi_raw,
+            _y_raw,
             basis_names,
             complexities,
             max_terms,
@@ -1311,6 +1413,7 @@ def lasso_path_selection(
             param_optimizer=param_optimizer,
             param_optimization_budget=param_optimization_budget,
             constraint_scorer=constraint_scorer,
+            sample_weight=sample_weight,
         )
 
     return SelectionPath(
@@ -1497,6 +1600,7 @@ def select_features(
     strategy: str = "greedy_forward",
     max_terms: int = 5,
     information_criterion: str = "bic",
+    sample_weight: jnp.ndarray | None = None,
     **kwargs,
 ) -> SelectionPath:
     """
@@ -1518,6 +1622,11 @@ def select_features(
         Maximum number of terms.
     information_criterion : str
         Information criterion for model selection.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights of shape ``(n_samples,)``.  Pass ``Phi`` and ``y``
+        unweighted -- the strategy whitens them internally.  Every strategy
+        supports weights, so selection, coefficients and the reported MSE are
+        all consistent with the weighted objective.
     **kwargs
         Additional arguments for specific strategies.
 
@@ -1525,6 +1634,11 @@ def select_features(
     -------
     path : SelectionPath
         Selection results.
+
+    Raises
+    ------
+    ValueError
+        If ``strategy`` is unknown or ``sample_weight`` is invalid.
     """
     strategies = {
         "greedy_forward": greedy_forward_selection,
@@ -1543,6 +1657,7 @@ def select_features(
         complexities=complexities,
         max_terms=max_terms,
         information_criterion=information_criterion,
+        sample_weight=sample_weight,
         **kwargs,
     )
 

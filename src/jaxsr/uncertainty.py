@@ -11,12 +11,15 @@ OLS inference applies directly.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
 from scipy import stats
+
+from .utils import validate_sample_weight, weighted_mean, whiten
 
 if TYPE_CHECKING:
     from .regressor import SymbolicRegressor
@@ -31,6 +34,7 @@ def compute_unbiased_variance(
     Phi: jnp.ndarray,
     y: jnp.ndarray,
     coefficients: jnp.ndarray,
+    sample_weight: jnp.ndarray | None = None,
 ) -> float:
     """
     Compute unbiased noise variance estimate: s^2 = SSR / (n - p).
@@ -43,14 +47,24 @@ def compute_unbiased_variance(
         Target values of shape (n_samples,).
     coefficients : jnp.ndarray
         Fitted coefficients of shape (n_features,).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights.  The sum of squares becomes
+        ``sum_i w_i r_i^2``, so the estimate is the variance of a
+        *unit-weight* observation under the model ``var(y_i) = sigma^2 / w_i``.
 
     Returns
     -------
     sigma_sq : float
         Unbiased variance estimate.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi.shape
-    residuals = y - Phi @ coefficients
+    w = validate_sample_weight(sample_weight, n)
+    residuals = whiten(y - Phi @ coefficients, w)
     ssr = float(jnp.sum(residuals**2))
     dof = n - p
     if dof <= 0:
@@ -64,9 +78,10 @@ def compute_unbiased_variance(
 def compute_coeff_covariance(
     Phi: jnp.ndarray,
     sigma_sq: float,
+    sample_weight: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
-    Compute coefficient covariance matrix: Cov(beta) = sigma^2 * (Phi^T Phi)^{-1}.
+    Compute coefficient covariance matrix: Cov(beta) = sigma^2 * (Phi^T W Phi)^{-1}.
 
     Uses SVD for numerical stability.
 
@@ -76,15 +91,25 @@ def compute_coeff_covariance(
         Design matrix of shape (n_samples, n_features).
     sigma_sq : float
         Unbiased noise variance estimate.
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights forming the diagonal of ``W``.  ``None`` gives the
+        ordinary ``sigma^2 (Phi^T Phi)^{-1}``.
 
     Returns
     -------
     cov : jnp.ndarray
         Covariance matrix of shape (n_features, n_features).
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
-    U, s, Vt = jnp.linalg.svd(Phi, full_matrices=False)
-    # (Phi^T Phi)^{-1} = V @ diag(1/s^2) @ V^T
-    rcond = jnp.finfo(Phi.dtype).eps * max(Phi.shape)
+    w = validate_sample_weight(sample_weight, Phi.shape[0])
+    Phi_w = whiten(Phi, w)
+    U, s, Vt = jnp.linalg.svd(Phi_w, full_matrices=False)
+    # (Phi^T W Phi)^{-1} = V @ diag(1/s^2) @ V^T for the whitened Phi
+    rcond = jnp.finfo(Phi_w.dtype).eps * max(Phi_w.shape)
     cutoff = rcond * jnp.max(s)
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
@@ -97,6 +122,7 @@ def coefficient_intervals(
     coefficients: jnp.ndarray,
     names: list[str],
     alpha: float = 0.05,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, tuple[float, float, float, float]]:
     """
     Compute t-based confidence intervals for each coefficient.
@@ -113,13 +139,24 @@ def coefficient_intervals(
         Names of basis functions.
     alpha : float
         Significance level (default 0.05 for 95% CIs).
+    sample_weight : jnp.ndarray, optional
+        Per-sample weights used for the fit.  Standard errors then come from
+        the weighted covariance ``s^2 (Phi^T W Phi)^{-1}``; passing ``None``
+        for a weighted fit understates the uncertainty of coefficients that
+        rest mostly on down-weighted rows.
 
     Returns
     -------
     intervals : dict
         {name: (estimate, lower, upper, se)} for each coefficient.
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi.shape
+    w = validate_sample_weight(sample_weight, n)
     dof = n - p
     if dof <= 0:
         warnings.warn("Not enough degrees of freedom for coefficient intervals.", stacklevel=2)
@@ -128,8 +165,8 @@ def coefficient_intervals(
             for name, coef in zip(names, coefficients, strict=False)
         }
 
-    sigma_sq = compute_unbiased_variance(Phi, y, coefficients)
-    cov = compute_coeff_covariance(Phi, sigma_sq)
+    sigma_sq = compute_unbiased_variance(Phi, y, coefficients, w)
+    cov = compute_coeff_covariance(Phi, sigma_sq, w)
     se = jnp.sqrt(jnp.diag(cov))
 
     t_crit = stats.t.ppf(1 - alpha / 2, dof)
@@ -151,6 +188,7 @@ def prediction_interval(
     coefficients: jnp.ndarray,
     Phi_new: jnp.ndarray,
     alpha: float = 0.05,
+    sample_weight: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """
     Compute prediction and confidence intervals for new observations.
@@ -170,6 +208,10 @@ def prediction_interval(
         Design matrix for new points of shape (n_new, p).
     alpha : float
         Significance level (default 0.05 for 95% intervals).
+    sample_weight : jnp.ndarray, optional
+        Weights of the *training* rows, of shape ``(n_train,)``.  ``Phi_new``
+        is never weighted: the interval it produces is for a new observation
+        of unit weight, i.e. one as precise as an average training point.
 
     Returns
     -------
@@ -180,8 +222,14 @@ def prediction_interval(
         - "conf_lower", "conf_upper": confidence band bounds
         - "pred_se": prediction standard error
         - "conf_se": confidence standard error (mean response)
+
+    Raises
+    ------
+    ValueError
+        If ``sample_weight`` is invalid.
     """
     n, p = Phi_train.shape
+    w = validate_sample_weight(sample_weight, n)
     dof = n - p
     if dof <= 0:
         y_pred = Phi_new @ coefficients
@@ -196,12 +244,13 @@ def prediction_interval(
             "conf_se": nan_arr,
         }
 
-    sigma_sq = compute_unbiased_variance(Phi_train, y_train, coefficients)
+    sigma_sq = compute_unbiased_variance(Phi_train, y_train, coefficients, w)
     sigma = jnp.sqrt(sigma_sq)
 
-    # Compute (Phi^T Phi)^{-1} via SVD
-    U, s, Vt = jnp.linalg.svd(Phi_train, full_matrices=False)
-    rcond = jnp.finfo(Phi_train.dtype).eps * max(Phi_train.shape)
+    # Compute (Phi^T W Phi)^{-1} via SVD of the whitened design matrix
+    Phi_train_w = whiten(Phi_train, w)
+    U, s, Vt = jnp.linalg.svd(Phi_train_w, full_matrices=False)
+    rcond = jnp.finfo(Phi_train_w.dtype).eps * max(Phi_train_w.shape)
     cutoff = rcond * jnp.max(s)
     s_inv_sq = jnp.where(s > cutoff, 1.0 / (s**2), 0.0)
     PhiTPhiInv = Vt.T @ jnp.diag(s_inv_sq) @ Vt
@@ -492,6 +541,15 @@ def conformal_predict_split(
         - "lower": lower interval bound
         - "upper": upper interval bound
         - "quantile": the conformal quantile used
+
+    Notes
+    -----
+    The calibration set is treated as unweighted, even when ``model`` was
+    fitted with ``sample_weight``: coverage here comes from exchangeability of
+    the calibration residuals, not from the fit.  If the calibration points
+    have unequal precision, the resulting interval is a valid but
+    uninformatively wide one for the precise points.  For a weight-aware
+    interval use ``method="jackknife+"``, which reuses the training weights.
     """
     model._check_is_fitted()
     X_cal = jnp.atleast_2d(jnp.asarray(X_cal))
@@ -547,6 +605,20 @@ def conformal_predict_jackknife_plus(
         - "y_pred": point predictions
         - "lower": lower interval bound
         - "upper": upper interval bound
+
+    Raises
+    ------
+    ValueError
+        If the model has no stored training data.
+
+    Notes
+    -----
+    For a weighted fit the leverages are the weighted-least-squares ones and
+    the nonconformity scores are the whitened LOO residuals
+    ``sqrt(w_i) |r_i| / (1 - h_ii)``, which are exchangeable under the model
+    ``var(y_i) = sigma^2 / w_i``.  The resulting interval is therefore for a
+    new observation of *unit* weight; scale it by ``1 / sqrt(w_new)`` if the
+    new point has a known precision of its own.
     """
     model._check_is_fitted()
     X_new = jnp.atleast_2d(jnp.asarray(X_new))
@@ -556,20 +628,21 @@ def conformal_predict_jackknife_plus(
 
     X_train = model._X_train
     y_train = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     n = len(y_train)
 
     # Compute design matrix for training data
     Phi_train = model.basis_library.evaluate_subset(X_train, model._result.selected_indices)
     coefficients = model._result.coefficients
 
-    # Compute leverage (hat matrix diagonal)
-    Phi_pinv = jnp.linalg.pinv(Phi_train)
-    H = Phi_train @ Phi_pinv
-    h_diag = jnp.diag(H)
+    # Compute leverage (hat matrix diagonal) of the whitened problem:
+    # h_ii = w_i * phi_i^T (Phi^T W Phi)^-1 phi_i
+    Phi_w = whiten(Phi_train, weights)
+    h_diag = jnp.sum(Phi_w * jnp.linalg.pinv(Phi_w).T, axis=1)
 
-    # LOO residuals: e_i / (1 - h_ii)
+    # LOO residuals: e_i / (1 - h_ii), whitened so they are exchangeable
     y_pred_train = Phi_train @ coefficients
-    residuals = y_train - y_pred_train
+    residuals = whiten(y_train - y_pred_train, weights)
     loo_residuals = residuals / (1 - h_diag + 1e-10)
 
     # LOO predictions: y_hat_i^{-i} = y_i - e_i/(1-h_ii) ... wait,
@@ -638,6 +711,20 @@ def bootstrap_coefficients(
         - "lower": lower CI bound for each coefficient
         - "upper": upper CI bound for each coefficient
         - "names": coefficient names
+
+    Raises
+    ------
+    ValueError
+        If the model has no stored training data.
+
+    Notes
+    -----
+    Weights from :meth:`~jaxsr.SymbolicRegressor.fit` are honoured
+    automatically.  Raw residuals of a weighted fit are not exchangeable --
+    a down-weighted row is *expected* to miss by more -- so resampling them
+    directly would leak that row's noise onto precise rows.  The resampling
+    therefore happens in whitened space, on ``sqrt(w_i) * r_i``, and each
+    bootstrap replicate is refit by weighted least squares.
     """
     model._check_is_fitted()
 
@@ -646,21 +733,27 @@ def bootstrap_coefficients(
 
     Phi_train = model.basis_library.evaluate_subset(model._X_train, model._result.selected_indices)
     y_train = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     coefficients = model._result.coefficients
     y_hat = Phi_train @ coefficients
-    residuals = y_train - y_hat
+
+    # Work in whitened space: OLS there is exactly WLS here, and the whitened
+    # residuals are homoscedastic, so they can be resampled across rows.
+    Phi_w = whiten(Phi_train, weights)
+    residuals_w = whiten(y_train - y_hat, weights)
+    y_hat_w = whiten(y_hat, weights)
 
     rng = np.random.RandomState(seed)
     n = len(y_train)
 
     # Generate all bootstrap y* at once
     boot_indices = rng.randint(0, n, size=(n_bootstrap, n))
-    boot_residuals = np.array(residuals)[boot_indices]  # (n_bootstrap, n)
-    y_star = np.array(y_hat)[None, :] + boot_residuals  # (n_bootstrap, n)
+    boot_residuals = np.array(residuals_w)[boot_indices]  # (n_bootstrap, n)
+    y_star = np.array(y_hat_w)[None, :] + boot_residuals  # (n_bootstrap, n)
 
-    # Vectorized OLS: beta* = (Phi^T Phi)^{-1} Phi^T y*
+    # Vectorized WLS: beta* = (Phi_w^T Phi_w)^{-1} Phi_w^T y_w*
     # Pre-compute pseudo-inverse
-    Phi_np = np.array(Phi_train)
+    Phi_np = np.array(Phi_w)
     PhiTPhiInv_PhiT = np.linalg.pinv(Phi_np)  # (p, n)
 
     # All bootstrap coefficients at once
@@ -737,87 +830,468 @@ def bootstrap_predict(
     }
 
 
-def bootstrap_model_selection(
-    model: SymbolicRegressor,
-    X: jnp.ndarray,
-    y: jnp.ndarray,
-    n_bootstrap: int = 100,
-    seed: int | None = None,
-) -> dict[str, Any]:
+def _summarize_parameter_samples(values: list[float]) -> dict[str, float | int]:
     """
-    Pairs bootstrap for model selection stability.
+    Summarise the distribution of one nonlinear parameter over replicates.
 
-    Resamples (X_i, y_i) pairs, reruns full model.fit(), and tracks
-    which features are selected across bootstrap samples.
+    Parameters
+    ----------
+    values : list of float
+        Fitted values of the parameter, one per replicate that selected the
+        basis function it belongs to.
+
+    Returns
+    -------
+    summary : dict
+        Keys ``"mean"``, ``"sd"``, ``"q05"``, ``"q95"`` and ``"n"`` (the number
+        of replicates the summary is based on). ``"sd"`` is 0.0 for a single
+        replicate.
+    """
+    arr = np.asarray(values, dtype=float)
+    return {
+        "mean": float(np.mean(arr)),
+        "sd": float(np.std(arr, ddof=1)) if arr.size > 1 else 0.0,
+        "q05": float(np.percentile(arr, 5)),
+        "q95": float(np.percentile(arr, 95)),
+        "n": int(arr.size),
+    }
+
+
+def _model_feature_names(model: Any) -> list[str] | None:
+    """
+    Selected feature names of a fitted model, keyed by basis identity.
+
+    A parametric basis renders its name with the fitted parameter substituted
+    in (``"exp(-0.4913*x)"``), and that value is re-optimised in every
+    replicate, so the rendered name is not a stable key: aggregating on it
+    gives every replicate a unique feature. The library's canonical name (the
+    template ``"exp(-a*x)"``) is used instead. Non-parametric bases are
+    unaffected.
 
     Parameters
     ----------
     model : SymbolicRegressor
-        Fitted model (used as template).
-    X : jnp.ndarray
-        Training features.
-    y : jnp.ndarray
-        Training targets.
-    n_bootstrap : int
-        Number of bootstrap samples.
-    seed : int, optional
-        Random seed.
+        A fitted model.
+
+    Returns
+    -------
+    features : list of str or None
+        Canonical names of the selected features, or None if the model does not
+        expose the library and indices needed to resolve them (in which case
+        the caller falls back to ``selected_features_``).
+    """
+    library = getattr(model, "basis_library", None)
+    result = getattr(model, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return None
+    return [library.canonical_name(int(i)) for i in np.asarray(result.selected_indices)]
+
+
+def _replicate_parametric_params(replicate: Any) -> dict[str, dict[str, float]]:
+    """
+    Fitted nonlinear parameters of one replicate, keyed by basis identity.
+
+    Parameters
+    ----------
+    replicate : SymbolicRegressor or Mapping or sequence of str
+        A replicate in any of the forms :func:`_replicate_terms` accepts.
+
+    Returns
+    -------
+    params : dict
+        ``{basis identity: {param_name: fitted value}}``, restricted to bases
+        the replicate actually selected. Empty for replicates that are not
+        fitted models or whose library has no parametric basis functions.
+    """
+    library = getattr(replicate, "basis_library", None)
+    result = getattr(replicate, "_result", None)
+    if library is None or result is None or not hasattr(library, "canonical_name"):
+        return {}
+
+    fitted = getattr(result, "parametric_params", None)
+    if not fitted:
+        return {}
+
+    selected = {int(i) for i in np.asarray(result.selected_indices)}
+    return {
+        library.canonical_name(int(idx)): {k: float(v) for k, v in params.items()}
+        for idx, params in fitted.items()
+        if int(idx) in selected  # optimised during the search but not in the final model
+    }
+
+
+def _replicate_terms(replicate: Any) -> tuple[list[str], str]:
+    """
+    Extract ``(selected feature names, expression)`` from one replicate.
+
+    Feature names come from basis identity where the replicate is a fitted
+    model, so that a parametric basis aggregates across replicates instead of
+    appearing once per fitted parameter value. See :func:`_model_feature_names`.
+
+    Parameters
+    ----------
+    replicate : SymbolicRegressor or Mapping or sequence of str
+        A fitted model, a mapping with a ``"features"`` key (and optionally an
+        ``"expression"`` key), or a plain sequence of selected feature names.
+
+    Returns
+    -------
+    features : list of str
+        Selected feature names.
+    expression : str
+        The replicate's expression, or the features joined with ``" + "`` when
+        no expression is available.
+
+    Raises
+    ------
+    TypeError
+        If the replicate is not one of the supported forms.
+    ValueError
+        If the replicate is a model that has not been fitted.
+    """
+    if hasattr(replicate, "selected_features_"):
+        if not getattr(replicate, "_is_fitted", True):
+            raise ValueError("Replicate models must be fitted before summarising.")
+        canonical = _model_feature_names(replicate)
+        features = (
+            canonical if canonical is not None else [str(f) for f in replicate.selected_features_]
+        )
+        expression = str(getattr(replicate, "expression_", "") or " + ".join(features))
+        return features, expression
+
+    if isinstance(replicate, Mapping):
+        if "features" not in replicate:
+            raise TypeError("Mapping replicates must have a 'features' key.")
+        features = [str(f) for f in replicate["features"]]
+        expression = str(replicate.get("expression") or " + ".join(features))
+        return features, expression
+
+    if isinstance(replicate, (list, tuple, set, frozenset, np.ndarray)):
+        features = [str(f) for f in replicate]
+        return features, " + ".join(features)
+
+    raise TypeError(
+        f"Cannot read selected features from replicate of type {type(replicate).__name__}. "
+        f"Pass fitted models, mappings with a 'features' key, or sequences of feature names."
+    )
+
+
+def summarize_selection_replicates(
+    replicates: Sequence[Any],
+    reference: Any | None = None,
+    resampling: str = "custom",
+) -> dict[str, Any]:
+    """
+    Summarise selection stability over replicates the caller produced.
+
+    ``bootstrap_model_selection`` uses this internally, but it is public so
+    that replicates generated outside JAXSR can be reported the same way. That
+    matters when the rows fed to ``fit`` are themselves outputs of an upstream
+    step -- a smoother, a derivative estimate, a simulation -- because
+    resampling those rows perturbs nothing about the step that produced them.
+    The honest replicate there re-runs the whole pipeline; see
+    ``bootstrap_model_selection(..., resample_fn=...)`` or simply collect the
+    fitted models yourself and pass them here.
+
+    Parameters
+    ----------
+    replicates : sequence
+        One entry per replicate. Each may be a fitted ``SymbolicRegressor``, a
+        mapping with a ``"features"`` key (optionally ``"expression"``), or a
+        sequence of selected feature names.
+    reference : SymbolicRegressor or sequence of str, optional
+        The feature set to measure stability against, typically the model fit
+        to the full data. If omitted, ``stability_score`` is the frequency of
+        the most common structure instead.
+    resampling : str
+        Label recorded in the result describing what was resampled, e.g.
+        ``"rows"``, ``"groups"``, ``"pipeline"``.
 
     Returns
     -------
     result : dict
         Dictionary with keys:
-        - "feature_frequencies": dict mapping feature name to selection frequency
-        - "stability_score": fraction of bootstraps selecting the same features
-        - "expressions": list of expressions found across bootstraps
-    """
-    X = jnp.atleast_2d(jnp.asarray(X))
-    y = jnp.asarray(y).ravel()
-    n = len(y)
 
-    rng = np.random.RandomState(seed)
+        - "feature_frequencies": dict mapping feature name to the fraction of
+          replicates that selected it, highest first. Model replicates are
+          keyed by basis identity, so a parametric basis appears once (as the
+          registered ``"exp(-a*x)"``) rather than once per fitted value
+        - "parameter_distributions": dict mapping basis identity to
+          ``{param_name: {"mean", "sd", "q05", "q95", "n"}}`` for parametric
+          basis functions; empty unless the replicates are fitted models with
+          parametric bases
+        - "stability_score": fraction of replicates whose selected feature set
+          equals ``reference`` (or the modal structure's frequency)
+        - "expressions": list of expressions, one per replicate, with
+          parametric values rendered as fitted in that replicate
+        - "structures": list of dicts with "features", "count", "frequency",
+          one per distinct selected feature set, most frequent first
+        - "n_replicates", "n_distinct_structures", "n_distinct_expressions"
+        - "reference_features": the reference feature set, or None
+        - "resampling": the ``resampling`` label
+
+    Raises
+    ------
+    TypeError
+        If a replicate is not one of the supported forms.
+
+    Examples
+    --------
+    >>> models = [fit_one_replicate(i) for i in range(90)]  # doctest: +SKIP
+    >>> summary = summarize_selection_replicates(  # doctest: +SKIP
+    ...     models, reference=full_fit, resampling="pipeline"
+    ... )
+    >>> summary["n_distinct_structures"]  # doctest: +SKIP
+    9
+    """
+    reference_features: list[str] | None = None
+    if reference is not None:
+        reference_features = sorted(set(_replicate_terms(reference)[0]))
+    reference_set = set(reference_features) if reference_features is not None else None
 
     feature_counts: dict[str, int] = {}
-    original_features = set(model.selected_features_)
+    structure_counts: dict[tuple[str, ...], int] = {}
+    param_samples: dict[str, dict[str, list[float]]] = {}
+    expressions: list[str] = []
     same_count = 0
-    expressions = []
 
-    for _b in range(n_bootstrap):
-        boot_idx = rng.randint(0, n, size=n)
-        X_boot = X[boot_idx]
-        y_boot = y[boot_idx]
+    for replicate in replicates:
+        features, expression = _replicate_terms(replicate)
+        expressions.append(expression)
 
-        # Clone model
-        model_boot = model.__class__(
-            basis_library=model.basis_library,
-            max_terms=model.max_terms,
-            strategy=model.strategy,
-            information_criterion=model.information_criterion,
-            cv_folds=model.cv_folds,
-            regularization=model.regularization,
-            constraints=model.constraints,
-            random_state=model.random_state,
-        )
-        try:
-            model_boot.fit(X_boot, y_boot)
-            selected = set(model_boot.selected_features_)
-            for feat in selected:
-                feature_counts[feat] = feature_counts.get(feat, 0) + 1
-            if selected == original_features:
-                same_count += 1
-            expressions.append(model_boot.expression_)
-        except Exception:
-            continue
+        selected = set(features)
+        for feat in selected:
+            feature_counts[feat] = feature_counts.get(feat, 0) + 1
 
-    total = max(sum(1 for _ in expressions), 1)
-    feature_frequencies = {k: v / total for k, v in feature_counts.items()}
-    stability_score = same_count / total
+        key = tuple(sorted(selected))
+        structure_counts[key] = structure_counts.get(key, 0) + 1
+
+        if reference_set is not None and selected == reference_set:
+            same_count += 1
+
+        for name, params in _replicate_parametric_params(replicate).items():
+            per_basis = param_samples.setdefault(name, {})
+            for pname, value in params.items():
+                per_basis.setdefault(pname, []).append(value)
+
+    n_replicates = len(expressions)
+    total = max(n_replicates, 1)
+
+    feature_frequencies = {
+        k: v / total for k, v in sorted(feature_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    }
+    structures = [
+        {"features": list(key), "count": count, "frequency": count / total}
+        for key, count in sorted(structure_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    if reference_set is not None:
+        stability_score = same_count / total
+    elif structures:
+        stability_score = structures[0]["frequency"]
+    else:
+        stability_score = 0.0
+
+    parameter_distributions = {
+        name: {pname: _summarize_parameter_samples(vals) for pname, vals in per_basis.items()}
+        for name, per_basis in param_samples.items()
+    }
 
     return {
         "feature_frequencies": feature_frequencies,
+        "parameter_distributions": parameter_distributions,
         "stability_score": stability_score,
         "expressions": expressions,
+        "structures": structures,
+        "n_replicates": n_replicates,
+        "n_distinct_structures": len(structures),
+        "n_distinct_expressions": len(set(expressions)),
+        "reference_features": reference_features,
+        "resampling": resampling,
     }
+
+
+def bootstrap_model_selection(
+    model: SymbolicRegressor,
+    X: jnp.ndarray | None,
+    y: jnp.ndarray | None,
+    n_bootstrap: int = 100,
+    seed: int | None = None,
+    groups: Any | None = None,
+    resample_fn: Callable[[np.random.RandomState], tuple[Any, Any]] | None = None,
+    sample_weight: jnp.ndarray | None = None,
+) -> dict[str, Any]:
+    """
+    Bootstrap model selection stability at the row, group, or pipeline level.
+
+    By default this is a pairs bootstrap: it resamples ``(X_i, y_i)`` rows,
+    reruns ``model.fit()``, and tracks which features are selected. That is
+    only the right unit of resampling when rows are independent observations.
+
+    - **Rows are grouped** -- several rows share one experimental condition,
+      one measured curve, one subject -- pass ``groups``. Whole groups are then
+      resampled with replacement, so a replicate never sees part of a group it
+      also trained on. Row resampling here reports a spread far narrower than
+      the real between-group variability.
+    - **Rows come out of an upstream fit** -- spline evaluations, estimated
+      derivatives, simulation output -- pass ``resample_fn``. Resampling such
+      rows perturbs nothing about the step that produced them, so the dominant
+      error source is invisible to a row-wise bootstrap. ``resample_fn`` gets
+      to regenerate the data (and re-run that upstream step) per replicate.
+
+    Parameters
+    ----------
+    model : SymbolicRegressor
+        Model used as the template for every replicate. If it is fitted, its
+        selected features become the reference for ``stability_score``.
+    X : jnp.ndarray or None
+        Training features. May be None when ``resample_fn`` is given.
+    y : jnp.ndarray or None
+        Training targets. May be None when ``resample_fn`` is given.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    seed : int, optional
+        Random seed.
+    groups : array-like of shape (n_samples,), optional
+        Group label per row. When given, groups rather than rows are resampled
+        with replacement. Cannot be combined with ``resample_fn``.
+    resample_fn : callable, optional
+        ``resample_fn(rng) -> (X_b, y_b)``, called once per replicate with the
+        bootstrap's ``numpy.random.RandomState`` so the replicates stay
+        reproducible under ``seed``. Use it to regenerate the data and re-run
+        whatever upstream stage produced it. Cannot be combined with ``groups``.
+    sample_weight : array-like of shape (n_samples,), optional
+        Per-sample weights. Each weight follows its row into the resample --
+        under ``groups`` too, since a group is drawn as a whole block of rows
+        -- so a replicate that happens to draw mostly down-weighted rows is
+        fitted as the thin evidence it is. Defaults to the weights ``model``
+        was fitted with when ``X``/``y`` are that same training set. Cannot be
+        combined with ``resample_fn``: those rows are regenerated, so there is
+        no row for a stored weight to belong to.
+
+    Returns
+    -------
+    result : dict
+        The dictionary returned by ``summarize_selection_replicates``, plus:
+
+        - "n_failed": number of replicates whose fit raised and was skipped
+        - "resampling": ``"rows"``, ``"groups"``, or ``"pipeline"``
+
+    Raises
+    ------
+    ValueError
+        If ``n_bootstrap < 1``, if both ``groups`` and ``resample_fn`` are
+        given, if ``groups`` has the wrong length, if fewer than 2 groups are
+        present, if ``X``/``y`` are missing without a ``resample_fn``, or if
+        ``sample_weight`` is invalid or combined with ``resample_fn``.
+    TypeError
+        If ``resample_fn`` does not return a ``(X_b, y_b)`` pair.
+
+    Examples
+    --------
+    >>> bootstrap_model_selection(model, X, y, groups=temperature_id)  # doctest: +SKIP
+    >>> def replicate(rng):  # doctest: +SKIP
+    ...     data = simulate(seed=rng.randint(2**31))
+    ...     return features_from_smoother(data), derivative_from_smoother(data)
+    >>> bootstrap_model_selection(model, None, None, resample_fn=replicate)  # doctest: +SKIP
+    """
+    from .metrics import group_indices
+    from .regressor import _clone_estimator
+
+    if n_bootstrap < 1:
+        raise ValueError(f"n_bootstrap must be at least 1, got {n_bootstrap}.")
+    if groups is not None and resample_fn is not None:
+        raise ValueError(
+            "Pass either groups or resample_fn, not both: resample_fn already "
+            "controls how each replicate is generated."
+        )
+    if sample_weight is not None and resample_fn is not None:
+        raise ValueError(
+            "sample_weight cannot be combined with resample_fn: each replicate "
+            "regenerates its own rows, so there is no row for a stored weight "
+            "to belong to. Weight the data inside resample_fn instead."
+        )
+
+    rng = np.random.RandomState(seed)
+    row_indices: list[np.ndarray] = []
+    weights = None
+
+    if resample_fn is not None:
+        resampling = "pipeline"
+    else:
+        if X is None or y is None:
+            raise ValueError("X and y are required unless resample_fn is given.")
+        X = jnp.atleast_2d(jnp.asarray(X))
+        y = jnp.asarray(y).ravel()
+        n = len(y)
+        if X.shape[0] != n:
+            raise ValueError(f"X has {X.shape[0]} rows but y has {n} values.")
+
+        # Inherit the model's own weights when this is its training set; a
+        # length mismatch means it is different data, so say so rather than
+        # quietly reverting to an unweighted bootstrap.
+        if sample_weight is None and getattr(model, "_sample_weight", None) is not None:
+            if len(model._sample_weight) == n:
+                sample_weight = model._sample_weight
+            else:
+                warnings.warn(
+                    "model was fitted with sample_weight but X/y here have a different "
+                    "length, so the bootstrap runs unweighted. Pass sample_weight "
+                    "explicitly to weight it.",
+                    stacklevel=2,
+                )
+        weights = validate_sample_weight(sample_weight, n)
+
+        if groups is None:
+            resampling = "rows"
+        else:
+            resampling = "groups"
+            unique_groups, row_indices = group_indices(groups)
+            if sum(len(idx) for idx in row_indices) != n:
+                raise ValueError(
+                    f"groups has {np.asarray(groups).ravel().size} labels but X has {n} rows."
+                )
+            if len(unique_groups) < 2:
+                raise ValueError("Grouped bootstrap requires at least 2 distinct groups.")
+
+    fitted: list[SymbolicRegressor] = []
+    n_failed = 0
+
+    for _b in range(n_bootstrap):
+        if resample_fn is not None:
+            sample = resample_fn(rng)
+            if not isinstance(sample, tuple) or len(sample) != 2:
+                raise TypeError("resample_fn must return a (X_b, y_b) tuple.")
+            X_boot = jnp.atleast_2d(jnp.asarray(sample[0]))
+            y_boot = jnp.asarray(sample[1]).ravel()
+            w_boot = None
+        elif resampling == "groups":
+            draw = rng.randint(0, len(row_indices), size=len(row_indices))
+            boot_idx = np.concatenate([row_indices[g] for g in draw])
+            X_boot, y_boot = X[boot_idx], y[boot_idx]
+            w_boot = None if weights is None else weights[boot_idx]
+        else:
+            boot_idx = rng.randint(0, len(y), size=len(y))
+            X_boot, y_boot = X[boot_idx], y[boot_idx]
+            w_boot = None if weights is None else weights[boot_idx]
+
+        if w_boot is not None and float(jnp.sum(w_boot)) <= 0:
+            # Degenerate resample: every drawn row carried zero weight.
+            n_failed += 1
+            continue
+
+        model_boot = _clone_estimator(model)
+        try:
+            model_boot.fit(X_boot, y_boot, sample_weight=w_boot)
+        except Exception:
+            n_failed += 1
+            continue
+        fitted.append(model_boot)
+
+    reference = model if getattr(model, "_is_fitted", False) else None
+    result = summarize_selection_replicates(fitted, reference=reference, resampling=resampling)
+    result["n_failed"] = n_failed
+    return result
 
 
 # =============================================================================
@@ -962,6 +1436,12 @@ def anova(
     The returned :pyclass:`AnovaResult` includes diagnostic warnings when
     these conditions are detected.
 
+    When the model was fitted with ``sample_weight``, every sum of squares is
+    the weighted one (``sum_i w_i r_i^2``) and the total is taken about the
+    weighted mean of ``y``, so the table decomposes the same quantity the fit
+    minimised.  Degrees of freedom stay nominal, matching the information
+    criteria.
+
     Examples
     --------
     >>> from jaxsr.uncertainty import anova
@@ -977,16 +1457,22 @@ def anova(
 
     X = model._X_train
     y = model._y_train
+    weights = getattr(model, "_sample_weight", None)
     n = len(y)
     selected = list(np.array(model._result.selected_indices))
     names = list(model._result.selected_names)
     p = len(selected)
 
+    # Everything below is computed on the whitened problem, so each sum of
+    # squares is the weighted one and reduces to the ordinary one when the
+    # model was fitted without weights.
+    y_w = whiten(y, weights)
+
     # Full model design matrix and residuals
     Phi_full = model.basis_library.evaluate_subset(X, selected)
     y_hat_full = Phi_full @ model._result.coefficients
-    ss_res_full = float(jnp.sum((y - y_hat_full) ** 2))
-    ss_tot = float(jnp.sum((y - jnp.mean(y)) ** 2))
+    ss_res_full = float(jnp.sum(whiten(y - y_hat_full, weights) ** 2))
+    ss_tot = float(jnp.sum(whiten(y - weighted_mean(y, weights), weights) ** 2))
     ss_model = ss_tot - ss_res_full
     df_res = n - p
     ms_res = ss_res_full / df_res if df_res > 0 else float("inf")
@@ -1014,9 +1500,9 @@ def anova(
         ss_prev = ss_tot  # residual SS of the "null" (intercept-free) model
         for k in range(p):
             subset = selected[: k + 1]
-            Phi_k = model.basis_library.evaluate_subset(X, subset)
-            beta_k = jnp.linalg.lstsq(Phi_k, y, rcond=None)[0]
-            ss_res_k = float(jnp.sum((y - Phi_k @ beta_k) ** 2))
+            Phi_k = whiten(model.basis_library.evaluate_subset(X, subset), weights)
+            beta_k = jnp.linalg.lstsq(Phi_k, y_w, rcond=None)[0]
+            ss_res_k = float(jnp.sum((y_w - Phi_k @ beta_k) ** 2))
             ss_term = ss_prev - ss_res_k  # extra SS explained by this term
             ss_term = max(ss_term, 0.0)
             ms_term = ss_term  # df = 1 per term
@@ -1042,9 +1528,9 @@ def anova(
                 # Only one term — its marginal SS is the whole model SS
                 ss_term = ss_model
             else:
-                Phi_mk = model.basis_library.evaluate_subset(X, subset_minus_k)
-                beta_mk = jnp.linalg.lstsq(Phi_mk, y, rcond=None)[0]
-                ss_res_mk = float(jnp.sum((y - Phi_mk @ beta_mk) ** 2))
+                Phi_mk = whiten(model.basis_library.evaluate_subset(X, subset_minus_k), weights)
+                beta_mk = jnp.linalg.lstsq(Phi_mk, y_w, rcond=None)[0]
+                ss_res_mk = float(jnp.sum((y_w - Phi_mk @ beta_mk) ** 2))
                 ss_term = ss_res_mk - ss_res_full
             ss_term = max(ss_term, 0.0)
             ms_term = ss_term

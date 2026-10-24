@@ -39,6 +39,9 @@ from .basis import BasisFunction, BasisLibrary
 # Classification
 from .classifier import SymbolicClassifier, fit_symbolic_classification
 from .constraints import Constraint, Constraints, ConstraintType, build_constraint_scorer
+
+# Multivariate derivative estimation
+from .derivatives import SurfaceDerivatives, estimate_partial_derivatives
 from .dynamics import DynamicsResult, discover_dynamics, estimate_derivatives
 
 # Metrics
@@ -115,6 +118,15 @@ from .selection import (
 from .simplify import SimplificationResult, simplify_expression
 from .study import DOEStudy
 
+# Superposition / master curves
+from .superposition import (
+    MasterCurve,
+    ShiftTerm,
+    SuperpositionRegressor,
+    ValidityReport,
+    collapse_rmse,
+)
+
 # Uncertainty Quantification
 from .uncertainty import (
     AnovaResult,
@@ -135,6 +147,7 @@ from .uncertainty import (
     conformal_predict_split,
     ensemble_predict,
     prediction_interval,
+    summarize_selection_replicates,
 )
 
 
@@ -204,6 +217,9 @@ __all__ = [
     "DynamicsResult",
     "discover_dynamics",
     "estimate_derivatives",
+    # Multivariate derivative estimation
+    "SurfaceDerivatives",
+    "estimate_partial_derivatives",
     # Metrics
     "ModelComparison",
     "compare_models",
@@ -252,6 +268,12 @@ __all__ = [
     # Simplification
     "SimplificationResult",
     "simplify_expression",
+    # Superposition / master curves
+    "MasterCurve",
+    "ShiftTerm",
+    "SuperpositionRegressor",
+    "ValidityReport",
+    "collapse_rmse",
     # Uncertainty Quantification
     "AnovaResult",
     "AnovaRow",
@@ -267,4 +289,5 @@ __all__ = [
     "conformal_predict_split",
     "ensemble_predict",
     "prediction_interval",
+    "summarize_selection_replicates",
 ]

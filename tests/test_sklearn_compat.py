@@ -159,8 +159,17 @@ class TestCloneEstimator:
         assert type(clone) is SymbolicRegressor
         assert clone.max_terms == model.max_terms
         assert clone.strategy == model.strategy
-        assert clone.basis_library is model.basis_library
         assert not clone._is_fitted
+
+    def test_clone_gets_its_own_basis_library(self, model):
+        """The clone must not share the library: fitting a parametric library
+        rewrites names and rebinds closures in place."""
+        clone = _clone_estimator(model)
+        assert clone.basis_library is not model.basis_library
+        assert clone.basis_library.names == model.basis_library.names
+
+        clone.basis_library.basis_functions[0].name = "renamed"
+        assert model.basis_library.names[0] != "renamed"
 
     def test_clone_multi_output(self, multi_model):
         clone = _clone_estimator(multi_model)

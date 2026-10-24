@@ -58,6 +58,12 @@ def estimate_derivatives(
     ValueError
         If *method* is unknown, shapes are inconsistent, *t* is not
         monotonically increasing, or savgol is used with non-uniform spacing.
+
+    See Also
+    --------
+    jaxsr.derivatives.SurfaceDerivatives : Partial derivatives of an N-D surface,
+        for problems needing more than one partial (PDE-style discovery, shift
+        laws). This function differentiates along a single axis only.
     """
     X = np.asarray(X, dtype=np.float64)
     t = np.asarray(t, dtype=np.float64).ravel()

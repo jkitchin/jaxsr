@@ -14,6 +14,7 @@ JAX surface                  Replacement provided here
                              ``ndarray`` subclass that supports ``.at[]``
 ``jax.jit``                  identity decorator
 ``jax.grad``                 central finite differences
+``jax.jvp``                  central finite difference along the tangent
 ``jax.lax.erf``              ``scipy.special.erf``
 ``jax.random.PRNGKey``       ``numpy.random.Generator``
 ``jax.random.split``         independent child generators
@@ -27,9 +28,11 @@ Notes
 -----
 NumPy defaults to float64 where JAX defaults to float32.  That is a deliberate
 and welcome difference: ``selection.py`` takes its closed-form O(k) MSE path
-only for float64 input, and the finite-difference steps in ``constraints.py``
-were tuned around float32 cancellation, so they become more accurate rather
-than less.  Expect small numerical differences from a real JAX run.
+only for float64 input.  ``jax.grad`` and ``jax.jvp`` are exact under real JAX
+but finite differences here, so derivative-based results (constraint rows, the
+gradient sampling score) agree with a JAX run to a few significant digits
+rather than to rounding.  Expect small numerical differences from a real JAX
+run.
 """
 
 from __future__ import annotations
@@ -191,9 +194,8 @@ def _jit(fun: Any = None, **_kwargs: Any) -> Any:
 # around eps**(1/3) ~= 6e-6, so 1e-6 sits in the right regime.
 #
 # This must NOT be shrunk toward scipy's own default finite-difference step
-# (~1.5e-8).  The penalty functions in constraints.py are themselves built from
-# finite differences, and at 1.5e-8 they look constant to the optimizer -- that
-# is precisely the bug jax.grad was introduced to fix.
+# (~1.5e-8): the gradient of a penalty on a derivative is then a difference of
+# differences, and at 1.5e-8 it drowns in rounding.
 _GRAD_STEP = 1e-6
 
 
@@ -246,6 +248,43 @@ def _value_and_grad(fun: Any, argnums: int = 0, **kwargs: Any) -> Any:
         return float(fun(*args, **kw)), grad_fun(*args, **kw)
 
     return value_and_grad_fun
+
+
+# Step for the jvp stand-in.  Larger than _GRAD_STEP because constraints.py
+# nests two jvp calls to get a second derivative, which here becomes a second
+# difference with rounding error ~ eps / h**2: at 1e-4 that is ~1e-8 against a
+# truncation error of the same order, where 1e-6 would leave ~1e-4 of noise.
+_JVP_STEP = 1e-4
+
+
+def _jvp(fun: Any, primals: Any, tangents: Any) -> tuple[Any, np.ndarray]:
+    """
+    Central finite-difference stand-in for :func:`jax.jvp`.
+
+    Parameters
+    ----------
+    fun : callable
+        Function to differentiate.
+    primals : sequence of array-like
+        Point at which to evaluate ``fun``.
+    tangents : sequence of array-like
+        Direction of the derivative, one per primal.
+
+    Returns
+    -------
+    primal_out, tangent_out : tuple
+        ``fun(*primals)`` and its directional derivative along ``tangents``.
+    """
+    xs = [np.asarray(p, dtype=np.float64) for p in primals]
+    ts = [np.asarray(t, dtype=np.float64) for t in tangents]
+    moved = [np.abs(x[t != 0]) for x, t in zip(xs, ts, strict=True)]
+    scale = max([1.0] + [float(m.max()) for m in moved if m.size])
+    step = _JVP_STEP * scale
+
+    out = fun(*[_array(x) for x in xs])
+    plus = fun(*[_array(x + step * t) for x, t in zip(xs, ts, strict=True)])
+    minus = fun(*[_array(x - step * t) for x, t in zip(xs, ts, strict=True)])
+    return out, _array((np.asarray(plus) - np.asarray(minus)) / (2.0 * step))
 
 
 # =============================================================================
@@ -495,6 +534,7 @@ def install(force: bool = False) -> types.ModuleType:
     jax.jit = _jit
     jax.grad = _grad
     jax.value_and_grad = _value_and_grad
+    jax.jvp = _jvp
     jax.device_put = lambda x, *a, **kw: _asarray(x)
     jax.block_until_ready = lambda x: x
     jax.Array = np.ndarray
