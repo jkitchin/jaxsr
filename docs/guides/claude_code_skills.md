@@ -24,7 +24,7 @@ JAXSR's skill files teach the assistant:
 
 ## File Layout
 
-The skill files live in two mirrored locations:
+The skill files live in `.claude/skills/`:
 
 ```
 .claude/skills/jaxsr/          # Primary location (used by Claude Code)
@@ -48,16 +48,14 @@ The skill files live in two mirrored locations:
     ├── notebook-starter.py
     └── uncertainty-analysis.py
 
-src/jaxsr/skill/               # Mirror (included in the package)
-└── ...                        # Same contents as above
+.claude/skills/jaxsr-review/   # Review skill for JAXSR code and docs
+└── SKILL.md
 ```
 
-These two directories must stay in sync. After editing any file under `.claude/skills/jaxsr/`,
-run:
-
-```bash
-rm -rf src/jaxsr/skill && cp -r .claude/skills/jaxsr src/jaxsr/skill
-```
+This is the [Agent Skills](https://agentskills.io/specification) layout, so the skills can be
+installed with [knowhow](https://github.com/jkitchin/knowhow) or `npx skills` (see below). The
+wheel also bundles `.claude/skills/jaxsr` as `jaxsr/skill` (via hatch `force-include`), which is
+what `jaxsr install-skill` copies.
 
 ## Skill Components
 
@@ -108,6 +106,23 @@ customize them:
 
 ## Using the Skills
 
+### Installing into your own project
+
+Install the skill with [knowhow](https://github.com/jkitchin/knowhow) (or `npx skills`). It
+works for Claude Code, Codex, OpenCode, Gemini CLI, Cursor and GitHub Copilot:
+
+```bash
+# Into the current project (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Copilot, ...)
+uvx knowhow add jkitchin/jaxsr --skill jaxsr
+# For all your projects, plus the review skill
+uvx knowhow add jkitchin/jaxsr -s jaxsr -s jaxsr-review -g
+# or: npx skills add jkitchin/jaxsr --skill jaxsr
+```
+
+Until knowhow is on PyPI, use `uvx --from git+https://github.com/jkitchin/knowhow knowhow ...`.
+`knowhow check` and `knowhow upgrade` pick up later changes to the skill. If you installed
+JAXSR with pip, `jaxsr install-skill` copies the bundled version into `.claude/skills/jaxsr`.
+
 ### With Claude Code CLI
 
 If you have [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed, simply
@@ -140,9 +155,9 @@ The skill files are still useful as standalone documentation. You can read them 
 When adding or modifying skill files:
 
 1. Edit files in `.claude/skills/jaxsr/` (the primary location)
-2. Sync to the package mirror:
+2. Keep the `name`/`description` frontmatter in each `SKILL.md`, and check the skills:
    ```bash
-   rm -rf src/jaxsr/skill && cp -r .claude/skills/jaxsr src/jaxsr/skill
+   uvx --from git+https://github.com/jkitchin/knowhow knowhow validate .
    ```
 3. Verify code examples against the actual JAXSR API (see the
    [Red-Team Review checklist](https://github.com/jkitchin/jaxsr/blob/main/CLAUDE.md)

@@ -1,3 +1,16 @@
+---
+name: jaxsr
+description: Symbolic regression assistant for the JAXSR Python library. Discovers interpretable
+  algebraic equations from data with sparse basis-function selection (ALAMO-style), and
+  guides design of experiments (DOE), response surface methodology (RSM), active learning,
+  uncertainty quantification, constrained and known-model fitting, and model export. Use when
+  the user wants to find an equation or surrogate model from data, mentions jaxsr or symbolic
+  regression, sets up a DOE study, chooses basis functions, selection strategies or UQ methods,
+  or writes notebooks, scripts or reports for symbolic regression workflows.
+license: MIT
+compatibility: Requires Python 3.10+ and the jaxsr package (pip install jaxsr).
+---
+
 # JAXSR Skill — Symbolic Regression Assistant
 
 JAXSR is a JAX-based symbolic regression library that discovers interpretable algebraic
@@ -271,37 +284,10 @@ model.save("additive.json")  # JSON round-trip (models are NOT picklable)
 loaded = StagewiseSymbolicRegressor.load("additive.json")
 ```
 
-Notes:
-- Prefer `refit_coefficients=True` for accuracy with squared error; keep
-  `max_complexity` small (2–4) to favour many simple terms.
-- **Robust / quantile regression:** set `loss` to `"absolute_error"`,
-  `"huber"`, or `"quantile"` (or an instance like `QuantileLoss(0.9)` /
-  `HuberLoss(delta=2.0)`). These are fit by gradient boosting with a per-stage
-  line search; use `refit_coefficients=False` (OLS refit only applies to
-  squared error and is auto-disabled with a warning otherwise). Fit several
-  quantiles to build prediction intervals.
-- **Structural uncertainty:** `bootstrap_additive(model, X, y, n_bootstrap=...)`
-  refits on resamples and returns `["inclusion_probabilities"]` (how often each
-  basis is selected — a posterior-inclusion-probability proxy) and `["models"]`;
-  pass those to `bootstrap_predict_additive(models, X_new)` for an ensemble
-  prediction interval. Diffuse probabilities (~0.5) flag that the data don't
-  determine one expression (common with collinear features).
-- `include_transcendental`/`include_ratios` are off by default; if enabled, a
-  stage that would produce non-finite predictions falls back to a finite basis.
-- **Compositional discovery (experimental):** `RecursiveSymbolicRegressor`
-  grows the basis library along the residual (composing unary funcs, products,
-  ratios of discovered terms) to reach compositions a flat library misses
-  (e.g. `exp(x0*x1)`). Deterministic FFX-style search; competitive with GP on
-  simple targets but won't match PySR/Operon on hard ones. Not serialisable
-  (composed bases are closures).
-- `BackfittingSymbolicRegressor` (GAM-style: a fixed set of terms revised
-  across sweeps, warm-started from stagewise; squared error only) is available.
-  It is never worse than stagewise+refit on training and helps specifically
-  when `max_complexity` is small (single-basis terms) and features are
-  collinear — where greedy forward selection gets stuck and re-discovery
-  escapes it. With larger per-term budgets it matches stagewise+refit, so
-  prefer `StagewiseSymbolicRegressor` there. A Bayesian (BART/iBART) variant is
-  future work.
+Keep `max_complexity` small (2–4) and prefer `refit_coefficients=True` for squared
+error. For robust/quantile losses, bootstrap inclusion probabilities
+(`bootstrap_additive`), and the `BackfittingSymbolicRegressor` /
+`RecursiveSymbolicRegressor` variants, read [guides/additive.md](guides/additive.md).
 
 ## Quick Reference: CLI
 

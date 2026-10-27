@@ -169,8 +169,11 @@ Review architecture, safety, robustness, and packaging.
 
 **Packaging:**
 - `pyproject.toml`: Ensure no duplicate file inclusions between `packages` and `force-include`
-- `src/jaxsr/skill/` and `.claude/skills/jaxsr/` must stay in sync — after editing any
-  skill file, run: `rm -rf src/jaxsr/skill && cp -r .claude/skills/jaxsr src/jaxsr/skill`
+- Skills live only in `.claude/skills/<name>/` (the layout [knowhow](https://github.com/jkitchin/knowhow)
+  and `npx skills` discover). The wheel ships `.claude/skills/jaxsr` as `jaxsr/skill` via
+  hatch `force-include` — do not recreate a `src/jaxsr/skill/` copy (it would be a duplicate
+  skill name). Every `SKILL.md` needs `name`/`description` frontmatter; after editing a skill,
+  run `uvx --from git+https://github.com/jkitchin/knowhow knowhow validate .`
 - Verify `__init__.py` exports: every symbol in `__all__` must be imported; `__all__` should
   be sorted alphabetically within each section
 

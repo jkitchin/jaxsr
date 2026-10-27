@@ -92,6 +92,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/jaxsr"]
 
+# The skill lives once, in .claude/skills/jaxsr (where knowhow / npx skills find it),
+# and is shipped inside the wheel as jaxsr/skill for `jaxsr install-skill`.
+[tool.hatch.build.targets.wheel.force-include]
+".claude/skills/jaxsr" = "jaxsr/skill"
+
+[tool.hatch.build.targets.sdist.force-include]
+".claude/skills/jaxsr" = ".claude/skills/jaxsr"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"

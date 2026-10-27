@@ -1,3 +1,13 @@
+---
+name: jaxsr-review
+description: Red-team, software-engineering and pedagogical review of JAXSR code, docs, guides,
+  templates and notebooks. Checks every jaxsr API call against the real signatures and return
+  types, flags unsafe or fragile engineering, and assesses clarity for first-time users. Use when
+  the user invokes /jaxsr-review or asks to review, audit, or check the correctness of
+  JAXSR-related files.
+license: MIT
+---
+
 # JAXSR Review Skill — Red-Team, Engineering & Pedagogical Review
 
 Systematically review JAXSR code, documentation, guides, and notebooks for
@@ -177,7 +187,8 @@ Check for:
 - Symbols in `__all__` that are not imported in `__init__.py`
 - Imports in `__init__.py` that are not in `__all__`
 - Duplicate file inclusions in `pyproject.toml` (`packages` vs `force-include`)
-- `.claude/skills/jaxsr/` and `src/jaxsr/skill/` out of sync
+- A `src/jaxsr/skill/` copy reappearing (the wheel bundles `.claude/skills/jaxsr` via `force-include`)
+- `SKILL.md` files missing `name`/`description` frontmatter (`knowhow validate .`)
 
 ### Dead Code
 

@@ -432,8 +432,21 @@ plot_bma_weights(model)
 
 JAXSR ships with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) skill files
 that let an AI assistant guide you through symbolic regression workflows interactively.
-The skill files live in `.claude/skills/jaxsr/` (and are mirrored in `src/jaxsr/skill/`
-for packaging).
+The skill files live in `.claude/skills/jaxsr/` and follow the
+[Agent Skills](https://agentskills.io/specification) layout, so they can be installed into any
+project with [knowhow](https://github.com/jkitchin/knowhow) or `npx skills`:
+
+```bash
+# Into the current project (Claude Code, Codex, OpenCode, Gemini CLI, Cursor, Copilot, ...)
+uvx knowhow add jkitchin/jaxsr --skill jaxsr
+# For all your projects, plus the review skill
+uvx knowhow add jkitchin/jaxsr -s jaxsr -s jaxsr-review -g
+# or: npx skills add jkitchin/jaxsr --skill jaxsr
+```
+
+If you `pip install jaxsr`, `jaxsr install-skill` copies the same files into
+`.claude/skills/jaxsr`. A second skill, `jaxsr-review`, audits JAXSR code and docs for API
+correctness.
 
 **What's included:**
 
